@@ -6,18 +6,18 @@ import "time"
 type Connection struct {
 	Timestamp time.Time
 
-	State      string
-	RecvQ      *int
-	SendQ      *int
-	LocalAddr  string
-	LocalPort  string
-	PeerAddr   string
-	PeerPort   string
-	Process    *string
-	PID        *int
-	UID        *int
-	Inode      *string
-	Cgroup     *string
+	State     string
+	RecvQ     *int
+	SendQ     *int
+	LocalAddr string
+	LocalPort string
+	PeerAddr  string
+	PeerPort  string
+	Process   *string
+	PID       *int
+	UID       *int
+	Inode     *string
+	Cgroup    *string
 
 	// skmem
 	SkmemR  *int
@@ -31,39 +31,39 @@ type Connection struct {
 	SkmemD  *int
 
 	// timer
-	TimerType     *string
-	TimerDur      *string
-	TimerRetrans  *int
+	TimerType    *string
+	TimerDur     *string
+	TimerRetrans *int
 
 	// wscale
 	WscaleSnd *int
 	WscaleRcv *int
 
 	// throughput
-	Delivered   *int
-	AppLimited  int
-	SendBPS     *int
+	Delivered  *int
+	AppLimited int
+	SendBPS    *int
 
 	// TCP metrics
-	RTO     *float64
-	RTT     *float64
-	RTTVar  *float64
-	ATO     *float64
-	MSS     *int
-	CWnd    *int
+	RTO      *float64
+	RTT      *float64
+	RTTVar   *float64
+	ATO      *float64
+	MSS      *int
+	CWnd     *int
 	SSThresh *int
 
 	// bytes
-	BytesSent      *int
-	BytesReceived  *int
-	BytesAcked     *int
-	BytesRetrans   *int
+	BytesSent     *int
+	BytesReceived *int
+	BytesAcked    *int
+	BytesRetrans  *int
 
 	// segments
-	SegsOut       *int
-	SegsIn        *int
-	DataSegsOut   *int
-	DataSegsIn    *int
+	SegsOut     *int
+	SegsIn      *int
+	DataSegsOut *int
+	DataSegsIn  *int
 
 	MinRTT       *float64
 	PacingRate   *int
@@ -73,10 +73,10 @@ type Connection struct {
 	RetransNow *int
 	Retrans    *int
 
-	Lost     *int
-	Unacked  *int
-	SndWnd   *int
-	RcvSpace *int
+	Lost        *int
+	Unacked     *int
+	SndWnd      *int
+	RcvSpace    *int
 	RcvSSThresh *int
 
 	BusyMS    *float64
@@ -95,11 +95,11 @@ type Connection struct {
 	BBRCWndGain   *float64
 
 	// Computed deltas
-	DeltaBytesSent      *int
-	DeltaBytesReceived  *int
-	DeltaSegsOut        *int
-	DeltaSegsIn         *int
-	DeltaBytesRetrans   *int
+	DeltaBytesSent     *int
+	DeltaBytesReceived *int
+	DeltaSegsOut       *int
+	DeltaSegsIn        *int
+	DeltaBytesRetrans  *int
 }
 
 // ConnKey returns a unique identifier for this connection.

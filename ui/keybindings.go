@@ -8,13 +8,13 @@ import (
 
 var (
 	styleKey = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#5a56e7")).
-		Bold(true).
-		Width(12)
+			Foreground(lipgloss.Color("#5a56e7")).
+			Bold(true).
+			Width(12)
 
 	styleDesc = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#ccc")).
-		Width(30)
+			Foreground(lipgloss.Color("#ccc")).
+			Width(30)
 )
 
 // RenderHelp renders the help/keyboard shortcuts panel.

@@ -5,8 +5,8 @@ import (
 	"os"
 	"os/signal"
 	"strings"
-	"syscall"
 	"sync"
+	"syscall"
 	"time"
 
 	"ss-stats-tui/model"
@@ -45,20 +45,20 @@ const (
 
 // AppModel is the main bubbletea model.
 type AppModel struct {
-	width         int
-	height        int
-	buf           *poller.Buffer
-	table         *ui.TableModel
-	filter        *ui.Filter
-	tab           ViewMode
-	showHelp      bool
-	lastError     error
-	filterMode    bool
-	filterBuf     string
-	selectedKey   string
-	done          chan struct{}
-	doneOnce      sync.Once
-	quitting      bool
+	width       int
+	height      int
+	buf         *poller.Buffer
+	table       *ui.TableModel
+	filter      *ui.Filter
+	tab         ViewMode
+	showHelp    bool
+	lastError   error
+	filterMode  bool
+	filterBuf   string
+	selectedKey string
+	done        chan struct{}
+	doneOnce    sync.Once
+	quitting    bool
 }
 
 func NewApp() *AppModel {
@@ -249,7 +249,7 @@ func (m *AppModel) View() string {
 	var b strings.Builder
 
 	// Header (fixed)
-	b.WriteString(ui.RenderHeader(m.buf, m.width, m.lastError != nil) + "\n")
+	b.WriteString(ui.RenderHeader(m.buf, m.width) + "\n")
 
 	// Tabs (fixed)
 	b.WriteString(ui.RenderTabs(int(m.tab), m.width) + "\n")

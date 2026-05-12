@@ -21,13 +21,13 @@ const (
 
 // TableColumn defines a column in the connection table.
 type TableColumn struct {
-	Key      string
-	Title    string
-	Width    int
+	Key       string
+	Title     string
+	Width     int
 	BaseWidth int
-	Expand   bool
-	Render   func(*model.Connection) string
-	SortFunc func(a, b *model.Connection) bool
+	Expand    bool
+	Render    func(*model.Connection) string
+	SortFunc  func(a, b *model.Connection) bool
 }
 
 var defaultColumns = []TableColumn{
@@ -50,11 +50,11 @@ var defaultColumns = []TableColumn{
 		SortFunc: func(a, b *model.Connection) bool { return a.State < b.State },
 	},
 	{
-		Key:   "local",
-		Title: "Local",
-		Width: 16,
+		Key:       "local",
+		Title:     "Local",
+		Width:     16,
 		BaseWidth: 16,
-		Expand: true,
+		Expand:    true,
 		Render: func(c *model.Connection) string {
 			return c.LocalAddr + ":" + c.LocalPort
 		},
@@ -63,11 +63,11 @@ var defaultColumns = []TableColumn{
 		},
 	},
 	{
-		Key:   "peer",
-		Title: "Peer",
-		Width: 16,
+		Key:       "peer",
+		Title:     "Peer",
+		Width:     16,
 		BaseWidth: 16,
-		Expand: true,
+		Expand:    true,
 		Render: func(c *model.Connection) string {
 			return c.PeerAddr + ":" + c.PeerPort
 		},
@@ -76,11 +76,11 @@ var defaultColumns = []TableColumn{
 		},
 	},
 	{
-		Key:   "process",
-		Title: "Process",
-		Width: 12,
+		Key:       "process",
+		Title:     "Process",
+		Width:     12,
 		BaseWidth: 12,
-		Expand: true,
+		Expand:    true,
 		Render: func(c *model.Connection) string {
 			if c.Process == nil {
 				return "-"
@@ -258,18 +258,18 @@ var sortCycle = []struct {
 
 // TableModel holds the state for the connection table.
 type TableModel struct {
-	conns         []*model.Connection
-	filter        *Filter
-	sortKey       string
-	sortDir       SortDir
-	sortCycleIdx  int
-	cursor        int
-	page          int
-	pageSize      int
-	columns       []TableColumn
-	width         int
-	showDetail    bool
-	cachedConns   []*model.Connection
+	conns        []*model.Connection
+	filter       *Filter
+	sortKey      string
+	sortDir      SortDir
+	sortCycleIdx int
+	cursor       int
+	page         int
+	pageSize     int
+	columns      []TableColumn
+	width        int
+	showDetail   bool
+	cachedConns  []*model.Connection
 }
 
 func NewTableModel(filter *Filter, pageSize int) *TableModel {

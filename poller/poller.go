@@ -8,8 +8,8 @@ import (
 )
 
 const (
-	BufferSize    = 1500 // ~5 minutes at 2s intervals
-	PollInterval  = 2 * time.Second
+	BufferSize   = 1500 // ~5 minutes at 2s intervals
+	PollInterval = 2 * time.Second
 )
 
 // Snapshot is a point-in-time capture of all connections.
@@ -20,11 +20,11 @@ type Snapshot struct {
 
 // Buffer holds a ring buffer of snapshots.
 type Buffer struct {
-	mu        sync.RWMutex
-	snapshots []*Snapshot
-	head      int
-	count     int
-	prevMap   map[string]*model.Connection
+	mu         sync.RWMutex
+	snapshots  []*Snapshot
+	head       int
+	count      int
+	prevMap    map[string]*model.Connection
 	lastUpdate time.Time
 }
 
@@ -139,5 +139,3 @@ func (b *Buffer) LastUpdate() time.Time {
 	defer b.mu.RUnlock()
 	return b.lastUpdate
 }
-
-

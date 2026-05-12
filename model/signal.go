@@ -4,21 +4,21 @@ package model
 type SignalType string
 
 const (
-	SignalRetransInFlight   SignalType = "retrans_in_flight"
-	SignalAppLimited        SignalType = "app_limited"
-	SignalZeroWindow        SignalType = "zero_window"
-	SignalCongestionLoss    SignalType = "congestion_loss"
-	SignalPMTUMismatch      SignalType = "pmtu_mismatch"
-	SignalRTTSpike          SignalType = "rtt_spike"
+	SignalRetransInFlight    SignalType = "retrans_in_flight"
+	SignalAppLimited         SignalType = "app_limited"
+	SignalZeroWindow         SignalType = "zero_window"
+	SignalCongestionLoss     SignalType = "congestion_loss"
+	SignalPMTUMismatch       SignalType = "pmtu_mismatch"
+	SignalRTTSpike           SignalType = "rtt_spike"
 	SignalSendBufferPressure SignalType = "send_buffer_pressure"
 	SignalRecvBufferPressure SignalType = "recv_buffer_pressure"
-	SignalHighRetransRate   SignalType = "high_retrans_rate"
-	SignalCongestionReduce  SignalType = "congestion_reduce"
-	SignalSlowStart         SignalType = "slow_start"
-	SignalBufferBloat       SignalType = "buffer_bloat"
-	SignalDeliveryDrop      SignalType = "delivery_drop"
-	SignalUnackedBuildup    SignalType = "unacked_buildup"
-	SignalBusyTimeout       SignalType = "busy_timeout"
+	SignalHighRetransRate    SignalType = "high_retrans_rate"
+	SignalCongestionReduce   SignalType = "congestion_reduce"
+	SignalSlowStart          SignalType = "slow_start"
+	SignalBufferBloat        SignalType = "buffer_bloat"
+	SignalDeliveryDrop       SignalType = "delivery_drop"
+	SignalUnackedBuildup     SignalType = "unacked_buildup"
+	SignalBusyTimeout        SignalType = "busy_timeout"
 )
 
 // SignalColor returns a display string for the signal.

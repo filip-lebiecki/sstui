@@ -13,12 +13,15 @@ import (
 
 var (
 	styleSectionTitle = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#5a56e7")).
-		Bold(true).
-		Padding(0, 1)
+				Foreground(lipgloss.Color("#5a56e7")).
+				Bold(true).
+				Padding(0, 1)
 
 	styleBar = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#5a56e7"))
+			Foreground(lipgloss.Color("#5a56e7"))
+
+	styleBarDim = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#555555"))
 )
 
 // RenderOverview renders the overview view with timeseries and aggregate data.
@@ -31,19 +34,20 @@ func RenderOverview(buf *poller.Buffer, width, height int) string {
 	var b strings.Builder
 
 	// Connection count over time
-	b.WriteString(renderSection("Connections Over Time", func() string {
+	{
 		var counts []float64
 		for _, snap := range snapshots {
 			counts = append(counts, float64(len(snap.Conns)))
 		}
-		return renderSparkline(counts, min(width-30, 60), lipgloss.Color("#5a56e7")) +
-			fmt.Sprintf("  (min: %.0f, max: %.0f)", getMin(counts), getMax(counts))
-	}))
+		stats := fmt.Sprintf("  (min: %.0f, max: %.0f)", getMin(counts), getMax(counts))
+		b.WriteString(styleSectionTitle.Render(" Connections Over Time") + stats + "\n")
+		b.WriteString("  " + renderBarChart(counts, min(width-32, 60), lipgloss.Color("#5a56e7")) + "\n")
+	}
 
 	b.WriteString("\n")
 
 	// Average RTT over time
-	b.WriteString(renderSection("Avg RTT Over Time", func() string {
+	{
 		var rtts []float64
 		for _, snap := range snapshots {
 			var sum, cnt float64
@@ -59,14 +63,15 @@ func RenderOverview(buf *poller.Buffer, width, height int) string {
 				rtts = append(rtts, 0)
 			}
 		}
-		return renderSparkline(rtts, min(width-30, 60), lipgloss.Color("#ffa94d")) +
-			fmt.Sprintf("  (min: %.1fms, max: %.1fms)", getMin(rtts), getMax(rtts))
-	}))
+		stats := fmt.Sprintf("  (min: %.1fms, max: %.1fms)", getMin(rtts), getMax(rtts))
+		b.WriteString(styleSectionTitle.Render(" Avg RTT Over Time") + stats + "\n")
+		b.WriteString("  " + renderBarChart(rtts, min(width-32, 60), lipgloss.Color("#ffa94d")) + "\n")
+	}
 
 	b.WriteString("\n")
 
 	// TX/RX rate over time
-	b.WriteString(renderSection("Throughput Over Time", func() string {
+	{
 		var txVals, rxVals []float64
 		for _, snap := range snapshots {
 			var tx, rx float64
@@ -82,9 +87,14 @@ func RenderOverview(buf *poller.Buffer, width, height int) string {
 			rxVals = append(rxVals, rx)
 		}
 		chartW := min((width-40)/2, 30)
-		return "TX: " + renderSparkline(txVals, chartW, lipgloss.Color("#51cf66")) + "\n  "+
-			"RX: " + renderSparkline(rxVals, chartW, lipgloss.Color("#da77f2"))
-	}))
+		txStats := fmt.Sprintf("  (min: %s, max: %s)", fmtBytesPerSec(getMin(txVals)), fmtBytesPerSec(getMax(txVals)))
+		rxStats := fmt.Sprintf("  (min: %s, max: %s)", fmtBytesPerSec(getMin(rxVals)), fmtBytesPerSec(getMax(rxVals)))
+		b.WriteString(styleSectionTitle.Render(" Throughput Over Time") + "\n")
+		b.WriteString("  TX:" + txStats + "\n")
+		b.WriteString("  " + renderBarChart(txVals, chartW, lipgloss.Color("#51cf66")) + "\n")
+		b.WriteString("  RX:" + rxStats + "\n")
+		b.WriteString("  " + renderBarChart(rxVals, chartW, lipgloss.Color("#da77f2")) + "\n")
+	}
 
 	b.WriteString("\n\n")
 
@@ -100,8 +110,8 @@ func RenderOverview(buf *poller.Buffer, width, height int) string {
 		}
 
 		type stateCount struct {
-			state  string
-			count  int
+			state string
+			count int
 		}
 		var sc []stateCount
 		for s, c := range states {
@@ -110,7 +120,7 @@ func RenderOverview(buf *poller.Buffer, width, height int) string {
 		sort.Slice(sc, func(i, j int) bool { return sc[i].count > sc[j].count })
 
 		total := len(snap.Conns)
-		maxBar := min(width-40, 40)
+		maxBar := min(width-32, 40)
 		var sb strings.Builder
 		for _, s := range sc {
 			pct := float64(s.count) / float64(total) * 100
@@ -118,11 +128,11 @@ func RenderOverview(buf *poller.Buffer, width, height int) string {
 			if barLen < 1 && s.count > 0 {
 				barLen = 1
 			}
-			bar := strings.Repeat("█", barLen)
-			sb.WriteString(fmt.Sprintf("  %-10s %3d (%5.1f%%) %s\n",
-				lipgloss.NewStyle().Foreground(StateColor(s.state)).Render(s.state),
+			bar := styleBar.Render(strings.Repeat("█", barLen)) + styleBarDim.Render(strings.Repeat("░", maxBar-barLen))
+			sb.WriteString(fmt.Sprintf("  %s %2d %6.1f%% %s\n",
+				lipgloss.NewStyle().Foreground(StateColor(s.state)).Render(fmt.Sprintf("%-12s", s.state)),
 				s.count, pct,
-				styleBar.Render(bar)))
+				bar))
 		}
 		return sb.String()
 	}))
@@ -244,7 +254,7 @@ func RenderOverview(buf *poller.Buffer, width, height int) string {
 }
 
 func renderSection(title string, contentFn func() string) string {
-	return styleSectionTitle.Render(" " + title) + "\n" + contentFn()
+	return styleSectionTitle.Render(" "+title) + "\n" + contentFn()
 }
 
 func getMin(vals []float64) float64 {
@@ -271,4 +281,48 @@ func getMax(vals []float64) float64 {
 		}
 	}
 	return m
+}
+
+func renderBarChart(values []float64, width int, color lipgloss.Color) string {
+	if len(values) == 0 {
+		return ""
+	}
+
+	n := len(values)
+	if n > width {
+		step := float64(n) / float64(width)
+		var sampled []float64
+		for i := 0; i < width; i++ {
+			idx := int(math.Floor(step*float64(i) + 0.5))
+			if idx >= n {
+				idx = n - 1
+			}
+			sampled = append(sampled, values[idx])
+		}
+		values = sampled
+	}
+
+	minV, maxV := values[0], values[0]
+	for _, v := range values {
+		if v < minV {
+			minV = v
+		}
+		if v > maxV {
+			maxV = v
+		}
+	}
+
+	rangeV := maxV - minV
+	if rangeV == 0 {
+		rangeV = 1
+	}
+
+	levels := []rune("▁▂▃▄▅▆▇█")
+	var b strings.Builder
+	for _, v := range values {
+		normalized := (v - minV) / rangeV
+		idx := int(normalized * float64(len(levels)-1))
+		b.WriteRune(levels[idx])
+	}
+	return lipgloss.NewStyle().Foreground(color).Render(b.String())
 }

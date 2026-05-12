@@ -13,43 +13,35 @@ import (
 
 var (
 	styleHeader = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#fff")).
-		Background(lipgloss.Color("#5a56e7")).
-		Padding(0, 1).
-		Bold(true)
+			Foreground(lipgloss.Color("#fff")).
+			Background(lipgloss.Color("#5a56e7")).
+			Padding(0, 1).
+			Bold(true)
 
 	styleStat = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#ccc")).
-		Background(lipgloss.Color("#333")).
-		Padding(0, 1).
-		MarginRight(1)
+			Foreground(lipgloss.Color("#ccc")).
+			Background(lipgloss.Color("#333")).
+			Padding(0, 1).
+			MarginRight(1)
 
 	styleStatLabel = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#888")).
-		Inherit(styleStat)
+			Foreground(lipgloss.Color("#888")).
+			Inherit(styleStat)
 
 	styleStatValue = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#fff")).
-		Bold(true).
-		Inherit(styleStat)
-
-	styleDot = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#00ff00")).
-		SetString(" ●")
-
-	styleDotError = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#ff0000")).
-		SetString(" ●")
+			Foreground(lipgloss.Color("#fff")).
+			Bold(true).
+			Inherit(styleStat)
 
 	styleTabSelected = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#fff")).
-		Background(lipgloss.Color("#5a56e7")).
-		Padding(0, 2).
-		Bold(true)
+				Foreground(lipgloss.Color("#fff")).
+				Background(lipgloss.Color("#5a56e7")).
+				Padding(0, 2).
+				Bold(true)
 
 	styleTab = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#888")).
-		Padding(0, 2)
+			Foreground(lipgloss.Color("#888")).
+			Padding(0, 2)
 
 	signalColors = map[model.SignalType]lipgloss.Color{
 		model.SignalRetransInFlight:    lipgloss.Color("#ff6b6b"),
@@ -71,7 +63,7 @@ var (
 )
 
 // RenderHeader renders the top status bar with stat pills.
-func RenderHeader(buf *poller.Buffer, width int, hasError bool) string {
+func RenderHeader(buf *poller.Buffer, width int) string {
 	snap := buf.GetLatest()
 	if snap == nil {
 		return styleHeader.Render(fmt.Sprintf(" ss-stats | waiting for data... | %d cols", width))
@@ -109,11 +101,6 @@ func RenderHeader(buf *poller.Buffer, width int, hasError bool) string {
 	txRate := fmtBytesPerSec(totalBytesSent)
 	rxRate := fmtBytesPerSec(totalBytesRecv)
 
-	dot := styleDot
-	if hasError {
-		dot = styleDotError
-	}
-
 	ts := buf.LastUpdate().Format("15:04:05")
 
 	pills := []string{
@@ -127,7 +114,7 @@ func RenderHeader(buf *poller.Buffer, width int, hasError bool) string {
 	}
 
 	pillsStr := strings.Join(pills, "")
-	prefix := dot.String() + " ss-stats"
+	prefix := "ss-stats"
 
 	content := prefix + " " + pillsStr
 	if len(content) < width {

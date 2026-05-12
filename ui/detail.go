@@ -14,21 +14,21 @@ import (
 
 var (
 	styleDetailTitle = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#5a56e7")).
-		Bold(true).
-		Padding(0, 1)
+				Foreground(lipgloss.Color("#5a56e7")).
+				Bold(true).
+				Padding(0, 1)
 
 	styleDetailLabel = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#888")).
-		PaddingLeft(1)
+				Foreground(lipgloss.Color("#888")).
+				PaddingLeft(1)
 
 	styleDetailValue = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#fff")).
-		Bold(true).
-		PaddingLeft(1)
+				Foreground(lipgloss.Color("#fff")).
+				Bold(true).
+				PaddingLeft(1)
 
 	styleSparkline = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#51cf66"))
+			Foreground(lipgloss.Color("#51cf66"))
 )
 
 // RenderDetail renders the detail view for a selected connection.
@@ -185,14 +185,14 @@ func RenderDetail(conn *model.Connection, buf *poller.Buffer, width, height int)
 
 func renderDetailSection(title string, contentFn func() string) string {
 	var b strings.Builder
-	b.WriteString(styleDetailTitle.Render(" " + title) + "\n")
+	b.WriteString(styleDetailTitle.Render(" "+title) + "\n")
 	b.WriteString(contentFn())
 	return b.String()
 }
 
 func fmtRow(label, value string) string {
-	return fmt.Sprintf("  %s: %s\n",
-		styleDetailLabel.Render(label),
+	return fmt.Sprintf("  %s %s\n",
+		styleDetailLabel.Render(fmt.Sprintf("%-16s: ", label)),
 		styleDetailValue.Render(value))
 }
 
@@ -234,7 +234,7 @@ func renderSparklines(conn *model.Connection, buf *poller.Buffer, width int) str
 	}
 
 	var b strings.Builder
-	b.WriteString(styleDetailTitle.Render("  History (last " + fmt.Sprintf("%d polls", len(snapshots)) + ")") + "\n\n")
+	b.WriteString(styleDetailTitle.Render("  History (last "+fmt.Sprintf("%d polls", len(snapshots))+")") + "\n\n")
 
 	chartWidth := min(width-20, 60)
 

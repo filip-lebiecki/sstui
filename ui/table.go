@@ -24,6 +24,8 @@ type TableColumn struct {
 	Key      string
 	Title    string
 	Width    int
+	BaseWidth int
+	Expand   bool
 	Render   func(*model.Connection) string
 	SortFunc func(a, b *model.Connection) bool
 }
@@ -41,7 +43,7 @@ var defaultColumns = []TableColumn{
 	{
 		Key:   "state",
 		Title: "State",
-		Width: 9,
+		Width: 12,
 		Render: func(c *model.Connection) string {
 			return lipgloss.NewStyle().Foreground(StateColor(c.State)).Render(c.State)
 		},
@@ -51,8 +53,10 @@ var defaultColumns = []TableColumn{
 		Key:   "local",
 		Title: "Local",
 		Width: 16,
+		BaseWidth: 16,
+		Expand: true,
 		Render: func(c *model.Connection) string {
-			return truncate(c.LocalAddr+":"+c.LocalPort, 16)
+			return c.LocalAddr + ":" + c.LocalPort
 		},
 		SortFunc: func(a, b *model.Connection) bool {
 			return a.LocalAddr+a.LocalPort < b.LocalAddr+b.LocalPort
@@ -62,8 +66,10 @@ var defaultColumns = []TableColumn{
 		Key:   "peer",
 		Title: "Peer",
 		Width: 16,
+		BaseWidth: 16,
+		Expand: true,
 		Render: func(c *model.Connection) string {
-			return truncate(c.PeerAddr+":"+c.PeerPort, 16)
+			return c.PeerAddr + ":" + c.PeerPort
 		},
 		SortFunc: func(a, b *model.Connection) bool {
 			return a.PeerAddr+a.PeerPort < b.PeerAddr+b.PeerPort
@@ -73,11 +79,13 @@ var defaultColumns = []TableColumn{
 		Key:   "process",
 		Title: "Process",
 		Width: 12,
+		BaseWidth: 12,
+		Expand: true,
 		Render: func(c *model.Connection) string {
 			if c.Process == nil {
 				return "-"
 			}
-			return truncate(*c.Process, 12)
+			return *c.Process
 		},
 		SortFunc: func(a, b *model.Connection) bool {
 			aV := ""
@@ -233,28 +241,45 @@ var defaultColumns = []TableColumn{
 	},
 }
 
+// sortCycle defines the order in which [h] cycles through sort modes.
+var sortCycle = []struct {
+	key string
+	dir SortDir
+}{
+	{"state", SortAsc},
+	{"state", SortDesc},
+	{"local", SortAsc},
+	{"local", SortDesc},
+	{"peer", SortAsc},
+	{"peer", SortDesc},
+	{"process", SortAsc},
+	{"process", SortDesc},
+}
+
 // TableModel holds the state for the connection table.
 type TableModel struct {
-	conns       []*model.Connection
-	filter      *Filter
-	sortKey     string
-	sortDir     SortDir
-	cursor      int
-	page        int
-	pageSize    int
-	columns     []TableColumn
-	width       int
-	showDetail  bool
-	cachedConns []*model.Connection
+	conns         []*model.Connection
+	filter        *Filter
+	sortKey       string
+	sortDir       SortDir
+	sortCycleIdx  int
+	cursor        int
+	page          int
+	pageSize      int
+	columns       []TableColumn
+	width         int
+	showDetail    bool
+	cachedConns   []*model.Connection
 }
 
 func NewTableModel(filter *Filter, pageSize int) *TableModel {
 	return &TableModel{
-		filter:   filter,
-		sortKey:  "local",
-		sortDir:  SortAsc,
-		pageSize: pageSize,
-		columns:  defaultColumns,
+		filter:       filter,
+		sortKey:      sortCycle[0].key,
+		sortDir:      sortCycle[0].dir,
+		sortCycleIdx: 0,
+		pageSize:     pageSize,
+		columns:      defaultColumns,
 	}
 }
 
@@ -270,6 +295,40 @@ func (t *TableModel) SetSize(width, height int) {
 	t.pageSize = height
 	if t.pageSize < 1 {
 		t.pageSize = 1
+	}
+
+	// Reset expandable columns to base width
+	for i := range t.columns {
+		if t.columns[i].Expand {
+			t.columns[i].Width = t.columns[i].BaseWidth
+		}
+	}
+
+	// Distribute extra width to expandable columns
+	totalBase := 0
+	expandableCount := 0
+	for _, col := range t.columns {
+		if col.Expand {
+			totalBase += col.BaseWidth
+			expandableCount++
+		} else {
+			totalBase += col.Width
+		}
+	}
+
+	if expandableCount > 0 && width > totalBase {
+		extra := width - totalBase
+		extraPerCol := extra / expandableCount
+		remainder := extra % expandableCount
+		for i := range t.columns {
+			if t.columns[i].Expand {
+				t.columns[i].Width = t.columns[i].BaseWidth + extraPerCol
+				if remainder > 0 {
+					t.columns[i].Width++
+					remainder--
+				}
+			}
+		}
 	}
 }
 
@@ -358,6 +417,15 @@ func (t *TableModel) ToggleSort(key string) {
 		t.sortKey = key
 		t.sortDir = SortAsc
 	}
+	t.cachedConns = nil
+	t.First()
+}
+
+// CycleSort cycles through the predefined sort order: state asc/desc, local asc/desc, peer asc/desc, process asc/desc.
+func (t *TableModel) CycleSort() {
+	t.sortCycleIdx = (t.sortCycleIdx + 1) % len(sortCycle)
+	t.sortKey = sortCycle[t.sortCycleIdx].key
+	t.sortDir = sortCycle[t.sortCycleIdx].dir
 	t.cachedConns = nil
 	t.First()
 }
@@ -464,8 +532,13 @@ func (t *TableModel) RenderFooter() string {
 	filtered := t.getFiltered()
 	total := len(filtered)
 	pos := t.page*t.pageSize + t.cursor + 1
-	footer := fmt.Sprintf("  %d/%d  (page %d)  [j/k] nav  [g/G] first/last  [h] sort  [Enter] detail  [/] filter  [?] help",
-		pos, total, t.page+1)
+	dir := "↑"
+	if t.sortDir == SortDesc {
+		dir = "↓"
+	}
+	sortLabel := strings.ToLower(t.sortKey) + dir
+	footer := fmt.Sprintf("  %d/%d  (page %d)  sort: %s  [h] cycle  [j/k] nav  [g/G] first/last  [Enter] detail  [/] filter  [?] help",
+		pos, total, t.page+1, sortLabel)
 	return lipgloss.NewStyle().Foreground(lipgloss.Color("#666")).Render(footer)
 }
 

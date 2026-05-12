@@ -198,23 +198,27 @@ func RenderSignals(signals []model.Signal) string {
 // RenderSignalBar renders a compact signal indicator column.
 func RenderSignalBar(signals []model.Signal) string {
 	if len(signals) == 0 {
-		return "  "
+		return "🟢"
 	}
-	var critical, warn bool
+	var maxSev, warnCount int
 	for _, s := range signals {
-		if s.Severity == 2 {
-			critical = true
-		} else if s.Severity == 1 {
-			warn = true
+		if s.Severity > maxSev {
+			maxSev = s.Severity
+		}
+		if s.Severity == 1 {
+			warnCount++
 		}
 	}
-	if critical {
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("#ff6b6b")).Render("!!")
+	switch {
+	case maxSev == 2:
+		return "🔴"
+	case warnCount >= 3:
+		return "🟠"
+	case warnCount > 0:
+		return "🟡"
+	default:
+		return "🟢"
 	}
-	if warn {
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("#ffd43b")).Render("! ")
-	}
-	return lipgloss.NewStyle().Foreground(lipgloss.Color("#74c0fc")).Render("* ")
 }
 
 // StateColor returns a color for a TCP state.

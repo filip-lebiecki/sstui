@@ -63,10 +63,11 @@ type AppModel struct {
 
 func NewApp() *AppModel {
 	buf := poller.NewBuffer()
+	sharedFilter := &ui.Filter{}
 	return &AppModel{
 		buf:    buf,
-		table:  ui.NewTableModel(&ui.Filter{}, 20),
-		filter: &ui.Filter{},
+		table:  ui.NewTableModel(sharedFilter, 20),
+		filter: sharedFilter,
 		tab:    ViewLive,
 		done:   make(chan struct{}),
 	}
@@ -146,7 +147,14 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "G":
 			m.table.Last()
 		case "h":
-			m.table.ToggleSort("local")
+			m.table.CycleSort()
+		case "e":
+			if m.filter.State == "ESTAB" {
+				m.filter.State = ""
+			} else {
+				m.filter.State = "ESTAB"
+			}
+			m.table.InvalidateCache()
 		}
 
 	case quitMsg:
@@ -331,7 +339,6 @@ func (m *AppModel) View() string {
 	// Wrap everything in a fixed-size frame to prevent terminal scroll
 	return lipgloss.NewStyle().
 		Height(m.height).
-		Width(m.width).
 		Render(b.String())
 }
 

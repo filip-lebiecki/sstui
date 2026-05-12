@@ -9,6 +9,17 @@ import (
 func Classify(c *model.Connection) []model.Signal {
 	var signals []model.Signal
 
+	if c.State == "LISTEN" {
+		if v := c.RecvQ; v != nil && *v > 0 {
+			sev := 1
+			if *v > 100 {
+				sev = 2
+			}
+			signals = append(signals, model.Signal{Type: model.SignalRecvBufferPressure, Severity: sev, Value: *v})
+		}
+		return signals
+	}
+
 	if v := c.RetransNow; v != nil && *v > 0 {
 		sev := 1
 		if *v > 3 {

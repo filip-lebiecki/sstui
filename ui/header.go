@@ -1,0 +1,255 @@
+package ui
+
+import (
+	"fmt"
+	"strings"
+	"time"
+
+	"ss-stats-tui/model"
+	"ss-stats-tui/poller"
+
+	"github.com/charmbracelet/lipgloss"
+)
+
+var (
+	styleHeader = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#fff")).
+		Background(lipgloss.Color("#5a56e7")).
+		Padding(0, 1).
+		Bold(true)
+
+	styleStat = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#ccc")).
+		Background(lipgloss.Color("#333")).
+		Padding(0, 1).
+		MarginRight(1)
+
+	styleStatLabel = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#888")).
+		Inherit(styleStat)
+
+	styleStatValue = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#fff")).
+		Bold(true).
+		Inherit(styleStat)
+
+	styleDot = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#00ff00")).
+		SetString(" ●")
+
+	styleDotError = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#ff0000")).
+		SetString(" ●")
+
+	styleTabSelected = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#fff")).
+		Background(lipgloss.Color("#5a56e7")).
+		Padding(0, 2).
+		Bold(true)
+
+	styleTab = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#888")).
+		Padding(0, 2)
+
+	signalColors = map[model.SignalType]lipgloss.Color{
+		model.SignalRetransInFlight:    lipgloss.Color("#ff6b6b"),
+		model.SignalAppLimited:         lipgloss.Color("#ffa94d"),
+		model.SignalZeroWindow:         lipgloss.Color("#ff6b6b"),
+		model.SignalCongestionLoss:     lipgloss.Color("#ff6b6b"),
+		model.SignalPMTUMismatch:       lipgloss.Color("#ffa94d"),
+		model.SignalRTTSpike:           lipgloss.Color("#ffa94d"),
+		model.SignalSendBufferPressure: lipgloss.Color("#ffd43b"),
+		model.SignalRecvBufferPressure: lipgloss.Color("#ffd43b"),
+		model.SignalHighRetransRate:    lipgloss.Color("#ff6b6b"),
+		model.SignalCongestionReduce:   lipgloss.Color("#ffa94d"),
+		model.SignalSlowStart:          lipgloss.Color("#74c0fc"),
+		model.SignalBufferBloat:        lipgloss.Color("#ffd43b"),
+		model.SignalDeliveryDrop:       lipgloss.Color("#ffa94d"),
+		model.SignalUnackedBuildup:     lipgloss.Color("#ffd43b"),
+		model.SignalBusyTimeout:        lipgloss.Color("#ffa94d"),
+	}
+)
+
+// RenderHeader renders the top status bar with stat pills.
+func RenderHeader(buf *poller.Buffer, width int, hasError bool) string {
+	snap := buf.GetLatest()
+	if snap == nil {
+		return styleHeader.Render(fmt.Sprintf(" ss-stats | waiting for data... | %d cols", width))
+	}
+
+	total := len(snap.Conns)
+	estab, listen := 0, 0
+	var totalRTT, totalBytesSent, totalBytesRecv float64
+	var rttCount int
+
+	for _, c := range snap.Conns {
+		switch c.State {
+		case "ESTAB":
+			estab++
+		case "LISTEN":
+			listen++
+		}
+		if c.RTT != nil {
+			totalRTT += *c.RTT
+			rttCount++
+		}
+		if c.DeltaBytesSent != nil {
+			totalBytesSent += float64(*c.DeltaBytesSent)
+		}
+		if c.DeltaBytesReceived != nil {
+			totalBytesRecv += float64(*c.DeltaBytesReceived)
+		}
+	}
+
+	avgRTT := "-"
+	if rttCount > 0 {
+		avgRTT = fmt.Sprintf("%.1fms", totalRTT/float64(rttCount))
+	}
+
+	txRate := fmtBytesPerSec(totalBytesSent)
+	rxRate := fmtBytesPerSec(totalBytesRecv)
+
+	dot := styleDot
+	if hasError {
+		dot = styleDotError
+	}
+
+	ts := buf.LastUpdate().Format("15:04:05")
+
+	pills := []string{
+		styleStat.Render(fmt.Sprintf("TOTAL %d", total)),
+		styleStat.Render(fmt.Sprintf("ESTAB %d", estab)),
+		styleStat.Render(fmt.Sprintf("LISTEN %d", listen)),
+		styleStat.Render(fmt.Sprintf("RTT %s", avgRTT)),
+		styleStat.Render(fmt.Sprintf("TX %s", txRate)),
+		styleStat.Render(fmt.Sprintf("RX %s", rxRate)),
+		styleStat.Render(ts),
+	}
+
+	pillsStr := strings.Join(pills, "")
+	prefix := dot.String() + " ss-stats"
+
+	content := prefix + " " + pillsStr
+	if len(content) < width {
+		content += strings.Repeat(" ", width-len(content))
+	}
+
+	return lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#fff")).
+		Background(lipgloss.Color("#5a56e7")).
+		Padding(0, 0).
+		Render(content)
+}
+
+func fmtBytesPerSec(b float64) string {
+	switch {
+	case b >= 1_073_741_824:
+		return fmt.Sprintf("%.1fGB/s", b/1073741824)
+	case b >= 1_048_576:
+		return fmt.Sprintf("%.1fMB/s", b/1048576)
+	case b >= 1024:
+		return fmt.Sprintf("%.1fKB/s", b/1024)
+	default:
+		return fmt.Sprintf("%.0fB/s", b)
+	}
+}
+
+// RenderTabs renders the tab bar.
+func RenderTabs(current int, width int) string {
+	tabs := []string{"Live", "Detail", "Overview", "Top"}
+	var parts []string
+
+	for i, t := range tabs {
+		if i == current {
+			parts = append(parts, styleTabSelected.Render(t))
+		} else {
+			parts = append(parts, styleTab.Render(t))
+		}
+	}
+
+	content := strings.Join(parts, "")
+	if len(content) < width {
+		content += strings.Repeat(" ", width-len(content))
+	}
+	return content
+}
+
+// RenderSignals renders signal badges for a connection.
+func RenderSignals(signals []model.Signal) string {
+	if len(signals) == 0 {
+		return ""
+	}
+	var parts []string
+	for _, s := range signals {
+		color := signalColors[s.Type]
+		if color == "" {
+			color = lipgloss.Color("#888")
+		}
+		bgColor := color
+		style := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#000")).
+			Background(bgColor).
+			Padding(0, 1)
+		parts = append(parts, style.Render(s.Type.Label()))
+	}
+	return strings.Join(parts, " ")
+}
+
+// RenderSignalBar renders a compact signal indicator column.
+func RenderSignalBar(signals []model.Signal) string {
+	if len(signals) == 0 {
+		return "  "
+	}
+	var critical, warn bool
+	for _, s := range signals {
+		if s.Severity == 2 {
+			critical = true
+		} else if s.Severity == 1 {
+			warn = true
+		}
+	}
+	if critical {
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("#ff6b6b")).Render("!!")
+	}
+	if warn {
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("#ffd43b")).Render("! ")
+	}
+	return lipgloss.NewStyle().Foreground(lipgloss.Color("#74c0fc")).Render("* ")
+}
+
+// StateColor returns a color for a TCP state.
+func StateColor(state string) lipgloss.Color {
+	switch state {
+	case "ESTAB":
+		return lipgloss.Color("#51cf66")
+	case "LISTEN":
+		return lipgloss.Color("#74c0fc")
+	case "TIME-WAIT":
+		return lipgloss.Color("#868e96")
+	case "CLOSE-WAIT":
+		return lipgloss.Color("#ffa94d")
+	case "FIN-WAIT-1", "FIN-WAIT-2":
+		return lipgloss.Color("#ffd43b")
+	case "LAST-ACK":
+		return lipgloss.Color("#ff6b6b")
+	case "SYN-SENT", "SYN-RECV":
+		return lipgloss.Color("#da77f2")
+	default:
+		return lipgloss.Color("#868e96")
+	}
+}
+
+// RenderTimeAgo renders a human-readable time ago string.
+func RenderTimeAgo(t time.Time) string {
+	d := time.Since(t)
+	switch {
+	case d < time.Second:
+		return "just now"
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	default:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	}
+}

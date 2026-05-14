@@ -3,11 +3,9 @@ package main
 import (
 	"fmt"
 	"os"
-	"os/signal"
 	"strings"
-	"sync"
-	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"ss-stats-tui/model"
 	"ss-stats-tui/parser"
@@ -18,17 +16,26 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// tickMsg is a custom tick message.
+// tickMsg fires the next poll.
 type tickMsg struct{}
 
-// quitMsg signals the app to shut down the poller and exit.
-type quitMsg struct{}
+// pollResultMsg carries the result of an async ss invocation.
+type pollResultMsg struct {
+	conns []*model.Connection
+	err   error
+}
 
-// tickCmd returns a command that sends a tickMsg after the given duration.
 func tickCmd(d time.Duration) tea.Cmd {
 	return tea.Tick(d, func(t time.Time) tea.Msg {
 		return tickMsg{}
 	})
+}
+
+func pollCmd() tea.Cmd {
+	return func() tea.Msg {
+		conns, err := parser.RunSS()
+		return pollResultMsg{conns: conns, err: err}
+	}
 }
 
 // ViewMode represents the active tab.
@@ -43,6 +50,21 @@ const (
 	ViewHelp
 )
 
+// tabOrder is the cycle order for tab/shift-tab.
+var tabOrder = []ViewMode{ViewLive, ViewDetail, ViewOverview, ViewTop}
+
+func nextTab(cur ViewMode, delta int) ViewMode {
+	idx := 0
+	for i, v := range tabOrder {
+		if v == cur {
+			idx = i
+			break
+		}
+	}
+	n := len(tabOrder)
+	return tabOrder[((idx+delta)%n+n)%n]
+}
+
 // AppModel is the main bubbletea model.
 type AppModel struct {
 	width       int
@@ -56,8 +78,6 @@ type AppModel struct {
 	filterMode  bool
 	filterBuf   string
 	selectedKey string
-	done        chan struct{}
-	doneOnce    sync.Once
 	quitting    bool
 }
 
@@ -69,15 +89,34 @@ func NewApp() *AppModel {
 		table:  ui.NewTableModel(sharedFilter, 20),
 		filter: sharedFilter,
 		tab:    ViewLive,
-		done:   make(chan struct{}),
 	}
 }
 
 func (m *AppModel) Init() tea.Cmd {
 	return tea.Batch(
 		tea.WindowSize(),
-		tickCmd(time.Second),
+		pollCmd(),
 	)
+}
+
+// contentHeight returns the height available for tab content.
+func (m *AppModel) contentHeight() int {
+	headerLines := 4
+	if m.filter.IsActive() {
+		headerLines = 5
+	}
+	footerLines := 1
+	if m.tab == ViewLive {
+		footerLines++
+	}
+	if m.showHelp {
+		footerLines += 15
+	}
+	h := m.height - headerLines - footerLines
+	if h < 1 {
+		h = 1
+	}
+	return h
 }
 
 func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -85,7 +124,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.table.SetSize(msg.Width, msg.Height-6)
+		m.table.SetSize(msg.Width, m.contentHeight())
 		return m, nil
 
 	case tea.KeyMsg:
@@ -95,10 +134,8 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		switch msg.String() {
 		case "q", "ctrl+c":
-			return m, func() tea.Msg {
-				m.doneOnce.Do(func() { close(m.done) })
-				return quitMsg{}
-			}
+			m.quitting = true
+			return m, tea.Quit
 		case "?":
 			m.showHelp = !m.showHelp
 			return m, nil
@@ -111,9 +148,9 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "4":
 			m.tab = ViewTop
 		case "tab":
-			m.tab = (m.tab + 1) % 4
+			m.tab = nextTab(m.tab, 1)
 		case "shift+tab":
-			m.tab = (m.tab + 3) % 4
+			m.tab = nextTab(m.tab, -1)
 		case "/":
 			m.filterMode = true
 			m.filterBuf = ""
@@ -157,22 +194,18 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.table.InvalidateCache()
 		}
 
-	case quitMsg:
-		m.quitting = true
-		return m, tea.Quit
-
 	case tickMsg:
-		// Poll for new data
-		conns, err := parser.RunSS()
-		if err != nil {
-			m.lastError = err
+		return m, pollCmd()
+
+	case pollResultMsg:
+		if msg.err != nil {
+			m.lastError = msg.err
 		} else {
 			m.lastError = nil
-			m.buf.AddSnapshot(conns)
-			m.table.SetConnections(conns)
-			m.table.SetSize(m.width, m.height-6)
+			m.buf.AddSnapshot(msg.conns)
+			m.table.SetConnections(msg.conns)
+			m.table.SetSize(m.width, m.contentHeight())
 		}
-
 		return m, tickCmd(poller.PollInterval)
 	}
 
@@ -192,8 +225,9 @@ func (m *AppModel) handleFilterInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.tab = ViewLive
 		return m, nil
 	case "backspace":
-		if len(m.filterBuf) > 0 {
-			m.filterBuf = m.filterBuf[:len(m.filterBuf)-1]
+		if n := len(m.filterBuf); n > 0 {
+			_, size := utf8.DecodeLastRuneInString(m.filterBuf)
+			m.filterBuf = m.filterBuf[:n-size]
 		}
 	case "ctrl+w":
 		words := strings.Fields(m.filterBuf)
@@ -201,8 +235,9 @@ func (m *AppModel) handleFilterInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.filterBuf = strings.Join(words[:len(words)-1], " ")
 		}
 	default:
-		if len(msg.String()) == 1 {
-			m.filterBuf += msg.String()
+		s := msg.String()
+		if utf8.RuneCountInString(s) == 1 {
+			m.filterBuf += s
 		}
 	}
 	return m, nil
@@ -214,14 +249,14 @@ func (m *AppModel) applyFilter() {
 
 	for _, p := range parts {
 		switch {
-		case strings.HasPrefix(p, "src="):
-			m.filter.SrcAddr = strings.TrimPrefix(p, "src=")
-		case strings.HasPrefix(p, "dst="):
-			m.filter.DstAddr = strings.TrimPrefix(p, "dst=")
-		case strings.HasPrefix(p, "sport="):
-			m.filter.SrcPort = strings.TrimPrefix(p, "sport=")
-		case strings.HasPrefix(p, "dport="):
-			m.filter.DstPort = strings.TrimPrefix(p, "dport=")
+		case strings.HasPrefix(p, "local="):
+			m.filter.LocalAddr = strings.TrimPrefix(p, "local=")
+		case strings.HasPrefix(p, "peer="):
+			m.filter.PeerAddr = strings.TrimPrefix(p, "peer=")
+		case strings.HasPrefix(p, "lport="):
+			m.filter.LocalPort = strings.TrimPrefix(p, "lport=")
+		case strings.HasPrefix(p, "pport="):
+			m.filter.PeerPort = strings.TrimPrefix(p, "pport=")
 		case strings.HasPrefix(p, "state="):
 			m.filter.State = strings.ToUpper(strings.TrimPrefix(p, "state="))
 		default:
@@ -235,7 +270,7 @@ func (m *AppModel) applyFilter() {
 				}
 			}
 			if !isState {
-				m.filter.SrcAddr = p
+				m.filter.LocalAddr = p
 			}
 		}
 	}
@@ -264,22 +299,7 @@ func (m *AppModel) View() string {
 
 	b.WriteString("\n")
 
-	// Calculate available height for content
-	headerLines := 4 // header + tabs + filter(maybe) + blank
-	if m.filter.IsActive() {
-		headerLines = 5
-	}
-	footerLines := 1 // main footer
-	if m.tab == ViewLive {
-		footerLines++ // table footer
-	}
-	if m.showHelp {
-		footerLines += 15 // help panel
-	}
-	contentHeight := m.height - headerLines - footerLines
-	if contentHeight < 1 {
-		contentHeight = 1
-	}
+	ch := m.contentHeight()
 
 	// Content (clipped to available height)
 	var content string
@@ -288,8 +308,6 @@ func (m *AppModel) View() string {
 
 	switch m.tab {
 	case ViewLive:
-		m.table.SetConnections(m.getLatestConns())
-		m.table.SetSize(m.width, contentHeight)
 		content = m.table.RenderBody()
 
 		if sigs := m.table.GetSignalsForSelected(); len(sigs) > 0 {
@@ -300,25 +318,25 @@ func (m *AppModel) View() string {
 
 	case ViewDetail:
 		conn := m.getConnectionByKey(m.selectedKey)
-		content = ui.RenderDetail(conn, m.buf, m.width, contentHeight)
+		content = ui.RenderDetail(conn, m.buf, m.width, ch)
 
 	case ViewOverview:
-		content = ui.RenderOverview(m.buf, m.width, contentHeight)
+		content = ui.RenderOverview(m.buf, m.width, ch)
 
 	case ViewTop:
-		content = ui.RenderTop(m.buf, m.width, contentHeight)
+		content = ui.RenderTop(m.buf, m.width, ch)
 
 	case ViewFilter:
 		content = "\n  Filter connections:\n\n"
 		content += "  " + m.filterBuf + cursor() + "\n\n"
 		content += lipgloss.NewStyle().Foreground(lipgloss.Color("#888")).Render(
-			"  Syntax: src=<addr> dst=<addr> sport=<port> dport=<port> state=<state>\n" +
-				"  Examples: state=ESTAB src=192.168 dport=443\n" +
+			"  Syntax: local=<addr> peer=<addr> lport=<port> pport=<port> state=<state>\n" +
+				"  Examples: state=ESTAB local=192.168 pport=443\n" +
 				"  Enter to apply, Escape to cancel")
 	}
 
 	// Clip content to available height
-	content = clipToHeight(content, contentHeight)
+	content = clipToHeight(content, ch)
 	b.WriteString(content)
 
 	// Table footer (fixed, outside clipped area)
@@ -360,27 +378,22 @@ func (m *AppModel) getLatestConns() []*model.Connection {
 }
 
 func (m *AppModel) getConnectionByKey(key string) *model.Connection {
-	for _, c := range m.getLatestConns() {
-		if c.ConnKey() == key {
-			return c
-		}
-	}
-	return nil
+	return m.buf.GetLatest().Lookup(key)
 }
 
 func (m *AppModel) renderFilterText() string {
 	var parts []string
-	if m.filter.SrcAddr != "" {
-		parts = append(parts, "src="+m.filter.SrcAddr)
+	if m.filter.LocalAddr != "" {
+		parts = append(parts, "local="+m.filter.LocalAddr)
 	}
-	if m.filter.DstAddr != "" {
-		parts = append(parts, "dst="+m.filter.DstAddr)
+	if m.filter.PeerAddr != "" {
+		parts = append(parts, "peer="+m.filter.PeerAddr)
 	}
-	if m.filter.SrcPort != "" {
-		parts = append(parts, "sport="+m.filter.SrcPort)
+	if m.filter.LocalPort != "" {
+		parts = append(parts, "lport="+m.filter.LocalPort)
 	}
-	if m.filter.DstPort != "" {
-		parts = append(parts, "dport="+m.filter.DstPort)
+	if m.filter.PeerPort != "" {
+		parts = append(parts, "pport="+m.filter.PeerPort)
 	}
 	if m.filter.State != "" {
 		parts = append(parts, "state="+m.filter.State)
@@ -416,17 +429,8 @@ func cursor() string {
 }
 
 func main() {
-	sigch := make(chan os.Signal, 1)
-	signal.Notify(sigch, syscall.SIGINT, syscall.SIGTERM)
-
 	app := NewApp()
-	p := tea.NewProgram(app, tea.WithAltScreen(), tea.WithoutCatchPanics())
-
-	go func() {
-		<-sigch
-		app.doneOnce.Do(func() { close(app.done) })
-		p.Quit()
-	}()
+	p := tea.NewProgram(app, tea.WithAltScreen())
 
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)

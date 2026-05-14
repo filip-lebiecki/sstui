@@ -129,6 +129,7 @@ func RenderHeader(buf *poller.Buffer, width int) string {
 }
 
 func fmtBytesPerSec(b float64) string {
+	b /= poller.PollInterval.Seconds()
 	switch {
 	case b >= 1_073_741_824:
 		return fmt.Sprintf("%.1fGB/s", b/1073741824)

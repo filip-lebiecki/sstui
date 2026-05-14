@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
-	"ss-stats-tui/classifier"
 	"ss-stats-tui/model"
 
 	"github.com/charmbracelet/lipgloss"
@@ -36,7 +36,7 @@ var defaultColumns = []TableColumn{
 		Title: "",
 		Width: 2,
 		Render: func(c *model.Connection) string {
-			return RenderSignalBar(classifier.Classify(c))
+			return RenderSignalBar(c.Signals)
 		},
 		SortFunc: nil,
 	},
@@ -55,9 +55,7 @@ var defaultColumns = []TableColumn{
 		Width:     16,
 		BaseWidth: 16,
 		Expand:    true,
-		Render: func(c *model.Connection) string {
-			return c.LocalAddr + ":" + c.LocalPort
-		},
+		Render:    func(c *model.Connection) string { return c.LocalAddr + ":" + c.LocalPort },
 		SortFunc: func(a, b *model.Connection) bool {
 			return a.LocalAddr+a.LocalPort < b.LocalAddr+b.LocalPort
 		},
@@ -68,9 +66,7 @@ var defaultColumns = []TableColumn{
 		Width:     16,
 		BaseWidth: 16,
 		Expand:    true,
-		Render: func(c *model.Connection) string {
-			return c.PeerAddr + ":" + c.PeerPort
-		},
+		Render:    func(c *model.Connection) string { return c.PeerAddr + ":" + c.PeerPort },
 		SortFunc: func(a, b *model.Connection) bool {
 			return a.PeerAddr+a.PeerPort < b.PeerAddr+b.PeerPort
 		},
@@ -221,7 +217,7 @@ var defaultColumns = []TableColumn{
 	},
 	{
 		Key:   "retrans",
-		Title: "Retrans",
+		Title: "Retr",
 		Width: 6,
 		Render: func(c *model.Connection) string {
 			return fmtNumRaw(c.Retrans)
@@ -254,6 +250,13 @@ var sortCycle = []struct {
 	{"peer", SortDesc},
 	{"process", SortAsc},
 	{"process", SortDesc},
+	{"rtt", SortDesc},
+	{"cwnd", SortDesc},
+	{"sq", SortDesc},
+	{"rq", SortDesc},
+	{"tx", SortDesc},
+	{"rx", SortDesc},
+	{"retrans", SortDesc},
 }
 
 // TableModel holds the state for the connection table.
@@ -490,7 +493,7 @@ func (t *TableModel) RenderBody() string {
 	// Header
 	var headerParts []string
 	for _, col := range t.columns {
-		style := lipgloss.NewStyle().Width(col.Width).Bold(true)
+		style := lipgloss.NewStyle().Width(col.Width).MaxWidth(col.Width).Bold(true)
 		if col.Key == t.sortKey {
 			dir := "↑"
 			if t.sortDir == SortDesc {
@@ -514,7 +517,17 @@ func (t *TableModel) RenderBody() string {
 	for i, c := range visible {
 		var rowParts []string
 		for _, col := range t.columns {
-			val := col.Render(c)
+			var val string
+			switch col.Key {
+			case "local":
+				val = shortenAddrPort(c.LocalAddr, c.LocalPort, col.Width)
+			case "peer":
+				val = shortenAddrPort(c.PeerAddr, c.PeerPort, col.Width)
+			case "process":
+				val = truncate(col.Render(c), col.Width)
+			default:
+				val = col.Render(c)
+			}
 			style := lipgloss.NewStyle().Width(col.Width).MaxWidth(col.Width)
 			if i == t.cursor {
 				style = style.Background(lipgloss.Color("#444")).Foreground(lipgloss.Color("#fff"))
@@ -553,12 +566,53 @@ func (t *TableModel) GetSignalsForSelected() []model.Signal {
 	if c == nil {
 		return nil
 	}
-	return classifier.Classify(c)
+	return c.Signals
+}
+
+// shortenAddrPort renders "addr:port" within max display columns. The port is
+// preserved (it's usually the more useful identifier); the address is
+// ellipsized from the right with "…" if needed. IPv6 addresses are bracketed
+// so the trailing ":port" is unambiguous.
+func shortenAddrPort(addr, port string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	isV6 := strings.Count(addr, ":") >= 2
+	full := addr + ":" + port
+	if isV6 {
+		full = "[" + addr + "]:" + port
+	}
+	if utf8.RuneCountInString(full) <= max {
+		return full
+	}
+	// Reserve room for ":port" (or "]:port" for v6) and "…".
+	suffix := ":" + port
+	if isV6 {
+		suffix = "]:" + port
+	}
+	budget := max - utf8.RuneCountInString(suffix) - 1 // 1 for the ellipsis
+	if budget < 1 {
+		// Not enough room even for "…:port" — fall back to a hard rune truncate.
+		return truncate(full, max)
+	}
+	prefix := addr
+	if isV6 {
+		prefix = "[" + addr
+	}
+	r := []rune(prefix)
+	if len(r) > budget {
+		r = r[:budget]
+	}
+	return string(r) + "…" + suffix
 }
 
 func truncate(s string, max int) string {
-	if len(s) <= max {
+	if max <= 0 {
+		return ""
+	}
+	r := []rune(s)
+	if len(r) <= max {
 		return s
 	}
-	return s[:max-1] + "…"
+	return string(r[:max-1]) + "…"
 }

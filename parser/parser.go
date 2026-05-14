@@ -1,6 +1,8 @@
 package parser
 
 import (
+	"bufio"
+	"errors"
 	"fmt"
 	"os/exec"
 	"regexp"
@@ -290,20 +292,33 @@ func ParseLine(line string) (*model.Connection, error) {
 // RunSS executes ss -atnpeimOH and returns parsed connections.
 func RunSS() ([]*model.Connection, error) {
 	cmd := exec.Command("ss", "-atnpeimOH")
-	out, err := cmd.Output()
+	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		return nil, fmt.Errorf("ss: %w", err)
+	}
+	if err := cmd.Start(); err != nil {
+		if errors.Is(err, exec.ErrNotFound) {
+			return nil, fmt.Errorf("ss not found in PATH; install iproute2")
+		}
 		return nil, fmt.Errorf("ss: %w", err)
 	}
 
 	var conns []*model.Connection
-	for _, line := range strings.Split(string(out), "\n") {
-		c, err := ParseLine(line)
-		if err != nil {
+	scanner := bufio.NewScanner(stdout)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		c, err := ParseLine(scanner.Text())
+		if err != nil || c == nil {
 			continue
 		}
-		if c != nil {
-			conns = append(conns, c)
-		}
+		conns = append(conns, c)
+	}
+	scanErr := scanner.Err()
+	if err := cmd.Wait(); err != nil {
+		return nil, fmt.Errorf("ss: %w", err)
+	}
+	if scanErr != nil {
+		return nil, fmt.Errorf("ss scan: %w", scanErr)
 	}
 	return conns, nil
 }

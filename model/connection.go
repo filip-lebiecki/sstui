@@ -100,6 +100,10 @@ type Connection struct {
 	DeltaSegsOut       *int
 	DeltaSegsIn        *int
 	DeltaBytesRetrans  *int
+
+	// Signals are populated by poller.AddSnapshot after deltas, so the
+	// classifier runs once per poll rather than once per render frame.
+	Signals []Signal
 }
 
 // ConnKey returns a unique identifier for this connection.

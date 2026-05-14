@@ -5,7 +5,6 @@ import (
 	"math"
 	"strings"
 
-	"ss-stats-tui/classifier"
 	"ss-stats-tui/model"
 	"ss-stats-tui/poller"
 
@@ -37,7 +36,7 @@ func RenderDetail(conn *model.Connection, buf *poller.Buffer, width, height int)
 		return "\n  No connection selected. Use Enter on a connection to view details."
 	}
 
-	signals := classifier.Classify(conn)
+	signals := conn.Signals
 	var b strings.Builder
 
 	b.WriteString(styleDetailTitle.Render(" Connection Details") + "\n\n")

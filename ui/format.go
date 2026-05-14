@@ -3,6 +3,8 @@ package ui
 import (
 	"fmt"
 	"strconv"
+
+	"ss-stats-tui/poller"
 )
 
 // Format helpers for display values.
@@ -49,16 +51,15 @@ func fmtBPS(v *int) string {
 		return "-"
 	}
 	bps := float64(*v)
-	bpsBytes := bps / 8
 	switch {
-	case bpsBytes >= 1_000_000_000:
-		return fmt.Sprintf("%.1fGbps", bpsBytes/1e9)
-	case bpsBytes >= 1_000_000:
-		return fmt.Sprintf("%.1fMbps", bpsBytes/1e6)
-	case bpsBytes >= 1_000:
-		return fmt.Sprintf("%.1fKbps", bpsBytes/1e3)
+	case bps >= 1_000_000_000:
+		return fmt.Sprintf("%.1fGbps", bps/1e9)
+	case bps >= 1_000_000:
+		return fmt.Sprintf("%.1fMbps", bps/1e6)
+	case bps >= 1_000:
+		return fmt.Sprintf("%.1fKbps", bps/1e3)
 	default:
-		return fmt.Sprintf("%.0fbps", bpsBytes)
+		return fmt.Sprintf("%.0fbps", bps)
 	}
 }
 
@@ -83,7 +84,7 @@ func fmtRate(v *int) string {
 	if v == nil {
 		return "-"
 	}
-	b := float64(*v)
+	b := float64(*v) / poller.PollInterval.Seconds()
 	switch {
 	case b >= 1_000_000:
 		return fmt.Sprintf("%.1fMB/s", b/1e6)

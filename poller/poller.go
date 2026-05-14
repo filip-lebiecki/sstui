@@ -4,11 +4,12 @@ import (
 	"sync"
 	"time"
 
+	"ss-stats-tui/classifier"
 	"ss-stats-tui/model"
 )
 
 const (
-	BufferSize   = 1500 // ~5 minutes at 2s intervals
+	BufferSize   = 1500 // 50 minutes at 2s intervals
 	PollInterval = 2 * time.Second
 )
 
@@ -16,6 +17,15 @@ const (
 type Snapshot struct {
 	Timestamp time.Time
 	Conns     []*model.Connection
+	byKey     map[string]*model.Connection
+}
+
+// Lookup returns the connection in this snapshot with the given key, or nil.
+func (s *Snapshot) Lookup(key string) *model.Connection {
+	if s == nil {
+		return nil
+	}
+	return s.byKey[key]
 }
 
 // Buffer holds a ring buffer of snapshots.
@@ -43,14 +53,15 @@ func (b *Buffer) AddSnapshot(conns []*model.Connection) {
 	// Build a set of current keys for cleanup
 	currentKeys := make(map[string]bool, len(conns))
 
-	// Compute deltas from previous snapshot
+	// Compute deltas from previous snapshot, then classify once per poll.
 	for _, c := range conns {
 		key := c.ConnKey()
 		currentKeys[key] = true
 		prev := b.prevMap[key]
-		if prev != nil {
+		if prev != nil && sameConnection(c, prev) {
 			b.computeDeltas(c, prev)
 		}
+		c.Signals = classifier.Classify(c)
 		b.prevMap[key] = c
 	}
 
@@ -61,9 +72,14 @@ func (b *Buffer) AddSnapshot(conns []*model.Connection) {
 		}
 	}
 
+	byKey := make(map[string]*model.Connection, len(conns))
+	for _, c := range conns {
+		byKey[c.ConnKey()] = c
+	}
 	snap := &Snapshot{
 		Timestamp: time.Now(),
 		Conns:     conns,
+		byKey:     byKey,
 	}
 
 	b.snapshots[b.head] = snap
@@ -72,6 +88,17 @@ func (b *Buffer) AddSnapshot(conns []*model.Connection) {
 		b.count++
 	}
 	b.lastUpdate = time.Now()
+}
+
+// sameConnection returns false when the previous (key, inode) appears to belong
+// to a different socket — e.g. a TIME-WAIT was reaped and the 4-tuple was
+// reused. Falls back to true when inodes aren't reported (unprivileged ss),
+// since in that case the negative-delta check is the only safety net.
+func sameConnection(cur, prev *model.Connection) bool {
+	if cur.Inode != nil && prev.Inode != nil {
+		return *cur.Inode == *prev.Inode
+	}
+	return true
 }
 
 func (b *Buffer) computeDeltas(cur, prev *model.Connection) {

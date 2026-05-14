@@ -8,25 +8,25 @@ import (
 
 // Filter holds the current filter state.
 type Filter struct {
-	SrcAddr string
-	DstAddr string
-	SrcPort string
-	DstPort string
-	State   string
+	LocalAddr string
+	PeerAddr  string
+	LocalPort string
+	PeerPort  string
+	State     string
 }
 
 // Matches returns true if a connection matches the filter criteria.
 func (f *Filter) Matches(c *model.Connection) bool {
-	if f.SrcAddr != "" && !strings.Contains(c.LocalAddr, f.SrcAddr) {
+	if f.LocalAddr != "" && !strings.Contains(c.LocalAddr, f.LocalAddr) {
 		return false
 	}
-	if f.DstAddr != "" && !strings.Contains(c.PeerAddr, f.DstAddr) {
+	if f.PeerAddr != "" && !strings.Contains(c.PeerAddr, f.PeerAddr) {
 		return false
 	}
-	if f.SrcPort != "" && c.LocalPort != f.SrcPort {
+	if f.LocalPort != "" && c.LocalPort != f.LocalPort {
 		return false
 	}
-	if f.DstPort != "" && c.PeerPort != f.DstPort {
+	if f.PeerPort != "" && c.PeerPort != f.PeerPort {
 		return false
 	}
 	if f.State != "" && c.State != f.State {
@@ -37,14 +37,14 @@ func (f *Filter) Matches(c *model.Connection) bool {
 
 // IsActive returns true if any filter is set.
 func (f *Filter) IsActive() bool {
-	return f.SrcAddr != "" || f.DstAddr != "" || f.SrcPort != "" || f.DstPort != "" || f.State != ""
+	return f.LocalAddr != "" || f.PeerAddr != "" || f.LocalPort != "" || f.PeerPort != "" || f.State != ""
 }
 
 // Reset clears all filters.
 func (f *Filter) Reset() {
-	f.SrcAddr = ""
-	f.DstAddr = ""
-	f.SrcPort = ""
-	f.DstPort = ""
+	f.LocalAddr = ""
+	f.PeerAddr = ""
+	f.LocalPort = ""
+	f.PeerPort = ""
 	f.State = ""
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"time"
 
 	"ss-stats-tui/model"
 	"ss-stats-tui/poller"
@@ -30,7 +31,9 @@ var (
 			Foreground(lipgloss.Color("#51cf66"))
 )
 
-// RenderDetail renders the detail view for a selected connection.
+// RenderDetail renders the network-level detail view: identity, signals,
+// performance, congestion, throughput, retransmits. Socket-side and historical
+// data live in RenderSocket on a separate tab.
 func RenderDetail(conn *model.Connection, buf *poller.Buffer, width, height int) string {
 	if conn == nil {
 		return "\n  No connection selected. Use Enter on a connection to view details."
@@ -39,7 +42,7 @@ func RenderDetail(conn *model.Connection, buf *poller.Buffer, width, height int)
 	signals := conn.Signals
 	var b strings.Builder
 
-	b.WriteString(styleDetailTitle.Render(" Connection Details") + "\n\n")
+	b.WriteString(styleDetailTitle.Render(" Connection Detail") + "\n\n")
 
 	var sections []string
 	add := func(title string, body func() string) {
@@ -48,23 +51,30 @@ func RenderDetail(conn *model.Connection, buf *poller.Buffer, width, height int)
 
 	add("Identity", func() string {
 		var sb strings.Builder
-		sb.WriteString(fmtRow("Protocol", strings.ToUpper(conn.Protocol)))
-		sb.WriteString(fmtRow("State", conn.State))
-		sb.WriteString(fmtRow("Local", conn.LocalAddr+":"+conn.LocalPort))
-		sb.WriteString(fmtRow("Peer", conn.PeerAddr+":"+conn.PeerPort))
+		sb.WriteString(fmtRowColor("Protocol", strings.ToUpper(conn.Protocol), ProtoColor(conn.Protocol)))
+		sb.WriteString(fmtRowColor("State", conn.State, StateColor(conn.State)))
+		sb.WriteString(fmtRowColor("Local", conn.LocalAddr+":"+conn.LocalPort, colAddr))
+		sb.WriteString(fmtRowColor("Peer", conn.PeerAddr+":"+conn.PeerPort, colAddr))
 		if conn.Process != nil {
-			sb.WriteString(fmtRow("Process", *conn.Process))
+			sb.WriteString(fmtRowColor("Process", *conn.Process, colProc))
 		}
 		if conn.PID != nil {
-			sb.WriteString(fmtRow("PID", fmt.Sprintf("%d", *conn.PID)))
+			sb.WriteString(fmtRowColor("PID", fmt.Sprintf("%d", *conn.PID), colPID))
 		}
 		if conn.UID != nil {
-			sb.WriteString(fmtRow("UID", fmt.Sprintf("%d", *conn.UID)))
+			sb.WriteString(fmtRowColor("UID", fmt.Sprintf("%d", *conn.UID), colPID))
+		}
+		if conn.CongAlgo != nil {
+			algoColor := colPort
+			if *conn.CongAlgo == "bbr" {
+				algoColor = colTX
+			}
+			sb.WriteString(fmtRowColor("Cong Ctrl", *conn.CongAlgo, algoColor))
 		}
 		if ka := keepaliveSeconds(conn); ka >= 0 {
-			sb.WriteString(fmtRow("Keepalive", fmtKeepalive(conn)))
+			sb.WriteString(fmtRowColor("Keepalive", fmtKeepalive(conn), colKA))
 		} else if conn.TimerType != nil && conn.TimerDur != nil {
-			sb.WriteString(fmtRow("Timer", fmt.Sprintf("%s (%s)", *conn.TimerType, *conn.TimerDur)))
+			sb.WriteString(fmtRowColor("Timer", fmt.Sprintf("%s (%s)", *conn.TimerType, *conn.TimerDur), colKA))
 		}
 		return sb.String()
 	})
@@ -77,11 +87,12 @@ func RenderDetail(conn *model.Connection, buf *poller.Buffer, width, height int)
 
 	add("Performance", func() string {
 		var sb strings.Builder
-		sb.WriteString(fmtRow("RTT", fmtRTT(conn.RTT)+"ms"))
-		sb.WriteString(fmtRow("RTT Var", fmtFloat(conn.RTTVar, 1)+"ms"))
-		sb.WriteString(fmtRow("Min RTT", fmtFloat(conn.MinRTT, 1)+"ms"))
-		sb.WriteString(fmtRow("RTO", fmtFloat(conn.RTO, 1)+"ms"))
-		sb.WriteString(fmtRow("ATO", fmtFloat(conn.ATO, 1)+"ms"))
+		sb.WriteString(fmtRowColor("RTT", fmtRTT(conn.RTT)+"ms", rttColor(conn.RTT)))
+		sb.WriteString(fmtRowColor("RTT Var", fmtFloat(conn.RTTVar, 1)+"ms", colDim))
+		sb.WriteString(fmtRowColor("Min RTT", fmtFloat(conn.MinRTT, 1)+"ms", colDim))
+		sb.WriteString(fmtRowColor("Rcv RTT", fmtFloat(conn.RcvRTT, 1)+"ms", colDim))
+		sb.WriteString(fmtRowColor("RTO", fmtFloat(conn.RTO, 1)+"ms", rttColor(conn.RTO)))
+		sb.WriteString(fmtRowColor("ATO", fmtFloat(conn.ATO, 1)+"ms", colDim))
 		if conn.RTT != nil && conn.MinRTT != nil && *conn.MinRTT > 0 {
 			ratio := *conn.RTT / *conn.MinRTT
 			sb.WriteString(fmtRowBar("RTT/MinRTT",
@@ -93,15 +104,16 @@ func RenderDetail(conn *model.Connection, buf *poller.Buffer, width, height int)
 
 	add("Congestion", func() string {
 		var sb strings.Builder
-		sb.WriteString(fmtRow("CWnd", fmtPackets(conn.CWnd)))
-		sb.WriteString(fmtRow("ssthresh", fmtSSThresh(conn.SSThresh)))
-		sb.WriteString(fmtRow("MSS", fmtNumRaw(conn.MSS)+" B"))
-		sb.WriteString(fmtRow("PMTU", fmtNumRaw(conn.PMTU)+" B"))
-		sb.WriteString(fmtRow("AdvMSS", fmtNumRaw(conn.AdvMSS)+" B"))
-		sb.WriteString(fmtRow("RcvMSS", fmtNumRaw(conn.RcvMSS)+" B"))
-		sb.WriteString(fmtRow("SndWnd", fmtBytes(conn.SndWnd)))
-		sb.WriteString(fmtRow("RcvSpace", fmtBytes(conn.RcvSpace)))
-		sb.WriteString(fmtRow("RcvSSThresh", fmtBytes(conn.RcvSSThresh)))
+		sb.WriteString(fmtRowColor("CWnd", fmtPackets(conn.CWnd), colPort))
+		sb.WriteString(fmtRowColor("ssthresh", fmtSSThresh(conn.SSThresh), colDim))
+		sb.WriteString(fmtRowColor("MSS", fmtNumRaw(conn.MSS)+" B", colDim))
+		sb.WriteString(fmtRowColor("PMTU", fmtNumRaw(conn.PMTU)+" B", colDim))
+		sb.WriteString(fmtRowColor("AdvMSS", fmtNumRaw(conn.AdvMSS)+" B", colDim))
+		sb.WriteString(fmtRowColor("RcvMSS", fmtNumRaw(conn.RcvMSS)+" B", colDim))
+		sb.WriteString(fmtRowColor("SndWnd", fmtBytes(conn.SndWnd), wndColor(conn.SndWnd)))
+		sb.WriteString(fmtRowColor("RcvWnd", fmtBytes(conn.RcvWnd), wndColor(conn.RcvWnd)))
+		sb.WriteString(fmtRowColor("RcvSpace", fmtBytes(conn.RcvSpace), colDim))
+		sb.WriteString(fmtRowColor("RcvSSThresh", fmtBytes(conn.RcvSSThresh), colDim))
 		{
 			unacked := 0
 			if conn.Unacked != nil {
@@ -129,41 +141,51 @@ func RenderDetail(conn *model.Connection, buf *poller.Buffer, width, height int)
 			}
 		}
 		if conn.WscaleSnd != nil && conn.WscaleRcv != nil {
-			sb.WriteString(fmtRow("WScale", fmt.Sprintf("snd=%d rcv=%d", *conn.WscaleSnd, *conn.WscaleRcv)))
+			sb.WriteString(fmtRowColor("WScale",
+				fmt.Sprintf("snd=%d rcv=%d", *conn.WscaleSnd, *conn.WscaleRcv), colDim))
 		}
 		return sb.String()
 	})
 
 	add("Throughput", func() string {
 		var sb strings.Builder
-		sb.WriteString(fmtRow("Bytes Sent", fmtBytes(conn.BytesSent)))
-		sb.WriteString(fmtRow("Bytes Recv", fmtBytes(conn.BytesReceived)))
-		sb.WriteString(fmtRow("Bytes Acked", fmtBytes(conn.BytesAcked)))
-		sb.WriteString(fmtRow("TX Rate", fmtRate(conn.DeltaBytesSent)))
-		sb.WriteString(fmtRow("RX Rate", fmtRate(conn.DeltaBytesReceived)))
-		sb.WriteString(fmtRow("Pacing Rate", fmtBPS(conn.PacingRate)))
-		sb.WriteString(fmtRow("Delivery Rate", fmtBPS(conn.DeliveryRate)))
-		sb.WriteString(fmtRow("Send (inst)", fmtBPS(conn.SendBPS)))
-		sb.WriteString(fmtRow("Delivered", fmtPackets(conn.Delivered)))
+		sb.WriteString(fmtRowColor("Bytes Sent", fmtBytes(conn.BytesSent), dimIfZero(conn.BytesSent, colTX)))
+		sb.WriteString(fmtRowColor("Bytes Recv", fmtBytes(conn.BytesReceived), dimIfZero(conn.BytesReceived, colRX)))
+		sb.WriteString(fmtRowColor("Bytes Acked", fmtBytes(conn.BytesAcked), dimIfZero(conn.BytesAcked, colTX)))
+		sb.WriteString(fmtRowColor("TX Rate", fmtRate(conn.DeltaBytesSent), dimIfZeroDelta(conn.DeltaBytesSent, colTX)))
+		sb.WriteString(fmtRowColor("RX Rate", fmtRate(conn.DeltaBytesReceived), dimIfZeroDelta(conn.DeltaBytesReceived, colRX)))
+		sb.WriteString(fmtRowColor("Pacing Rate", fmtBPS(conn.PacingRate), dimIfZero(conn.PacingRate, colPort)))
+		sb.WriteString(fmtRowColor("Delivery Rate", fmtBPS(conn.DeliveryRate), dimIfZero(conn.DeliveryRate, colPort)))
+		sb.WriteString(fmtRowColor("Send (inst)", fmtBPS(conn.SendBPS), dimIfZero(conn.SendBPS, colTX)))
+		sb.WriteString(fmtRowColor("Delivered", fmtPackets(conn.Delivered), colDim))
 		if conn.LastSnd != nil {
-			sb.WriteString(fmtRow("Last Send", fmtMs(conn.LastSnd)))
+			sb.WriteString(fmtRowColor("Last Send", fmtMs(conn.LastSnd), colDim))
 		}
 		if conn.LastRcv != nil {
-			sb.WriteString(fmtRow("Last Recv", fmtMs(conn.LastRcv)))
+			sb.WriteString(fmtRowColor("Last Recv", fmtMs(conn.LastRcv), colDim))
 		}
 		if conn.LastAck != nil {
-			sb.WriteString(fmtRow("Last Ack", fmtMs(conn.LastAck)))
+			sb.WriteString(fmtRowColor("Last Ack", fmtMs(conn.LastAck), colDim))
+		}
+		if conn.DeltaBusyMS != nil {
+			pollMs := float64(poller.PollInterval / time.Millisecond)
+			ratio := 0.0
+			if pollMs > 0 {
+				ratio = *conn.DeltaBusyMS / pollMs
+			}
+			sb.WriteString(fmtRowBar("Busy",
+				fmt.Sprintf("%.0fms (%.0f%%)", *conn.DeltaBusyMS, ratio*100), ratio))
 		}
 		return sb.String()
 	})
 
 	add("Retransmit", func() string {
 		var sb strings.Builder
-		sb.WriteString(fmtRow("Retrans (total)", fmtNumRaw(conn.Retrans)))
-		sb.WriteString(fmtRow("Retrans (flight)", fmtNumRaw(conn.RetransNow)))
-		sb.WriteString(fmtRow("Bytes Retrans", fmtBytes(conn.BytesRetrans)))
-		sb.WriteString(fmtRow("Lost", fmtNumRaw(conn.Lost)))
-		sb.WriteString(fmtRow("DSACK Dups", fmtNumRaw(conn.DSACKDups)))
+		sb.WriteString(fmtRowColor("Retrans (total)", fmtNumRaw(conn.Retrans), dimIfZero(conn.Retrans, colRetrans)))
+		sb.WriteString(fmtRowColor("Retrans (flight)", fmtNumRaw(conn.RetransNow), dimIfZero(conn.RetransNow, colRetrans)))
+		sb.WriteString(fmtRowColor("Bytes Retrans", fmtBytes(conn.BytesRetrans), dimIfZero(conn.BytesRetrans, colRetrans)))
+		sb.WriteString(fmtRowColor("Lost", fmtNumRaw(conn.Lost), dimIfZero(conn.Lost, colRetrans)))
+		sb.WriteString(fmtRowColor("DSACK Dups", fmtNumRaw(conn.DSACKDups), dimIfZero(conn.DSACKDups, colQ)))
 		{
 			rate := 0.0
 			if conn.DeltaBytesSent != nil && *conn.DeltaBytesSent > 0 && conn.DeltaBytesRetrans != nil {
@@ -176,16 +198,42 @@ func RenderDetail(conn *model.Connection, buf *poller.Buffer, width, height int)
 		return sb.String()
 	})
 
+	b.WriteString(layoutSections(sections, width))
+	return b.String()
+}
+
+// RenderSocket renders the kernel/socket-side view of the selected connection:
+// queue depths, socket memory, BBR state, and historical sparklines. Paired
+// with RenderDetail on a sibling tab so the network-level data and the
+// resource-level data each get the full viewport.
+func RenderSocket(conn *model.Connection, buf *poller.Buffer, width, height int) string {
+	if conn == nil {
+		return "\n  No connection selected. Use Enter on a connection to view details."
+	}
+
+	var b strings.Builder
+	b.WriteString(styleDetailTitle.Render(" Socket & History") + "\n")
+	peer := conn.PeerAddr + ":" + conn.PeerPort
+	if conn.Process != nil {
+		peer += "  " + *conn.Process
+	}
+	b.WriteString("  " + lipgloss.NewStyle().Foreground(lipgloss.Color("#888")).Render(peer) + "\n\n")
+
+	var sections []string
+	add := func(title string, body func() string) {
+		sections = append(sections, renderDetailSection(title, body))
+	}
+
 	add("Queues", func() string {
 		var sb strings.Builder
-		sb.WriteString(fmtRow("Send Q", fmtBytes(conn.SendQ)))
-		sb.WriteString(fmtRow("Recv Q", fmtBytes(conn.RecvQ)))
-		sb.WriteString(fmtRow("Segs Out", fmtNumRaw(conn.SegsOut)))
-		sb.WriteString(fmtRow("Segs In", fmtNumRaw(conn.SegsIn)))
-		sb.WriteString(fmtRow("Data Segs Out", fmtNumRaw(conn.DataSegsOut)))
-		sb.WriteString(fmtRow("Data Segs In", fmtNumRaw(conn.DataSegsIn)))
-		sb.WriteString(fmtRow("TX Δ", fmtSegRate(conn.DeltaSegsOut)))
-		sb.WriteString(fmtRow("RX Δ", fmtSegRate(conn.DeltaSegsIn)))
+		sb.WriteString(fmtRowColor("Send Q", fmtBytes(conn.SendQ), dimIfZero(conn.SendQ, colQ)))
+		sb.WriteString(fmtRowColor("Recv Q", fmtBytes(conn.RecvQ), dimIfZero(conn.RecvQ, colQ)))
+		sb.WriteString(fmtRowColor("Segs Out", fmtNumRaw(conn.SegsOut), colTX))
+		sb.WriteString(fmtRowColor("Segs In", fmtNumRaw(conn.SegsIn), colRX))
+		sb.WriteString(fmtRowColor("Data Segs Out", fmtNumRaw(conn.DataSegsOut), colTX))
+		sb.WriteString(fmtRowColor("Data Segs In", fmtNumRaw(conn.DataSegsIn), colRX))
+		sb.WriteString(fmtRowColor("TX Δ", fmtSegRate(conn.DeltaSegsOut), dimIfZeroDelta(conn.DeltaSegsOut, colTX)))
+		sb.WriteString(fmtRowColor("RX Δ", fmtSegRate(conn.DeltaSegsIn), dimIfZeroDelta(conn.DeltaSegsIn, colRX)))
 		return sb.String()
 	})
 
@@ -221,19 +269,31 @@ func RenderDetail(conn *model.Connection, buf *poller.Buffer, width, height int)
 			sb.WriteString(fmtRowBar("snd buf",
 				fmtBytes(&used)+" / "+fmtBytes(&limit), ratio))
 		}
-		sb.WriteString(fmtRow("fwd alloc", fmtBytes(conn.SkmemF)))
-		sb.WriteString(fmtRow("write alloc", fmtBytes(conn.SkmemW)))
-		sb.WriteString(fmtRow("optmem", fmtBytes(conn.SkmemO)))
+		sb.WriteString(fmtRowColor("fwd alloc", fmtBytes(conn.SkmemF), dimIfZero(conn.SkmemF, colAddr)))
+		sb.WriteString(fmtRowColor("write alloc", fmtBytes(conn.SkmemW), dimIfZero(conn.SkmemW, colAddr)))
+		sb.WriteString(fmtRowColor("optmem", fmtBytes(conn.SkmemO), dimIfZero(conn.SkmemO, colAddr)))
 		return sb.String()
 	})
 
 	if conn.BBRBW != nil {
 		add("BBR", func() string {
 			var sb strings.Builder
-			sb.WriteString(fmtRow("BW", fmtBPS(conn.BBRBW)))
-			sb.WriteString(fmtRow("MRTT", fmtFloat(conn.BBRMRTT, 0)+"ms"))
-			sb.WriteString(fmtRow("Pacing Gain", fmtFloat(conn.BBRPacingGain, 2)))
-			sb.WriteString(fmtRow("CWnd Gain", fmtFloat(conn.BBRCWndGain, 2)))
+			sb.WriteString(fmtRowColor("BW", fmtBPS(conn.BBRBW), colTX))
+			sb.WriteString(fmtRowColor("MRTT", fmtFloat(conn.BBRMRTT, 0)+"ms", colRTTHi))
+			gainColor := func(p *float64) lipgloss.Color {
+				if p == nil {
+					return colDim
+				}
+				switch {
+				case *p > 1.5:
+					return colTX
+				case *p < 0.85:
+					return colRTTMid
+				}
+				return colPort
+			}
+			sb.WriteString(fmtRowColor("Pacing Gain", fmtFloat(conn.BBRPacingGain, 2), gainColor(conn.BBRPacingGain)))
+			sb.WriteString(fmtRowColor("CWnd Gain", fmtFloat(conn.BBRCWndGain, 2), gainColor(conn.BBRCWndGain)))
 			return sb.String()
 		})
 	}
@@ -292,6 +352,61 @@ func fmtRow(label, value string) string {
 	return fmt.Sprintf("  %s %s\n",
 		styleDetailLabel.Render(fmt.Sprintf("%-16s: ", label)),
 		styleDetailValue.Render(value))
+}
+
+// fmtRowColor is fmtRow with an explicit foreground color on the value.
+// Use it to convey meaning at a glance (TX/RX direction, queue pressure,
+// dimmed-when-zero) without losing the bold/aligned look of fmtRow.
+func fmtRowColor(label, value string, color lipgloss.Color) string {
+	val := lipgloss.NewStyle().
+		Foreground(color).
+		Bold(true).
+		PaddingLeft(1).
+		Render(value)
+	return fmt.Sprintf("  %s %s\n",
+		styleDetailLabel.Render(fmt.Sprintf("%-16s: ", label)),
+		val)
+}
+
+// dimIfZero returns colDim when the int pointer is nil or 0, else accent.
+func dimIfZero(v *int, accent lipgloss.Color) lipgloss.Color {
+	if v == nil || *v == 0 {
+		return colDim
+	}
+	return accent
+}
+
+// dimIfZeroDelta is like dimIfZero but for delta-rate pointers; nil and 0 both
+// mean "no activity this poll", so render dimmed.
+func dimIfZeroDelta(v *int, accent lipgloss.Color) lipgloss.Color {
+	return dimIfZero(v, accent)
+}
+
+// rttColor picks a color from the same three-tier scale used in the table:
+// ≤50ms ok, ≤200ms mid, otherwise hi. Nil → dim.
+func rttColor(p *float64) lipgloss.Color {
+	if p == nil {
+		return colDim
+	}
+	switch {
+	case *p > 200:
+		return colRTTHi
+	case *p > 50:
+		return colRTTMid
+	}
+	return colRTTOk
+}
+
+// wndColor highlights zero-window in red — a stuck peer receive window is a
+// real fault, not a value to read past.
+func wndColor(p *int) lipgloss.Color {
+	if p == nil {
+		return colDim
+	}
+	if *p == 0 {
+		return colRetrans
+	}
+	return colPort
 }
 
 // fmtRowBar renders a label/value pair followed by a 10-cell ratio bar.
@@ -358,7 +473,7 @@ func renderSparklines(conn *model.Connection, buf *poller.Buffer, width int) str
 
 	line := func(label string, vals []float64, color lipgloss.Color) {
 		if len(vals) > 1 && hasSignal(vals) {
-			b.WriteString("  " + label + renderSparkline(vals, chartWidth, color) + "\n")
+			b.WriteString("  " + label + renderBarChart(vals, chartWidth, color) + "\n")
 		}
 	}
 

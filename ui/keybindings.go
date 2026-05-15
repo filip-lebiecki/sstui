@@ -24,16 +24,18 @@ func RenderHelp() string {
 	}{
 		{"j / ↓", "Next connection"},
 		{"k / ↑", "Previous connection"},
-		{"g", "First connection"},
-		{"G", "Last connection"},
+		{"g / G", "First / last connection"},
 		{"Enter", "View connection detail"},
 		{"Escape", "Go back / close filter"},
-		{"1-5", "Switch tabs (Live/Detail/Overview/Top/Perf)"},
-		{"Tab", "Next tab"},
-		{"Shift+Tab", "Previous tab"},
-		{"h", "Toggle sort on column"},
-		{"L", "Toggle showing LISTEN sockets"},
+		{"1-7", "Switch tabs"},
+		{"", "  1 Live  2 Detail  3 Socket  4 Overview"},
+		{"", "  5 Top   6 Perf   7 Events"},
+		{"Tab / S-Tab", "Next / prev tab"},
+		{"h", "Cycle sort column / direction"},
+		{"L", "Toggle hiding LISTEN sockets"},
 		{"/", "Open filter mode"},
+		{"e", "Export ring buffer to JSON"},
+		{"E", "Export current snapshot to CSV"},
 		{"?", "Toggle this help"},
 		{"q", "Quit"},
 	}
@@ -49,7 +51,9 @@ func RenderHelp() string {
 
 	b.WriteString("\n")
 	b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#666")).
-		Render("  In filter mode: type to filter, Escape to close, Enter to apply"))
+		Render("  Filter syntax: local=<addr> peer=<addr> lport=<port> pport=<port>\n" +
+			"                 state=<state> proc=<name> signal=<label>\n" +
+			"  In filter mode: type to edit, Enter to apply, Escape to cancel"))
 
 	return b.String()
 }

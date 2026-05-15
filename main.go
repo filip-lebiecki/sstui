@@ -44,15 +44,17 @@ type ViewMode int
 const (
 	ViewLive ViewMode = iota
 	ViewDetail
+	ViewSocket
 	ViewOverview
 	ViewTop
 	ViewPerf
+	ViewEvents
 	ViewFilter
 	ViewHelp
 )
 
 // tabOrder is the cycle order for tab/shift-tab.
-var tabOrder = []ViewMode{ViewLive, ViewDetail, ViewOverview, ViewTop, ViewPerf}
+var tabOrder = []ViewMode{ViewLive, ViewDetail, ViewSocket, ViewOverview, ViewTop, ViewPerf, ViewEvents}
 
 func nextTab(cur ViewMode, delta int) ViewMode {
 	idx := 0
@@ -68,18 +70,20 @@ func nextTab(cur ViewMode, delta int) ViewMode {
 
 // AppModel is the main bubbletea model.
 type AppModel struct {
-	width       int
-	height      int
-	buf         *poller.Buffer
-	table       *ui.TableModel
-	filter      *ui.Filter
-	tab         ViewMode
-	showHelp    bool
-	lastError   error
-	filterMode  bool
-	filterBuf   string
-	selectedKey string
-	quitting    bool
+	width        int
+	height       int
+	buf          *poller.Buffer
+	table        *ui.TableModel
+	filter       *ui.Filter
+	tab          ViewMode
+	showHelp     bool
+	lastError    error
+	filterMode   bool
+	filterBuf    string
+	selectedKey  string
+	quitting     bool
+	statusMsg    string
+	statusExpiry time.Time
 }
 
 func NewApp() *AppModel {
@@ -145,11 +149,15 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "2":
 			m.tab = ViewDetail
 		case "3":
-			m.tab = ViewOverview
+			m.tab = ViewSocket
 		case "4":
-			m.tab = ViewTop
+			m.tab = ViewOverview
 		case "5":
+			m.tab = ViewTop
+		case "6":
 			m.tab = ViewPerf
+		case "7":
+			m.tab = ViewEvents
 		case "tab":
 			m.tab = nextTab(m.tab, 1)
 		case "shift+tab":
@@ -167,7 +175,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.tab = ViewDetail
 			}
 		case "esc":
-			if m.tab == ViewDetail {
+			if m.tab == ViewDetail || m.tab == ViewSocket {
 				m.selectedKey = ""
 				m.tab = ViewLive
 			} else if m.tab == ViewHelp {
@@ -191,6 +199,10 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "L":
 			m.filter.HideListen = !m.filter.HideListen
 			m.table.InvalidateCache()
+		case "e":
+			m.export("json")
+		case "E":
+			m.export("csv")
 		}
 
 	case tickMsg:
@@ -258,6 +270,10 @@ func (m *AppModel) applyFilter() {
 			m.filter.PeerPort = strings.TrimPrefix(p, "pport=")
 		case strings.HasPrefix(p, "state="):
 			m.filter.State = strings.ToUpper(strings.TrimPrefix(p, "state="))
+		case strings.HasPrefix(p, "proc="):
+			m.filter.Process = strings.TrimPrefix(p, "proc=")
+		case strings.HasPrefix(p, "signal="):
+			m.filter.Signal = strings.TrimPrefix(p, "signal=")
 		default:
 			states := []string{"ESTAB", "LISTEN", "TIME-WAIT", "CLOSE-WAIT", "FIN-WAIT-1", "FIN-WAIT-2", "LAST-ACK", "SYN-SENT", "SYN-RECV"}
 			isState := false
@@ -319,6 +335,10 @@ func (m *AppModel) View() string {
 		conn := m.getConnectionByKey(m.selectedKey)
 		content = ui.RenderDetail(conn, m.buf, m.width, ch)
 
+	case ViewSocket:
+		conn := m.getConnectionByKey(m.selectedKey)
+		content = ui.RenderSocket(conn, m.buf, m.width, ch)
+
 	case ViewOverview:
 		content = ui.RenderOverview(m.buf, m.width, ch)
 
@@ -328,12 +348,17 @@ func (m *AppModel) View() string {
 	case ViewPerf:
 		content = ui.RenderPerf(m.buf, m.width, ch)
 
+	case ViewEvents:
+		content = ui.RenderEvents(m.buf, m.width, ch)
+
 	case ViewFilter:
 		content = "\n  Filter connections:\n\n"
 		content += "  " + m.filterBuf + cursor() + "\n\n"
 		content += lipgloss.NewStyle().Foreground(lipgloss.Color("#888")).Render(
-			"  Syntax: local=<addr> peer=<addr> lport=<port> pport=<port> state=<state>\n" +
+			"  Syntax: local=<addr> peer=<addr> lport=<port> pport=<port>\n" +
+				"          state=<state> proc=<name> signal=<label>\n" +
 				"  Examples: state=ESTAB local=192.168 pport=443\n" +
+				"            proc=nginx signal=RETRANS\n" +
 				"  Enter to apply, Escape to cancel")
 	}
 
@@ -404,10 +429,51 @@ func (m *AppModel) renderFilterText() string {
 	if m.filter.State != "" {
 		parts = append(parts, "state="+m.filter.State)
 	}
+	if m.filter.Process != "" {
+		parts = append(parts, "proc="+m.filter.Process)
+	}
+	if m.filter.Signal != "" {
+		parts = append(parts, "signal="+m.filter.Signal)
+	}
 	return strings.Join(parts, " ")
 }
 
+func (m *AppModel) export(kind string) {
+	ts := time.Now().Format("20060102-150405")
+	name := fmt.Sprintf("ss-stats-%s.%s", ts, kind)
+	cwd, err := os.Getwd()
+	if err != nil {
+		cwd = "."
+	}
+	path := cwd + string(os.PathSeparator) + name
+
+	var n int
+	switch kind {
+	case "json":
+		n, err = m.buf.ExportJSON(path)
+	case "csv":
+		n, err = m.buf.ExportCSV(path)
+	}
+	if err != nil {
+		m.statusMsg = "export failed: " + err.Error()
+	} else {
+		m.statusMsg = fmt.Sprintf("Exported %d %s → %s",
+			n,
+			map[string]string{"json": "snapshots", "csv": "rows"}[kind],
+			path)
+	}
+	m.statusExpiry = time.Now().Add(5 * time.Second)
+}
+
 func (m *AppModel) renderFooter() string {
+	if m.statusMsg != "" && time.Now().Before(m.statusExpiry) {
+		return lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#000")).
+			Background(lipgloss.Color("#51cf66")).
+			Bold(true).
+			Padding(0, 1).
+			Render(m.statusMsg)
+	}
 	snap := m.buf.GetLatest()
 	total := 0
 	if snap != nil {

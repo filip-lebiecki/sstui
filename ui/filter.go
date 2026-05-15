@@ -13,6 +13,8 @@ type Filter struct {
 	LocalPort  string
 	PeerPort   string
 	State      string
+	Process    string // substring match against process name
+	Signal     string // signal label or type (case-insensitive)
 	HideListen bool
 }
 
@@ -36,12 +38,34 @@ func (f *Filter) Matches(c *model.Connection) bool {
 	if f.State != "" && c.State != f.State {
 		return false
 	}
+	if f.Process != "" {
+		if c.Process == nil {
+			return false
+		}
+		if !strings.Contains(strings.ToLower(*c.Process), strings.ToLower(f.Process)) {
+			return false
+		}
+	}
+	if f.Signal != "" {
+		want := strings.ToLower(f.Signal)
+		found := false
+		for _, s := range c.Signals {
+			if strings.ToLower(string(s.Type)) == want || strings.ToLower(s.Type.Label()) == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
 	return true
 }
 
 // IsActive returns true if any filter is set.
 func (f *Filter) IsActive() bool {
-	return f.LocalAddr != "" || f.PeerAddr != "" || f.LocalPort != "" || f.PeerPort != "" || f.State != ""
+	return f.LocalAddr != "" || f.PeerAddr != "" || f.LocalPort != "" ||
+		f.PeerPort != "" || f.State != "" || f.Process != "" || f.Signal != ""
 }
 
 // Reset clears all filters.
@@ -51,4 +75,6 @@ func (f *Filter) Reset() {
 	f.LocalPort = ""
 	f.PeerPort = ""
 	f.State = ""
+	f.Process = ""
+	f.Signal = ""
 }

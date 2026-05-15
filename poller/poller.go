@@ -136,6 +136,15 @@ func (b *Buffer) computeDeltas(cur, prev *model.Connection) {
 		v := *prev.CWnd
 		cur.PrevCWnd = &v
 	}
+
+	// busy: is cumulative ms of TCP work since socket creation; the per-poll
+	// delta is what tells us how busy the kernel was on this socket recently.
+	if cur.BusyMS != nil && prev.BusyMS != nil {
+		d := *cur.BusyMS - *prev.BusyMS
+		if d >= 0 {
+			cur.DeltaBusyMS = &d
+		}
+	}
 }
 
 // GetLatest returns the most recent snapshot.

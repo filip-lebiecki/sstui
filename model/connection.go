@@ -77,8 +77,14 @@ type Connection struct {
 	Lost        *int
 	Unacked     *int
 	SndWnd      *int
+	RcvWnd      *int
+	RcvRTT      *float64
 	RcvSpace    *int
 	RcvSSThresh *int
+
+	// Congestion control algorithm (cubic, bbr, reno, ...). Reported as a
+	// bare token by ss; absent on non-TCP sockets.
+	CongAlgo *string
 
 	BusyMS    *float64
 	PMTU      *int
@@ -102,6 +108,7 @@ type Connection struct {
 	DeltaSegsIn        *int
 	DeltaBytesRetrans  *int
 	DeltaDSACKDups     *int
+	DeltaBusyMS        *float64
 
 	// Previous values kept for non-monotonic signals (e.g. cwnd collapse).
 	PrevCWnd *int

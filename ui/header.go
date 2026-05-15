@@ -148,7 +148,7 @@ func fmtBytesPerSec(b float64) string {
 
 // RenderTabs renders the tab bar.
 func RenderTabs(current int, width int) string {
-	tabs := []string{"Live", "Detail", "Overview", "Top", "Perf"}
+	tabs := []string{"Live", "Detail", "Socket", "Overview", "Top", "Perf", "Events"}
 	var parts []string
 
 	for i, t := range tabs {

@@ -487,18 +487,6 @@ func (t *TableModel) Last() {
 	t.SetCursor(len(filtered) - 1)
 }
 
-// ToggleSort toggles sort on the given column.
-func (t *TableModel) ToggleSort(key string) {
-	if t.sortKey == key {
-		t.sortDir = (t.sortDir + 1) % 2
-	} else {
-		t.sortKey = key
-		t.sortDir = SortAsc
-	}
-	t.cachedConns = nil
-	t.First()
-}
-
 // CycleSort cycles through the predefined sort order: state asc/desc, local asc/desc, peer asc/desc, process asc/desc.
 func (t *TableModel) CycleSort() {
 	t.sortCycleIdx = (t.sortCycleIdx + 1) % len(sortCycle)

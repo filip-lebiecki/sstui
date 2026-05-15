@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"ss-stats-tui/model"
 	"ss-stats-tui/poller"
@@ -39,6 +40,8 @@ func RenderPerf(buf *poller.Buffer, width, height int) string {
 	b.WriteString(renderZeroWindow(snap))
 	b.WriteString("\n")
 	b.WriteString(renderSendBacklog(snap))
+	b.WriteString("\n")
+	b.WriteString(renderBusiest(snap))
 
 	return b.String()
 }
@@ -436,6 +439,66 @@ func renderZeroWindow(snap *poller.Snapshot) string {
 			protoTag(c.Protocol),
 			styleTopWarn.Render(fmt.Sprintf("%-40s", truncate(peer, 40))),
 			styleTopProc.Render(proc)))
+	}
+	return sb.String()
+}
+
+func renderBusiest(snap *poller.Snapshot) string {
+	pollMs := float64(poller.PollInterval / time.Millisecond)
+	type entry struct {
+		conn  *model.Connection
+		busy  float64
+		ratio float64
+	}
+	var entries []entry
+	for _, c := range snap.Conns {
+		if c.DeltaBusyMS == nil || *c.DeltaBusyMS <= 0 {
+			continue
+		}
+		r := 0.0
+		if pollMs > 0 {
+			r = *c.DeltaBusyMS / pollMs
+		}
+		// Only surface meaningful activity; sub-1% is noise.
+		if r < 0.01 {
+			continue
+		}
+		entries = append(entries, entry{c, *c.DeltaBusyMS, r})
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].busy > entries[j].busy })
+	if len(entries) > 12 {
+		entries = entries[:12]
+	}
+
+	var sb strings.Builder
+	sb.WriteString(styleSectionTitle.Render(" Busiest Sockets (TCP work this poll)") + "\n")
+	sb.WriteString(perfTableHeader(
+		fmt.Sprintf("%-4s", "Proto"),
+		fmt.Sprintf("%-30s", "Peer"),
+		fmt.Sprintf("%-15s", "Process"),
+		fmt.Sprintf("%-10s", "Busy"),
+		""))
+	for _, e := range entries {
+		peer, proc := connLabel(e.conn)
+		color := colRTTOk
+		switch {
+		case e.ratio >= 0.5:
+			color = colRetrans
+		case e.ratio >= 0.2:
+			color = colRTTHi
+		case e.ratio >= 0.05:
+			color = colRTTMid
+		}
+		sb.WriteString(fmt.Sprintf("  %s %s %s %s %s\n",
+			protoTag(e.conn.Protocol),
+			styleTopAddr.Render(fmt.Sprintf("%-30s", truncate(peer, 30))),
+			styleTopProc.Render(fmt.Sprintf("%-15s", truncate(proc, 15))),
+			lipgloss.NewStyle().Foreground(color).Render(
+				fmt.Sprintf("%6.0fms %3.0f%%", e.busy, e.ratio*100)),
+			fmtRatioBar(e.ratio, 15)))
+	}
+	if len(entries) == 0 {
+		sb.WriteString("  None detected\n")
 	}
 	return sb.String()
 }

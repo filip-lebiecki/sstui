@@ -58,6 +58,10 @@ var (
 	reBBR          = regexp.MustCompile(`bbr:\(bw:(\d+)bps,mrtt:(\d+\.?\d*),pacing_gain:(\d+\.?\d*),cwnd_gain:(\d+\.?\d*)\)`)
 	reIPv6Bracket  = regexp.MustCompile(`\[(.+)\]:(\S+)`)
 	reAppLimited   = regexp.MustCompile(`\bapp_limited\b`)
+	reRcvRTT       = regexp.MustCompile(`\brcv_rtt:(\d+\.?\d*)`)
+	reRcvWnd       = regexp.MustCompile(`\brcv_wnd:(\d+)`)
+	// Standalone congestion-control algorithm tokens emitted by ss.
+	reCongAlgo = regexp.MustCompile(`\b(cubic|bbr|reno|vegas|htcp|cdg|dctcp|lp|nv|hybla|illinois|highspeed|scalable|westwood|yeah|bic)\b`)
 )
 
 func mustInt(s string) *int {
@@ -284,6 +288,17 @@ func ParseLine(line string) (*model.Connection, error) {
 		c.BBRMRTT = mustFloat(m[2])
 		c.BBRPacingGain = mustFloat(m[3])
 		c.BBRCWndGain = mustFloat(m[4])
+	}
+
+	if m := reRcvRTT.FindStringSubmatch(rest); len(m) == 2 {
+		c.RcvRTT = mustFloat(m[1])
+	}
+	if m := reRcvWnd.FindStringSubmatch(rest); len(m) == 2 {
+		c.RcvWnd = mustInt(m[1])
+	}
+	if m := reCongAlgo.FindStringSubmatch(rest); len(m) == 2 {
+		algo := m[1]
+		c.CongAlgo = &algo
 	}
 
 	return c, nil

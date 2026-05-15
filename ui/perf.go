@@ -553,7 +553,7 @@ func renderTimeWaitGrowth(buf *poller.Buffer, snap *poller.Snapshot, width int) 
 	line.WriteString(lipgloss.NewStyle().Foreground(color).Bold(true).Render(fmt.Sprintf("%d", current)))
 	line.WriteString(styleTopDim.Render(fmt.Sprintf(" (%s in last ~30s) ", growthStr)))
 	if len(counts) > 1 {
-		line.WriteString(renderSparkline(counts, chartW, color))
+		line.WriteString(renderBarChart(counts, chartW, color))
 	}
 	line.WriteString("\n")
 	return line.String()

@@ -3,9 +3,56 @@ package ui
 import (
 	"fmt"
 	"strconv"
+	"strings"
 
+	"ss-stats-tui/model"
 	"ss-stats-tui/poller"
 )
+
+// keepaliveSeconds returns the keepalive timer in seconds (-1 if not a
+// keepalive timer or unparseable).
+func keepaliveSeconds(c *model.Connection) float64 {
+	if c.TimerType == nil || c.TimerDur == nil || *c.TimerType != "keepalive" {
+		return -1
+	}
+	s := *c.TimerDur
+	var mult float64
+	switch {
+	case strings.HasSuffix(s, "min"):
+		mult = 60
+		s = strings.TrimSuffix(s, "min")
+	case strings.HasSuffix(s, "ms"):
+		mult = 0.001
+		s = strings.TrimSuffix(s, "ms")
+	case strings.HasSuffix(s, "sec"):
+		mult = 1
+		s = strings.TrimSuffix(s, "sec")
+	case strings.HasSuffix(s, "s"):
+		mult = 1
+		s = strings.TrimSuffix(s, "s")
+	default:
+		return -1
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return -1
+	}
+	return f * mult
+}
+
+func fmtKeepalive(c *model.Connection) string {
+	v := keepaliveSeconds(c)
+	if v < 0 {
+		return "-"
+	}
+	if v >= 60 {
+		return fmt.Sprintf("%dm%02ds", int(v)/60, int(v)%60)
+	}
+	if v >= 1 {
+		return fmt.Sprintf("%.0fs", v)
+	}
+	return fmt.Sprintf("%.0fms", v*1000)
+}
 
 // Format helpers for display values.
 
@@ -97,4 +144,43 @@ func fmtRate(v *int) string {
 
 func fmtPill(label, value string) string {
 	return fmt.Sprintf(" %s: %s ", label, value)
+}
+
+// fmtPackets renders a packet count with the "pkts" suffix.
+func fmtPackets(v *int) string {
+	if v == nil {
+		return "-"
+	}
+	return fmt.Sprintf("%d pkts", *v)
+}
+
+// fmtSSThresh handles the kernel's TCP_INFINITE_SSTHRESH sentinel.
+func fmtSSThresh(v *int) string {
+	if v == nil {
+		return "-"
+	}
+	if *v >= 0x7fffffff {
+		return "∞ (slow start)"
+	}
+	return fmt.Sprintf("%d pkts", *v)
+}
+
+// fmtSegRate renders a segments-per-poll delta as segments/s.
+func fmtSegRate(v *int) string {
+	if v == nil {
+		return "-"
+	}
+	r := float64(*v) / poller.PollInterval.Seconds()
+	return fmt.Sprintf("%.0f seg/s", r)
+}
+
+// fmtMs renders an int millisecond value with "ms" or seconds when large.
+func fmtMs(v *int) string {
+	if v == nil {
+		return "-"
+	}
+	if *v >= 1000 {
+		return fmt.Sprintf("%.1fs", float64(*v)/1000)
+	}
+	return fmt.Sprintf("%dms", *v)
 }

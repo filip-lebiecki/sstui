@@ -83,7 +83,7 @@ type AppModel struct {
 
 func NewApp() *AppModel {
 	buf := poller.NewBuffer()
-	sharedFilter := &ui.Filter{}
+	sharedFilter := &ui.Filter{HideListen: true}
 	return &AppModel{
 		buf:    buf,
 		table:  ui.NewTableModel(sharedFilter, 20),
@@ -185,12 +185,8 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.table.Last()
 		case "h":
 			m.table.CycleSort()
-		case "e":
-			if m.filter.State == "ESTAB" {
-				m.filter.State = ""
-			} else {
-				m.filter.State = "ESTAB"
-			}
+		case "L":
+			m.filter.HideListen = !m.filter.HideListen
 			m.table.InvalidateCache()
 		}
 

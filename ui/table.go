@@ -235,6 +235,29 @@ var defaultColumns = []TableColumn{
 			return *a.Retrans < *b.Retrans
 		},
 	},
+	{
+		Key:   "ka",
+		Title: "KA",
+		Width: 7,
+		Render: func(c *model.Connection) string {
+			return fmtKeepalive(c)
+		},
+		SortFunc: func(a, b *model.Connection) bool {
+			av := keepaliveSeconds(a)
+			bv := keepaliveSeconds(b)
+			// missing (-1) sorts last
+			if av < 0 && bv < 0 {
+				return false
+			}
+			if av < 0 {
+				return false
+			}
+			if bv < 0 {
+				return true
+			}
+			return av < bv
+		},
+	},
 }
 
 // sortCycle defines the order in which [h] cycles through sort modes.
@@ -257,6 +280,7 @@ var sortCycle = []struct {
 	{"tx", SortDesc},
 	{"rx", SortDesc},
 	{"retrans", SortDesc},
+	{"ka", SortAsc},
 }
 
 // TableModel holds the state for the connection table.

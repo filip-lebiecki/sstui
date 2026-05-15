@@ -8,15 +8,19 @@ import (
 
 // Filter holds the current filter state.
 type Filter struct {
-	LocalAddr string
-	PeerAddr  string
-	LocalPort string
-	PeerPort  string
-	State     string
+	LocalAddr  string
+	PeerAddr   string
+	LocalPort  string
+	PeerPort   string
+	State      string
+	HideListen bool
 }
 
 // Matches returns true if a connection matches the filter criteria.
 func (f *Filter) Matches(c *model.Connection) bool {
+	if f.HideListen && c.State == "LISTEN" {
+		return false
+	}
 	if f.LocalAddr != "" && !strings.Contains(c.LocalAddr, f.LocalAddr) {
 		return false
 	}

@@ -56,6 +56,11 @@ func RenderDetail(conn *model.Connection, buf *poller.Buffer, width, height int)
 		if conn.UID != nil {
 			sb.WriteString(fmtRow("UID", fmt.Sprintf("%d", *conn.UID)))
 		}
+		if ka := keepaliveSeconds(conn); ka >= 0 {
+			sb.WriteString(fmtRow("Keepalive", fmtKeepalive(conn)))
+		} else if conn.TimerType != nil && conn.TimerDur != nil {
+			sb.WriteString(fmtRow("Timer", fmt.Sprintf("%s (%s)", *conn.TimerType, *conn.TimerDur)))
+		}
 		return sb.String()
 	}))
 
@@ -88,14 +93,22 @@ func RenderDetail(conn *model.Connection, buf *poller.Buffer, width, height int)
 	// Congestion
 	b.WriteString(renderDetailSection("Congestion", func() string {
 		var sb strings.Builder
-		sb.WriteString(fmtRow("CWnd", fmtNumRaw(conn.CWnd)))
-		sb.WriteString(fmtRow("ssthresh", fmtNumRaw(conn.SSThresh)))
-		sb.WriteString(fmtRow("MSS", fmtNumRaw(conn.MSS)))
-		sb.WriteString(fmtRow("SndWnd", fmtNumRaw(conn.SndWnd)))
-		sb.WriteString(fmtRow("RcvSpace", fmtNumRaw(conn.RcvSpace)))
-		sb.WriteString(fmtRow("Unacked", fmtNumRaw(conn.Unacked)))
+		sb.WriteString(fmtRow("CWnd", fmtPackets(conn.CWnd)))
+		sb.WriteString(fmtRow("ssthresh", fmtSSThresh(conn.SSThresh)))
+		sb.WriteString(fmtRow("MSS", fmtNumRaw(conn.MSS)+" B"))
+		sb.WriteString(fmtRow("PMTU", fmtNumRaw(conn.PMTU)+" B"))
+		sb.WriteString(fmtRow("AdvMSS", fmtNumRaw(conn.AdvMSS)+" B"))
+		sb.WriteString(fmtRow("RcvMSS", fmtNumRaw(conn.RcvMSS)+" B"))
+		sb.WriteString(fmtRow("SndWnd", fmtBytes(conn.SndWnd)))
+		sb.WriteString(fmtRow("RcvSpace", fmtBytes(conn.RcvSpace)))
+		sb.WriteString(fmtRow("RcvSSThresh", fmtBytes(conn.RcvSSThresh)))
+		sb.WriteString(fmtRow("Unacked", fmtPackets(conn.Unacked)))
 		if conn.CWnd != nil && conn.MSS != nil && *conn.MSS > 0 {
-			sb.WriteString(fmtRow("CWnd/MSS", fmt.Sprintf("%.1f", float64(*conn.CWnd)/float64(*conn.MSS))))
+			bytes := *conn.CWnd * *conn.MSS
+			sb.WriteString(fmtRow("CWnd bytes", fmtBytes(&bytes)))
+		}
+		if conn.WscaleSnd != nil && conn.WscaleRcv != nil {
+			sb.WriteString(fmtRow("WScale", fmt.Sprintf("snd=%d rcv=%d", *conn.WscaleSnd, *conn.WscaleRcv)))
 		}
 		return sb.String()
 	}))
@@ -112,6 +125,17 @@ func RenderDetail(conn *model.Connection, buf *poller.Buffer, width, height int)
 		sb.WriteString(fmtRow("RX Rate", fmtRate(conn.DeltaBytesReceived)))
 		sb.WriteString(fmtRow("Pacing Rate", fmtBPS(conn.PacingRate)))
 		sb.WriteString(fmtRow("Delivery Rate", fmtBPS(conn.DeliveryRate)))
+		sb.WriteString(fmtRow("Send (inst)", fmtBPS(conn.SendBPS)))
+		sb.WriteString(fmtRow("Delivered", fmtPackets(conn.Delivered)))
+		if conn.LastSnd != nil {
+			sb.WriteString(fmtRow("Last Send", fmtMs(conn.LastSnd)))
+		}
+		if conn.LastRcv != nil {
+			sb.WriteString(fmtRow("Last Recv", fmtMs(conn.LastRcv)))
+		}
+		if conn.LastAck != nil {
+			sb.WriteString(fmtRow("Last Ack", fmtMs(conn.LastAck)))
+		}
 		return sb.String()
 	}))
 
@@ -137,12 +161,14 @@ func RenderDetail(conn *model.Connection, buf *poller.Buffer, width, height int)
 	// Queues
 	b.WriteString(renderDetailSection("Queues", func() string {
 		var sb strings.Builder
-		sb.WriteString(fmtRow("Send Q", fmtNumRaw(conn.SendQ)))
-		sb.WriteString(fmtRow("Recv Q", fmtNumRaw(conn.RecvQ)))
+		sb.WriteString(fmtRow("Send Q", fmtBytes(conn.SendQ)))
+		sb.WriteString(fmtRow("Recv Q", fmtBytes(conn.RecvQ)))
 		sb.WriteString(fmtRow("Segs Out", fmtNumRaw(conn.SegsOut)))
 		sb.WriteString(fmtRow("Segs In", fmtNumRaw(conn.SegsIn)))
-		sb.WriteString(fmtRow("TX Delta", fmtRate(conn.DeltaSegsOut)))
-		sb.WriteString(fmtRow("RX Delta", fmtRate(conn.DeltaSegsIn)))
+		sb.WriteString(fmtRow("Data Segs Out", fmtNumRaw(conn.DataSegsOut)))
+		sb.WriteString(fmtRow("Data Segs In", fmtNumRaw(conn.DataSegsIn)))
+		sb.WriteString(fmtRow("TX Δ", fmtSegRate(conn.DeltaSegsOut)))
+		sb.WriteString(fmtRow("RX Δ", fmtSegRate(conn.DeltaSegsIn)))
 		return sb.String()
 	}))
 
@@ -151,13 +177,13 @@ func RenderDetail(conn *model.Connection, buf *poller.Buffer, width, height int)
 	// skmem
 	b.WriteString(renderDetailSection("Socket Memory", func() string {
 		var sb strings.Builder
-		sb.WriteString(fmtRow("R", fmtNumRaw(conn.SkmemR)))
-		sb.WriteString(fmtRow("RB", fmtNumRaw(conn.SkmemRB)))
-		sb.WriteString(fmtRow("T", fmtNumRaw(conn.SkmemT)))
-		sb.WriteString(fmtRow("TB", fmtNumRaw(conn.SkmemTB)))
-		sb.WriteString(fmtRow("F", fmtNumRaw(conn.SkmemF)))
-		sb.WriteString(fmtRow("W", fmtNumRaw(conn.SkmemW)))
-		sb.WriteString(fmtRow("O", fmtNumRaw(conn.SkmemO)))
+		sb.WriteString(fmtRow("rcv buf used", fmtBytes(conn.SkmemR)))
+		sb.WriteString(fmtRow("rcv buf limit", fmtBytes(conn.SkmemRB)))
+		sb.WriteString(fmtRow("snd buf used", fmtBytes(conn.SkmemT)))
+		sb.WriteString(fmtRow("snd buf limit", fmtBytes(conn.SkmemTB)))
+		sb.WriteString(fmtRow("fwd alloc", fmtBytes(conn.SkmemF)))
+		sb.WriteString(fmtRow("write alloc", fmtBytes(conn.SkmemW)))
+		sb.WriteString(fmtRow("optmem", fmtBytes(conn.SkmemO)))
 		return sb.String()
 	}))
 

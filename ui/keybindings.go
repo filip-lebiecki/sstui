@@ -32,6 +32,7 @@ func RenderHelp() string {
 		{"Tab", "Next tab"},
 		{"Shift+Tab", "Previous tab"},
 		{"h", "Toggle sort on column"},
+		{"L", "Toggle showing LISTEN sockets"},
 		{"/", "Open filter mode"},
 		{"?", "Toggle this help"},
 		{"q", "Quit"},

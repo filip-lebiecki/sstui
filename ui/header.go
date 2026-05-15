@@ -45,7 +45,8 @@ var (
 
 	signalColors = map[model.SignalType]lipgloss.Color{
 		model.SignalRetransInFlight:    lipgloss.Color("#ff6b6b"),
-		model.SignalAppLimited:         lipgloss.Color("#ffa94d"),
+		model.SignalAppLimited:         lipgloss.Color("#51cf66"),
+		model.SignalIdle:               lipgloss.Color("#868e96"),
 		model.SignalZeroWindow:         lipgloss.Color("#ff6b6b"),
 		model.SignalCongestionLoss:     lipgloss.Color("#ff6b6b"),
 		model.SignalPMTUMismatch:       lipgloss.Color("#ffa94d"),
@@ -53,12 +54,8 @@ var (
 		model.SignalSendBufferPressure: lipgloss.Color("#ffd43b"),
 		model.SignalRecvBufferPressure: lipgloss.Color("#ffd43b"),
 		model.SignalHighRetransRate:    lipgloss.Color("#ff6b6b"),
-		model.SignalCongestionReduce:   lipgloss.Color("#ffa94d"),
-		model.SignalSlowStart:          lipgloss.Color("#74c0fc"),
-		model.SignalBufferBloat:        lipgloss.Color("#ffd43b"),
 		model.SignalDeliveryDrop:       lipgloss.Color("#ffa94d"),
 		model.SignalUnackedBuildup:     lipgloss.Color("#ffd43b"),
-		model.SignalBusyTimeout:        lipgloss.Color("#ffa94d"),
 	}
 )
 
@@ -200,8 +197,10 @@ func RenderSignalBar(signals []model.Signal) string {
 	switch {
 	case maxSev == 2:
 		return "🔴"
-	case warnCount >= 3:
+	case warnCount >= 4:
 		return "🟠"
+	case warnCount >= 2:
+		return "🟡"
 	case warnCount > 0:
 		return "🟡"
 	default:

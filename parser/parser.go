@@ -32,8 +32,8 @@ var (
 	reBytesSent    = regexp.MustCompile(`bytes_sent:(\d+)`)
 	reBytesRecv    = regexp.MustCompile(`bytes_received:(\d+)`)
 	reBytesAcked   = regexp.MustCompile(`bytes_acked:(\d+)`)
-	reSegsOut      = regexp.MustCompile(`segs_out:(\d+)`)
-	reSegsIn       = regexp.MustCompile(`segs_in:(\d+)`)
+	reSegsOut      = regexp.MustCompile(`\bsegs_out:(\d+)`)
+	reSegsIn       = regexp.MustCompile(`\bsegs_in:(\d+)`)
 	reMinRTT       = regexp.MustCompile(`minrtt:(\d+\.?\d*)`)
 	rePacingRate   = regexp.MustCompile(`pacing_rate\s+(\d+)bps`)
 	reDeliveryRate = regexp.MustCompile(`delivery_rate\s+(\d+)bps`)
@@ -306,13 +306,33 @@ func RunSS() ([]*model.Connection, error) {
 	var conns []*model.Connection
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	var pending string
+	flush := func() {
+		if pending == "" {
+			return
+		}
+		if c, err := ParseLine(pending); err == nil && c != nil {
+			conns = append(conns, c)
+		}
+		pending = ""
+	}
 	for scanner.Scan() {
-		c, err := ParseLine(scanner.Text())
-		if err != nil || c == nil {
+		line := scanner.Text()
+		if line == "" {
 			continue
 		}
-		conns = append(conns, c)
+		// ss prints TCP info on a continuation line that starts with whitespace.
+		// Append it to the previous record so all fields land in one ParseLine call.
+		if line[0] == ' ' || line[0] == '\t' {
+			if pending != "" {
+				pending += " " + strings.TrimSpace(line)
+			}
+			continue
+		}
+		flush()
+		pending = line
 	}
+	flush()
 	scanErr := scanner.Err()
 	if err := cmd.Wait(); err != nil {
 		return nil, fmt.Errorf("ss: %w", err)

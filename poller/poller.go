@@ -114,6 +114,7 @@ func (b *Buffer) computeDeltas(cur, prev *model.Connection) {
 		{curVal: cur.SegsOut, prevVal: prev.SegsOut, out: &cur.DeltaSegsOut},
 		{curVal: cur.SegsIn, prevVal: prev.SegsIn, out: &cur.DeltaSegsIn},
 		{curVal: cur.BytesRetrans, prevVal: prev.BytesRetrans, out: &cur.DeltaBytesRetrans},
+		{curVal: cur.DSACKDups, prevVal: prev.DSACKDups, out: &cur.DeltaDSACKDups},
 	}
 
 	for _, p := range pairs {
@@ -127,6 +128,13 @@ func (b *Buffer) computeDeltas(cur, prev *model.Connection) {
 		} else {
 			*p.out = nil
 		}
+	}
+
+	// Stash prev CWnd so the classifier can detect collapses (cwnd may
+	// shrink, unlike monotonic counters above).
+	if prev.CWnd != nil {
+		v := *prev.CWnd
+		cur.PrevCWnd = &v
 	}
 }
 

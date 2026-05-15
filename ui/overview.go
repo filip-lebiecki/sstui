@@ -171,7 +171,7 @@ func getMax(vals []float64) float64 {
 }
 
 func renderBarChart(values []float64, width int, color lipgloss.Color) string {
-	if len(values) == 0 {
+	if len(values) == 0 || width <= 0 {
 		return ""
 	}
 

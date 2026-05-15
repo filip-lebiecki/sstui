@@ -2,7 +2,9 @@ package ui
 
 import (
 	"fmt"
+	"os"
 	"sort"
+	"strconv"
 	"strings"
 
 	"ss-stats-tui/model"
@@ -21,6 +23,8 @@ func RenderPerf(buf *poller.Buffer, width, height int) string {
 	var b strings.Builder
 
 	b.WriteString(renderPerfSummary(buf, snap, width))
+	b.WriteString("\n")
+	b.WriteString(renderSystemWide(buf, snap, width))
 	b.WriteString("\n")
 	b.WriteString(renderRTTInflation(snap))
 	b.WriteString("\n")
@@ -434,6 +438,145 @@ func renderZeroWindow(snap *poller.Snapshot) string {
 			styleTopProc.Render(proc)))
 	}
 	return sb.String()
+}
+
+// renderSystemWide groups host-level health: TIME-WAIT growth and ephemeral
+// port-range utilization. Neither belongs to a single connection so they
+// don't go through the per-conn classifier.
+func renderSystemWide(buf *poller.Buffer, snap *poller.Snapshot, width int) string {
+	var sb strings.Builder
+	sb.WriteString(styleSectionTitle.Render(" System") + "\n")
+	sb.WriteString(renderTimeWaitGrowth(buf, snap, width))
+	sb.WriteString(renderPortExhaustion(snap, width))
+	return sb.String()
+}
+
+func renderTimeWaitGrowth(buf *poller.Buffer, snap *poller.Snapshot, width int) string {
+	current := 0
+	for _, c := range snap.Conns {
+		if c.State == "TIME-WAIT" {
+			current++
+		}
+	}
+
+	snapshots := buf.GetAll()
+	var counts []float64
+	for _, sn := range snapshots {
+		var n int
+		for _, c := range sn.Conns {
+			if c.State == "TIME-WAIT" {
+				n++
+			}
+		}
+		counts = append(counts, float64(n))
+	}
+
+	// Growth since ~30s ago (15 polls @ 2s).
+	growth := 0
+	if len(counts) >= 16 {
+		growth = current - int(counts[len(counts)-16])
+	} else if len(counts) >= 2 {
+		growth = current - int(counts[0])
+	}
+
+	color := lipgloss.Color("#888")
+	switch {
+	case current > 5000 || growth > 500:
+		color = lipgloss.Color("#ff6b6b")
+	case current > 1000 || growth > 100:
+		color = lipgloss.Color("#ffa94d")
+	}
+
+	growthStr := fmt.Sprintf("%+d", growth)
+	chartW := width - 40
+	if chartW < 10 {
+		chartW = 10
+	}
+	if chartW > 60 {
+		chartW = 60
+	}
+
+	var line strings.Builder
+	line.WriteString("  TIME-WAIT: ")
+	line.WriteString(lipgloss.NewStyle().Foreground(color).Bold(true).Render(fmt.Sprintf("%d", current)))
+	line.WriteString(styleTopDim.Render(fmt.Sprintf(" (%s in last ~30s) ", growthStr)))
+	if len(counts) > 1 {
+		line.WriteString(renderSparkline(counts, chartW, color))
+	}
+	line.WriteString("\n")
+	return line.String()
+}
+
+// ephemeralPortRange returns the kernel's configured outbound port range, or
+// the Linux default (32768-60999) when /proc isn't readable.
+func ephemeralPortRange() (lo, hi int) {
+	lo, hi = 32768, 60999
+	data, err := os.ReadFile("/proc/sys/net/ipv4/ip_local_port_range")
+	if err != nil {
+		return
+	}
+	parts := strings.Fields(string(data))
+	if len(parts) < 2 {
+		return
+	}
+	if v, err := strconv.Atoi(parts[0]); err == nil {
+		lo = v
+	}
+	if v, err := strconv.Atoi(parts[1]); err == nil {
+		hi = v
+	}
+	return
+}
+
+func renderPortExhaustion(snap *poller.Snapshot, width int) string {
+	lo, hi := ephemeralPortRange()
+	if hi <= lo {
+		return ""
+	}
+	size := hi - lo + 1
+
+	// Count distinct local ports in use that fall inside the ephemeral range,
+	// across both TCP and UDP. Ports are 16-bit so the same numeric port on
+	// TCP vs UDP consumes a separate slot — but the kernel allocates from a
+	// shared range, so de-duping by number is the right heuristic for "how
+	// close are we to running out".
+	used := make(map[int]bool)
+	for _, c := range snap.Conns {
+		p, err := strconv.Atoi(c.LocalPort)
+		if err != nil {
+			continue
+		}
+		if p < lo || p > hi {
+			continue
+		}
+		used[p] = true
+	}
+	count := len(used)
+	pct := float64(count) / float64(size) * 100
+
+	color := lipgloss.Color("#51cf66")
+	switch {
+	case pct >= 90:
+		color = lipgloss.Color("#ff6b6b")
+	case pct >= 70:
+		color = lipgloss.Color("#ffa94d")
+	case pct >= 40:
+		color = lipgloss.Color("#ffd43b")
+	}
+
+	barW := width - 50
+	if barW < 10 {
+		barW = 10
+	}
+	if barW > 40 {
+		barW = 40
+	}
+
+	return fmt.Sprintf("  Ephemeral ports: %s %s %s\n",
+		lipgloss.NewStyle().Foreground(color).Bold(true).Render(fmt.Sprintf("%d/%d", count, size)),
+		styleTopDim.Render(fmt.Sprintf("(%s-%s, %.1f%% used)",
+			strconv.Itoa(lo), strconv.Itoa(hi), pct)),
+		fmtPropBar(float64(count), float64(size), barW))
 }
 
 func renderSendBacklog(snap *poller.Snapshot) string {

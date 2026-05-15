@@ -294,7 +294,7 @@ func RunSS() ([]*model.Connection, error) {
 	tcpConns, tcpErr := runSS("-atnpeimOH", "tcp")
 	udpConns, udpErr := runSS("-aunpeimOH", "udp")
 	if tcpErr != nil && udpErr != nil {
-		return nil, tcpErr
+		return nil, fmt.Errorf("tcp: %v; udp: %v", tcpErr, udpErr)
 	}
 	conns := append(tcpConns, udpConns...)
 	for _, c := range conns {

@@ -380,7 +380,11 @@ func (m *AppModel) getLatestConns() []*model.Connection {
 }
 
 func (m *AppModel) getConnectionByKey(key string) *model.Connection {
-	return m.buf.GetLatest().Lookup(key)
+	snap := m.buf.GetLatest()
+	if snap == nil {
+		return nil
+	}
+	return snap.Lookup(key)
 }
 
 func (m *AppModel) renderFilterText() string {

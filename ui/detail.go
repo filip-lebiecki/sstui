@@ -375,7 +375,7 @@ func renderSparklines(conn *model.Connection, buf *poller.Buffer, width int) str
 }
 
 func renderSparkline(values []float64, width int, color lipgloss.Color) string {
-	if len(values) == 0 {
+	if len(values) == 0 || width <= 0 {
 		return ""
 	}
 

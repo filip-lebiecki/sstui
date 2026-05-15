@@ -101,6 +101,10 @@ type Connection struct {
 	DeltaSegsOut       *int
 	DeltaSegsIn        *int
 	DeltaBytesRetrans  *int
+	DeltaDSACKDups     *int
+
+	// Previous values kept for non-monotonic signals (e.g. cwnd collapse).
+	PrevCWnd *int
 
 	// Signals are populated by poller.AddSnapshot after deltas, so the
 	// classifier runs once per poll rather than once per render frame.

@@ -56,6 +56,13 @@ var (
 		model.SignalHighRetransRate:    lipgloss.Color("#ff6b6b"),
 		model.SignalDeliveryDrop:       lipgloss.Color("#ffa94d"),
 		model.SignalUnackedBuildup:     lipgloss.Color("#ffd43b"),
+		model.SignalListenQueueFull:    lipgloss.Color("#ff6b6b"),
+		model.SignalRTOFiring:          lipgloss.Color("#ff6b6b"),
+		model.SignalSynStall:           lipgloss.Color("#ffa94d"),
+		model.SignalOneWayStall:        lipgloss.Color("#ffd43b"),
+		model.SignalCWndCollapse:       lipgloss.Color("#ffa94d"),
+		model.SignalDSACKSpurious:      lipgloss.Color("#ffd43b"),
+		model.SignalBBRUnderutil:       lipgloss.Color("#ffa94d"),
 	}
 )
 

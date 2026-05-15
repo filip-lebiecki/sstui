@@ -16,6 +16,13 @@ const (
 	SignalHighRetransRate    SignalType = "high_retrans_rate"
 	SignalDeliveryDrop       SignalType = "delivery_drop"
 	SignalUnackedBuildup     SignalType = "unacked_buildup"
+	SignalListenQueueFull    SignalType = "listen_queue_full"
+	SignalRTOFiring          SignalType = "rto_firing"
+	SignalSynStall           SignalType = "syn_stall"
+	SignalOneWayStall        SignalType = "one_way_stall"
+	SignalCWndCollapse       SignalType = "cwnd_collapse"
+	SignalDSACKSpurious      SignalType = "dsack_spurious"
+	SignalBBRUnderutil       SignalType = "bbr_underutil"
 )
 
 // SignalColor returns a display string for the signal.
@@ -33,6 +40,13 @@ func (s SignalType) Label() string {
 		SignalHighRetransRate:    "HI_RETRANS",
 		SignalDeliveryDrop:       "DEL_DROP",
 		SignalUnackedBuildup:     "UNACKED",
+		SignalListenQueueFull:    "LISTEN_Q",
+		SignalRTOFiring:          "RTO",
+		SignalSynStall:           "SYN_STALL",
+		SignalOneWayStall:        "ONE_WAY",
+		SignalCWndCollapse:       "CWND_DROP",
+		SignalDSACKSpurious:      "DSACK",
+		SignalBBRUnderutil:       "BBR_LOW",
 	}
 	if l, ok := labels[s]; ok {
 		return l

@@ -6,6 +6,7 @@ import "time"
 type Connection struct {
 	Timestamp time.Time
 
+	Protocol  string // "tcp" or "udp"
 	State     string
 	RecvQ     *int
 	SendQ     *int
@@ -108,5 +109,5 @@ type Connection struct {
 
 // ConnKey returns a unique identifier for this connection.
 func (c *Connection) ConnKey() string {
-	return c.LocalAddr + ":" + c.LocalPort + "|" + c.PeerAddr + ":" + c.PeerPort
+	return c.Protocol + "|" + c.LocalAddr + ":" + c.LocalPort + "|" + c.PeerAddr + ":" + c.PeerPort
 }

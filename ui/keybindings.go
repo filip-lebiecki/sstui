@@ -28,7 +28,7 @@ func RenderHelp() string {
 		{"G", "Last connection"},
 		{"Enter", "View connection detail"},
 		{"Escape", "Go back / close filter"},
-		{"1-4", "Switch tabs (Live/Detail/Overview/Top)"},
+		{"1-5", "Switch tabs (Live/Detail/Overview/Top/Perf)"},
 		{"Tab", "Next tab"},
 		{"Shift+Tab", "Previous tab"},
 		{"h", "Toggle sort on column"},

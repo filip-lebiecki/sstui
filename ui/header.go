@@ -141,7 +141,7 @@ func fmtBytesPerSec(b float64) string {
 
 // RenderTabs renders the tab bar.
 func RenderTabs(current int, width int) string {
-	tabs := []string{"Live", "Detail", "Overview", "Top"}
+	tabs := []string{"Live", "Detail", "Overview", "Top", "Perf"}
 	var parts []string
 
 	for i, t := range tabs {
@@ -225,9 +225,28 @@ func StateColor(state string) lipgloss.Color {
 		return lipgloss.Color("#ff6b6b")
 	case "SYN-SENT", "SYN-RECV":
 		return lipgloss.Color("#da77f2")
+	case "UDP_ACTIVE":
+		return lipgloss.Color("#3bc9db")
+	case "UDP_ESTAB":
+		return lipgloss.Color("#22b8cf")
+	case "UDP_IDLE":
+		return lipgloss.Color("#868e96")
+	case "UNCONN":
+		return lipgloss.Color("#868e96")
 	default:
 		return lipgloss.Color("#868e96")
 	}
+}
+
+// ProtoColor returns a color for the protocol tag.
+func ProtoColor(proto string) lipgloss.Color {
+	switch proto {
+	case "tcp":
+		return lipgloss.Color("#5a56e7")
+	case "udp":
+		return lipgloss.Color("#22b8cf")
+	}
+	return lipgloss.Color("#868e96")
 }
 
 // RenderTimeAgo renders a human-readable time ago string.

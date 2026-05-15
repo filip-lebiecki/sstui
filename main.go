@@ -46,12 +46,13 @@ const (
 	ViewDetail
 	ViewOverview
 	ViewTop
+	ViewPerf
 	ViewFilter
 	ViewHelp
 )
 
 // tabOrder is the cycle order for tab/shift-tab.
-var tabOrder = []ViewMode{ViewLive, ViewDetail, ViewOverview, ViewTop}
+var tabOrder = []ViewMode{ViewLive, ViewDetail, ViewOverview, ViewTop, ViewPerf}
 
 func nextTab(cur ViewMode, delta int) ViewMode {
 	idx := 0
@@ -147,6 +148,8 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.tab = ViewOverview
 		case "4":
 			m.tab = ViewTop
+		case "5":
+			m.tab = ViewPerf
 		case "tab":
 			m.tab = nextTab(m.tab, 1)
 		case "shift+tab":
@@ -321,6 +324,9 @@ func (m *AppModel) View() string {
 
 	case ViewTop:
 		content = ui.RenderTop(m.buf, m.width, ch)
+
+	case ViewPerf:
+		content = ui.RenderPerf(m.buf, m.width, ch)
 
 	case ViewFilter:
 		content = "\n  Filter connections:\n\n"

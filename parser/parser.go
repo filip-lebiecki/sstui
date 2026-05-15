@@ -289,9 +289,37 @@ func ParseLine(line string) (*model.Connection, error) {
 	return c, nil
 }
 
-// RunSS executes ss -atnpeimOH and returns parsed connections.
+// RunSS runs ss for both TCP and UDP and returns merged connections.
 func RunSS() ([]*model.Connection, error) {
-	cmd := exec.Command("ss", "-atnpeimOH")
+	tcpConns, tcpErr := runSS("-atnpeimOH", "tcp")
+	udpConns, udpErr := runSS("-aunpeimOH", "udp")
+	if tcpErr != nil && udpErr != nil {
+		return nil, tcpErr
+	}
+	conns := append(tcpConns, udpConns...)
+	for _, c := range conns {
+		if c.Protocol == "udp" {
+			applyUDPState(c)
+		}
+	}
+	return conns, nil
+}
+
+// applyUDPState maps raw ss UDP state into the app's synthetic states.
+func applyUDPState(c *model.Connection) {
+	hasQ := (c.RecvQ != nil && *c.RecvQ > 0) || (c.SendQ != nil && *c.SendQ > 0)
+	switch {
+	case c.State == "ESTAB":
+		c.State = "UDP_ESTAB"
+	case hasQ:
+		c.State = "UDP_ACTIVE"
+	default:
+		c.State = "UDP_IDLE"
+	}
+}
+
+func runSS(flags, protocol string) ([]*model.Connection, error) {
+	cmd := exec.Command("ss", flags)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, fmt.Errorf("ss: %w", err)
@@ -312,6 +340,7 @@ func RunSS() ([]*model.Connection, error) {
 			return
 		}
 		if c, err := ParseLine(pending); err == nil && c != nil {
+			c.Protocol = protocol
 			conns = append(conns, c)
 		}
 		pending = ""

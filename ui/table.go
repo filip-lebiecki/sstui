@@ -30,6 +30,30 @@ type TableColumn struct {
 	SortFunc  func(a, b *model.Connection) bool
 }
 
+var (
+	colDim     = lipgloss.Color("#666")
+	colAddr    = lipgloss.Color("#adb5bd")
+	colPort    = lipgloss.Color("#74c0fc")
+	colRTTOk   = lipgloss.Color("#51cf66")
+	colRTTMid  = lipgloss.Color("#ffd43b")
+	colRTTHi   = lipgloss.Color("#ffa94d")
+	colQ       = lipgloss.Color("#ffd43b")
+	colTX      = lipgloss.Color("#51cf66")
+	colRX      = lipgloss.Color("#da77f2")
+	colRetrans = lipgloss.Color("#ff6b6b")
+	colKA      = lipgloss.Color("#868e96")
+	colProc    = lipgloss.Color("#fff")
+	colPID     = lipgloss.Color("#888")
+)
+
+func colorize(s string, c lipgloss.Color) string {
+	return lipgloss.NewStyle().Foreground(c).Render(s)
+}
+
+func renderAddrPort(addr, port string) string {
+	return colorize(addr+":", colAddr) + colorize(port, colPort)
+}
+
 var defaultColumns = []TableColumn{
 	{
 		Key:   "signal",
@@ -41,11 +65,20 @@ var defaultColumns = []TableColumn{
 		SortFunc: nil,
 	},
 	{
+		Key:   "proto",
+		Title: "Proto",
+		Width: 5,
+		Render: func(c *model.Connection) string {
+			return colorize(strings.ToUpper(c.Protocol), ProtoColor(c.Protocol))
+		},
+		SortFunc: func(a, b *model.Connection) bool { return a.Protocol < b.Protocol },
+	},
+	{
 		Key:   "state",
 		Title: "State",
 		Width: 12,
 		Render: func(c *model.Connection) string {
-			return lipgloss.NewStyle().Foreground(StateColor(c.State)).Render(c.State)
+			return colorize(c.State, StateColor(c.State))
 		},
 		SortFunc: func(a, b *model.Connection) bool { return a.State < b.State },
 	},
@@ -55,7 +88,7 @@ var defaultColumns = []TableColumn{
 		Width:     16,
 		BaseWidth: 16,
 		Expand:    true,
-		Render:    func(c *model.Connection) string { return c.LocalAddr + ":" + c.LocalPort },
+		Render:    func(c *model.Connection) string { return renderAddrPort(c.LocalAddr, c.LocalPort) },
 		SortFunc: func(a, b *model.Connection) bool {
 			return a.LocalAddr+a.LocalPort < b.LocalAddr+b.LocalPort
 		},
@@ -66,33 +99,9 @@ var defaultColumns = []TableColumn{
 		Width:     16,
 		BaseWidth: 16,
 		Expand:    true,
-		Render:    func(c *model.Connection) string { return c.PeerAddr + ":" + c.PeerPort },
+		Render:    func(c *model.Connection) string { return renderAddrPort(c.PeerAddr, c.PeerPort) },
 		SortFunc: func(a, b *model.Connection) bool {
 			return a.PeerAddr+a.PeerPort < b.PeerAddr+b.PeerPort
-		},
-	},
-	{
-		Key:       "process",
-		Title:     "Process",
-		Width:     12,
-		BaseWidth: 12,
-		Expand:    true,
-		Render: func(c *model.Connection) string {
-			if c.Process == nil {
-				return "-"
-			}
-			return *c.Process
-		},
-		SortFunc: func(a, b *model.Connection) bool {
-			aV := ""
-			bV := ""
-			if a.Process != nil {
-				aV = *a.Process
-			}
-			if b.Process != nil {
-				bV = *b.Process
-			}
-			return aV < bV
 		},
 	},
 	{
@@ -100,7 +109,18 @@ var defaultColumns = []TableColumn{
 		Title: "RTT",
 		Width: 7,
 		Render: func(c *model.Connection) string {
-			return fmtRTT(c.RTT)
+			s := fmtRTT(c.RTT)
+			if c.RTT == nil {
+				return colorize(s, colDim)
+			}
+			switch {
+			case *c.RTT > 200:
+				return colorize(s, colRTTHi)
+			case *c.RTT > 50:
+				return colorize(s, colRTTMid)
+			default:
+				return colorize(s, colRTTOk)
+			}
 		},
 		SortFunc: func(a, b *model.Connection) bool {
 			if a.RTT == nil && b.RTT == nil {
@@ -116,31 +136,15 @@ var defaultColumns = []TableColumn{
 		},
 	},
 	{
-		Key:   "cwnd",
-		Title: "CWnd",
-		Width: 7,
-		Render: func(c *model.Connection) string {
-			return fmtNumRaw(c.CWnd)
-		},
-		SortFunc: func(a, b *model.Connection) bool {
-			if a.CWnd == nil && b.CWnd == nil {
-				return false
-			}
-			if a.CWnd == nil {
-				return true
-			}
-			if b.CWnd == nil {
-				return false
-			}
-			return *a.CWnd < *b.CWnd
-		},
-	},
-	{
 		Key:   "sq",
 		Title: "SQ",
 		Width: 5,
 		Render: func(c *model.Connection) string {
-			return fmtNumRaw(c.SendQ)
+			s := fmtNumRaw(c.SendQ)
+			if c.SendQ == nil || *c.SendQ == 0 {
+				return colorize(s, colDim)
+			}
+			return colorize(s, colQ)
 		},
 		SortFunc: func(a, b *model.Connection) bool {
 			if a.SendQ == nil && b.SendQ == nil {
@@ -160,7 +164,11 @@ var defaultColumns = []TableColumn{
 		Title: "RQ",
 		Width: 5,
 		Render: func(c *model.Connection) string {
-			return fmtNumRaw(c.RecvQ)
+			s := fmtNumRaw(c.RecvQ)
+			if c.RecvQ == nil || *c.RecvQ == 0 {
+				return colorize(s, colDim)
+			}
+			return colorize(s, colQ)
 		},
 		SortFunc: func(a, b *model.Connection) bool {
 			if a.RecvQ == nil && b.RecvQ == nil {
@@ -180,7 +188,11 @@ var defaultColumns = []TableColumn{
 		Title: "TX",
 		Width: 8,
 		Render: func(c *model.Connection) string {
-			return fmtRate(c.DeltaBytesSent)
+			s := fmtRate(c.DeltaBytesSent)
+			if c.DeltaBytesSent == nil || *c.DeltaBytesSent == 0 {
+				return colorize(s, colDim)
+			}
+			return colorize(s, colTX)
 		},
 		SortFunc: func(a, b *model.Connection) bool {
 			if a.DeltaBytesSent == nil && b.DeltaBytesSent == nil {
@@ -200,7 +212,11 @@ var defaultColumns = []TableColumn{
 		Title: "RX",
 		Width: 8,
 		Render: func(c *model.Connection) string {
-			return fmtRate(c.DeltaBytesReceived)
+			s := fmtRate(c.DeltaBytesReceived)
+			if c.DeltaBytesReceived == nil || *c.DeltaBytesReceived == 0 {
+				return colorize(s, colDim)
+			}
+			return colorize(s, colRX)
 		},
 		SortFunc: func(a, b *model.Connection) bool {
 			if a.DeltaBytesReceived == nil && b.DeltaBytesReceived == nil {
@@ -220,7 +236,11 @@ var defaultColumns = []TableColumn{
 		Title: "Retr",
 		Width: 6,
 		Render: func(c *model.Connection) string {
-			return fmtNumRaw(c.Retrans)
+			s := fmtNumRaw(c.Retrans)
+			if c.Retrans == nil || *c.Retrans == 0 {
+				return colorize(s, colDim)
+			}
+			return colorize(s, colRetrans)
 		},
 		SortFunc: func(a, b *model.Connection) bool {
 			if a.Retrans == nil && b.Retrans == nil {
@@ -240,12 +260,15 @@ var defaultColumns = []TableColumn{
 		Title: "KA",
 		Width: 7,
 		Render: func(c *model.Connection) string {
-			return fmtKeepalive(c)
+			s := fmtKeepalive(c)
+			if s == "-" {
+				return colorize(s, colDim)
+			}
+			return colorize(s, colKA)
 		},
 		SortFunc: func(a, b *model.Connection) bool {
 			av := keepaliveSeconds(a)
 			bv := keepaliveSeconds(b)
-			// missing (-1) sorts last
 			if av < 0 && bv < 0 {
 				return false
 			}
@@ -258,6 +281,34 @@ var defaultColumns = []TableColumn{
 			return av < bv
 		},
 	},
+	{
+		Key:       "process",
+		Title:     "Process",
+		Width:     18,
+		BaseWidth: 18,
+		Expand:    true,
+		Render: func(c *model.Connection) string {
+			if c.Process == nil {
+				return colorize("-", colDim)
+			}
+			s := colorize(*c.Process, colProc)
+			if c.PID != nil {
+				s += colorize(fmt.Sprintf(" (%d)", *c.PID), colPID)
+			}
+			return s
+		},
+		SortFunc: func(a, b *model.Connection) bool {
+			aV := ""
+			bV := ""
+			if a.Process != nil {
+				aV = *a.Process
+			}
+			if b.Process != nil {
+				bV = *b.Process
+			}
+			return aV < bV
+		},
+	},
 }
 
 // sortCycle defines the order in which [h] cycles through sort modes.
@@ -265,6 +316,7 @@ var sortCycle = []struct {
 	key string
 	dir SortDir
 }{
+	{"proto", SortAsc},
 	{"state", SortAsc},
 	{"state", SortDesc},
 	{"local", SortAsc},
@@ -274,7 +326,6 @@ var sortCycle = []struct {
 	{"process", SortAsc},
 	{"process", SortDesc},
 	{"rtt", SortDesc},
-	{"cwnd", SortDesc},
 	{"sq", SortDesc},
 	{"rq", SortDesc},
 	{"tx", SortDesc},
@@ -602,32 +653,26 @@ func shortenAddrPort(addr, port string, max int) string {
 		return ""
 	}
 	isV6 := strings.Count(addr, ":") >= 2
-	full := addr + ":" + port
+	open, close := "", ""
 	if isV6 {
-		full = "[" + addr + "]:" + port
+		open, close = "[", "]"
 	}
+	full := open + addr + close + ":" + port
+	addrPart := open + addr + close
 	if utf8.RuneCountInString(full) <= max {
-		return full
+		return colorize(addrPart+":", colAddr) + colorize(port, colPort)
 	}
-	// Reserve room for ":port" (or "]:port" for v6) and "…".
-	suffix := ":" + port
-	if isV6 {
-		suffix = "]:" + port
-	}
+	suffix := close + ":" + port
 	budget := max - utf8.RuneCountInString(suffix) - 1 // 1 for the ellipsis
 	if budget < 1 {
-		// Not enough room even for "…:port" — fall back to a hard rune truncate.
 		return truncate(full, max)
 	}
-	prefix := addr
-	if isV6 {
-		prefix = "[" + addr
-	}
+	prefix := open + addr
 	r := []rune(prefix)
 	if len(r) > budget {
 		r = r[:budget]
 	}
-	return string(r) + "…" + suffix
+	return colorize(string(r)+"…"+close+":", colAddr) + colorize(port, colPort)
 }
 
 func truncate(s string, max int) string {

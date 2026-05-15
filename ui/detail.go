@@ -41,9 +41,14 @@ func RenderDetail(conn *model.Connection, buf *poller.Buffer, width, height int)
 
 	b.WriteString(styleDetailTitle.Render(" Connection Details") + "\n\n")
 
-	// Identity
-	b.WriteString(renderDetailSection("Identity", func() string {
+	var sections []string
+	add := func(title string, body func() string) {
+		sections = append(sections, renderDetailSection(title, body))
+	}
+
+	add("Identity", func() string {
 		var sb strings.Builder
+		sb.WriteString(fmtRow("Protocol", strings.ToUpper(conn.Protocol)))
 		sb.WriteString(fmtRow("State", conn.State))
 		sb.WriteString(fmtRow("Local", conn.LocalAddr+":"+conn.LocalPort))
 		sb.WriteString(fmtRow("Peer", conn.PeerAddr+":"+conn.PeerPort))
@@ -62,20 +67,15 @@ func RenderDetail(conn *model.Connection, buf *poller.Buffer, width, height int)
 			sb.WriteString(fmtRow("Timer", fmt.Sprintf("%s (%s)", *conn.TimerType, *conn.TimerDur)))
 		}
 		return sb.String()
-	}))
+	})
 
-	b.WriteString("\n")
-
-	// Signals
 	if len(signals) > 0 {
-		b.WriteString(renderDetailSection("Signals", func() string {
-			return RenderSignals(signals)
-		}))
-		b.WriteString("\n")
+		add("Signals", func() string {
+			return RenderSignals(signals) + "\n"
+		})
 	}
 
-	// Performance
-	b.WriteString(renderDetailSection("Performance", func() string {
+	add("Performance", func() string {
 		var sb strings.Builder
 		sb.WriteString(fmtRow("RTT", fmtRTT(conn.RTT)+"ms"))
 		sb.WriteString(fmtRow("RTT Var", fmtFloat(conn.RTTVar, 1)+"ms"))
@@ -83,15 +83,15 @@ func RenderDetail(conn *model.Connection, buf *poller.Buffer, width, height int)
 		sb.WriteString(fmtRow("RTO", fmtFloat(conn.RTO, 1)+"ms"))
 		sb.WriteString(fmtRow("ATO", fmtFloat(conn.ATO, 1)+"ms"))
 		if conn.RTT != nil && conn.MinRTT != nil && *conn.MinRTT > 0 {
-			sb.WriteString(fmtRow("RTT/MinRTT", fmt.Sprintf("%.1fx", *conn.RTT / *conn.MinRTT)))
+			ratio := *conn.RTT / *conn.MinRTT
+			sb.WriteString(fmtRowBar("RTT/MinRTT",
+				fmt.Sprintf("%.1fx", ratio),
+				(ratio-1)/14))
 		}
 		return sb.String()
-	}))
+	})
 
-	b.WriteString("\n")
-
-	// Congestion
-	b.WriteString(renderDetailSection("Congestion", func() string {
+	add("Congestion", func() string {
 		var sb strings.Builder
 		sb.WriteString(fmtRow("CWnd", fmtPackets(conn.CWnd)))
 		sb.WriteString(fmtRow("ssthresh", fmtSSThresh(conn.SSThresh)))
@@ -102,21 +102,39 @@ func RenderDetail(conn *model.Connection, buf *poller.Buffer, width, height int)
 		sb.WriteString(fmtRow("SndWnd", fmtBytes(conn.SndWnd)))
 		sb.WriteString(fmtRow("RcvSpace", fmtBytes(conn.RcvSpace)))
 		sb.WriteString(fmtRow("RcvSSThresh", fmtBytes(conn.RcvSSThresh)))
-		sb.WriteString(fmtRow("Unacked", fmtPackets(conn.Unacked)))
+		{
+			unacked := 0
+			if conn.Unacked != nil {
+				unacked = *conn.Unacked
+			}
+			cwnd := 0
+			if conn.CWnd != nil {
+				cwnd = *conn.CWnd
+			}
+			ratio := 0.0
+			if cwnd > 0 {
+				ratio = float64(unacked) / float64(cwnd)
+			}
+			sb.WriteString(fmtRowBar("Unacked/CWnd",
+				fmt.Sprintf("%d/%d", unacked, cwnd), ratio))
+		}
 		if conn.CWnd != nil && conn.MSS != nil && *conn.MSS > 0 {
 			bytes := *conn.CWnd * *conn.MSS
-			sb.WriteString(fmtRow("CWnd bytes", fmtBytes(&bytes)))
+			if conn.SndWnd != nil && *conn.SndWnd > 0 {
+				ratio := float64(bytes) / float64(*conn.SndWnd)
+				sb.WriteString(fmtRowBar("CWnd / SndWnd",
+					fmtBytes(&bytes)+" / "+fmtBytes(conn.SndWnd), ratio))
+			} else {
+				sb.WriteString(fmtRow("CWnd bytes", fmtBytes(&bytes)))
+			}
 		}
 		if conn.WscaleSnd != nil && conn.WscaleRcv != nil {
 			sb.WriteString(fmtRow("WScale", fmt.Sprintf("snd=%d rcv=%d", *conn.WscaleSnd, *conn.WscaleRcv)))
 		}
 		return sb.String()
-	}))
+	})
 
-	b.WriteString("\n")
-
-	// Throughput
-	b.WriteString(renderDetailSection("Throughput", func() string {
+	add("Throughput", func() string {
 		var sb strings.Builder
 		sb.WriteString(fmtRow("Bytes Sent", fmtBytes(conn.BytesSent)))
 		sb.WriteString(fmtRow("Bytes Recv", fmtBytes(conn.BytesReceived)))
@@ -137,29 +155,28 @@ func RenderDetail(conn *model.Connection, buf *poller.Buffer, width, height int)
 			sb.WriteString(fmtRow("Last Ack", fmtMs(conn.LastAck)))
 		}
 		return sb.String()
-	}))
+	})
 
-	b.WriteString("\n")
-
-	// Retransmit
-	b.WriteString(renderDetailSection("Retransmit", func() string {
+	add("Retransmit", func() string {
 		var sb strings.Builder
 		sb.WriteString(fmtRow("Retrans (total)", fmtNumRaw(conn.Retrans)))
 		sb.WriteString(fmtRow("Retrans (flight)", fmtNumRaw(conn.RetransNow)))
 		sb.WriteString(fmtRow("Bytes Retrans", fmtBytes(conn.BytesRetrans)))
 		sb.WriteString(fmtRow("Lost", fmtNumRaw(conn.Lost)))
 		sb.WriteString(fmtRow("DSACK Dups", fmtNumRaw(conn.DSACKDups)))
-		if conn.DeltaBytesSent != nil && *conn.DeltaBytesSent > 0 && conn.DeltaBytesRetrans != nil {
-			rate := float64(*conn.DeltaBytesRetrans) / float64(*conn.DeltaBytesSent)
-			sb.WriteString(fmtRow("Retrans %", fmt.Sprintf("%.1f%%", rate*100)))
+		{
+			rate := 0.0
+			if conn.DeltaBytesSent != nil && *conn.DeltaBytesSent > 0 && conn.DeltaBytesRetrans != nil {
+				rate = float64(*conn.DeltaBytesRetrans) / float64(*conn.DeltaBytesSent)
+			}
+			// Map 0% → empty, 20% → full (HI_RETRANS critical threshold).
+			sb.WriteString(fmtRowBar("Retrans %",
+				fmt.Sprintf("%.1f%%", rate*100), rate/0.2))
 		}
 		return sb.String()
-	}))
+	})
 
-	b.WriteString("\n")
-
-	// Queues
-	b.WriteString(renderDetailSection("Queues", func() string {
+	add("Queues", func() string {
 		var sb strings.Builder
 		sb.WriteString(fmtRow("Send Q", fmtBytes(conn.SendQ)))
 		sb.WriteString(fmtRow("Recv Q", fmtBytes(conn.RecvQ)))
@@ -170,41 +187,84 @@ func RenderDetail(conn *model.Connection, buf *poller.Buffer, width, height int)
 		sb.WriteString(fmtRow("TX Δ", fmtSegRate(conn.DeltaSegsOut)))
 		sb.WriteString(fmtRow("RX Δ", fmtSegRate(conn.DeltaSegsIn)))
 		return sb.String()
-	}))
+	})
 
-	b.WriteString("\n")
-
-	// skmem
-	b.WriteString(renderDetailSection("Socket Memory", func() string {
+	add("Socket Memory", func() string {
 		var sb strings.Builder
-		sb.WriteString(fmtRow("rcv buf used", fmtBytes(conn.SkmemR)))
-		sb.WriteString(fmtRow("rcv buf limit", fmtBytes(conn.SkmemRB)))
-		sb.WriteString(fmtRow("snd buf used", fmtBytes(conn.SkmemT)))
-		sb.WriteString(fmtRow("snd buf limit", fmtBytes(conn.SkmemTB)))
+		{
+			used, limit := 0, 0
+			if conn.SkmemR != nil {
+				used = *conn.SkmemR
+			}
+			if conn.SkmemRB != nil {
+				limit = *conn.SkmemRB
+			}
+			ratio := 0.0
+			if limit > 0 {
+				ratio = float64(used) / float64(limit)
+			}
+			sb.WriteString(fmtRowBar("rcv buf",
+				fmtBytes(&used)+" / "+fmtBytes(&limit), ratio))
+		}
+		{
+			used, limit := 0, 0
+			if conn.SkmemT != nil {
+				used = *conn.SkmemT
+			}
+			if conn.SkmemTB != nil {
+				limit = *conn.SkmemTB
+			}
+			ratio := 0.0
+			if limit > 0 {
+				ratio = float64(used) / float64(limit)
+			}
+			sb.WriteString(fmtRowBar("snd buf",
+				fmtBytes(&used)+" / "+fmtBytes(&limit), ratio))
+		}
 		sb.WriteString(fmtRow("fwd alloc", fmtBytes(conn.SkmemF)))
 		sb.WriteString(fmtRow("write alloc", fmtBytes(conn.SkmemW)))
 		sb.WriteString(fmtRow("optmem", fmtBytes(conn.SkmemO)))
 		return sb.String()
-	}))
+	})
 
-	b.WriteString("\n")
-
-	// BBR
 	if conn.BBRBW != nil {
-		b.WriteString(renderDetailSection("BBR", func() string {
+		add("BBR", func() string {
 			var sb strings.Builder
 			sb.WriteString(fmtRow("BW", fmtBPS(conn.BBRBW)))
 			sb.WriteString(fmtRow("MRTT", fmtFloat(conn.BBRMRTT, 0)+"ms"))
 			sb.WriteString(fmtRow("Pacing Gain", fmtFloat(conn.BBRPacingGain, 2)))
 			sb.WriteString(fmtRow("CWnd Gain", fmtFloat(conn.BBRCWndGain, 2)))
 			return sb.String()
-		}))
-		b.WriteString("\n")
+		})
 	}
 
-	// Sparklines from history
+	b.WriteString(layoutSections(sections, width))
+	b.WriteString("\n")
 	b.WriteString(renderSparklines(conn, buf, width))
 
+	return b.String()
+}
+
+// layoutSections arranges detail sections into 1 or 2 columns based on width.
+func layoutSections(sections []string, width int) string {
+	const minTwoCol = 100
+	const gap = "    "
+	var b strings.Builder
+	if width < minTwoCol {
+		for _, s := range sections {
+			b.WriteString(s)
+			b.WriteString("\n")
+		}
+		return b.String()
+	}
+	for i := 0; i < len(sections); i += 2 {
+		if i+1 < len(sections) {
+			b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, sections[i], gap, sections[i+1]))
+		} else {
+			b.WriteString(sections[i])
+		}
+		b.WriteString("\n\n")
+	}
 	return b.String()
 }
 
@@ -221,6 +281,14 @@ func fmtRow(label, value string) string {
 		styleDetailValue.Render(value))
 }
 
+// fmtRowBar renders a label/value pair followed by a 10-cell ratio bar.
+func fmtRowBar(label, value string, ratio float64) string {
+	return fmt.Sprintf("  %s %s  %s\n",
+		styleDetailLabel.Render(fmt.Sprintf("%-16s: ", label)),
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#fff")).Bold(true).PaddingLeft(1).Render(fmt.Sprintf("%-14s", value)),
+		fmtRatioBar(ratio, 10))
+}
+
 func renderSparklines(conn *model.Connection, buf *poller.Buffer, width int) string {
 	snapshots := buf.GetAll()
 	if len(snapshots) < 2 {
@@ -229,30 +297,32 @@ func renderSparklines(conn *model.Connection, buf *poller.Buffer, width int) str
 
 	key := conn.ConnKey()
 	var rttVals, cwndVals, txVals, rxVals []float64
+	var sqVals, rqVals, unackedVals, retransVals []float64
+
+	pickF := func(p *float64) float64 {
+		if p == nil {
+			return 0
+		}
+		return *p
+	}
+	pickI := func(p *int) float64 {
+		if p == nil {
+			return 0
+		}
+		return float64(*p)
+	}
 
 	for _, snap := range snapshots {
 		for _, c := range snap.Conns {
 			if c.ConnKey() == key {
-				if c.RTT != nil {
-					rttVals = append(rttVals, *c.RTT)
-				} else {
-					rttVals = append(rttVals, 0)
-				}
-				if c.CWnd != nil {
-					cwndVals = append(cwndVals, float64(*c.CWnd))
-				} else {
-					cwndVals = append(cwndVals, 0)
-				}
-				if c.DeltaBytesSent != nil {
-					txVals = append(txVals, float64(*c.DeltaBytesSent))
-				} else {
-					txVals = append(txVals, 0)
-				}
-				if c.DeltaBytesReceived != nil {
-					rxVals = append(rxVals, float64(*c.DeltaBytesReceived))
-				} else {
-					rxVals = append(rxVals, 0)
-				}
+				rttVals = append(rttVals, pickF(c.RTT))
+				cwndVals = append(cwndVals, pickI(c.CWnd))
+				txVals = append(txVals, pickI(c.DeltaBytesSent))
+				rxVals = append(rxVals, pickI(c.DeltaBytesReceived))
+				sqVals = append(sqVals, pickI(c.SendQ))
+				rqVals = append(rqVals, pickI(c.RecvQ))
+				unackedVals = append(unackedVals, pickI(c.Unacked))
+				retransVals = append(retransVals, pickI(c.Retrans))
 				break
 			}
 		}
@@ -263,18 +333,29 @@ func renderSparklines(conn *model.Connection, buf *poller.Buffer, width int) str
 
 	chartWidth := min(width-20, 60)
 
-	if len(rttVals) > 1 {
-		b.WriteString("  RTT:  " + renderSparkline(rttVals, chartWidth, lipgloss.Color("#ffa94d")) + "\n")
+	hasSignal := func(vals []float64) bool {
+		for _, v := range vals {
+			if v != 0 {
+				return true
+			}
+		}
+		return false
 	}
-	if len(cwndVals) > 1 {
-		b.WriteString("  CWnd: " + renderSparkline(cwndVals, chartWidth, lipgloss.Color("#74c0fc")) + "\n")
+
+	line := func(label string, vals []float64, color lipgloss.Color) {
+		if len(vals) > 1 && hasSignal(vals) {
+			b.WriteString("  " + label + renderSparkline(vals, chartWidth, color) + "\n")
+		}
 	}
-	if len(txVals) > 1 {
-		b.WriteString("  TX:   " + renderSparkline(txVals, chartWidth, lipgloss.Color("#51cf66")) + "\n")
-	}
-	if len(rxVals) > 1 {
-		b.WriteString("  RX:   " + renderSparkline(rxVals, chartWidth, lipgloss.Color("#da77f2")) + "\n")
-	}
+
+	line("RTT:     ", rttVals, lipgloss.Color("#ffa94d"))
+	line("CWnd:    ", cwndVals, lipgloss.Color("#74c0fc"))
+	line("TX:      ", txVals, lipgloss.Color("#51cf66"))
+	line("RX:      ", rxVals, lipgloss.Color("#da77f2"))
+	line("SendQ:   ", sqVals, lipgloss.Color("#ffd43b"))
+	line("RecvQ:   ", rqVals, lipgloss.Color("#ffd43b"))
+	line("Unacked: ", unackedVals, lipgloss.Color("#3bc9db"))
+	line("Retrans: ", retransVals, lipgloss.Color("#ff6b6b"))
 
 	return b.String()
 }

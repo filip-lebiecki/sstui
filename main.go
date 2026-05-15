@@ -85,6 +85,7 @@ type AppModel struct {
 	quitting     bool
 	statusMsg    string
 	statusExpiry time.Time
+	eventsScroll int
 }
 
 func NewApp() *AppModel {
@@ -188,22 +189,62 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.showHelp = false
 			}
 		case "j", "down":
-			m.table.Next()
+			if m.tab == ViewEvents {
+				m.eventsScroll++
+				m.clampEventsScroll()
+			} else {
+				m.table.Next()
+			}
 		case "k", "up":
-			m.table.Prev()
+			if m.tab == ViewEvents {
+				m.eventsScroll--
+				if m.eventsScroll < 0 {
+					m.eventsScroll = 0
+				}
+			} else {
+				m.table.Prev()
+			}
+		case "pgdown":
+			if m.tab == ViewEvents {
+				m.eventsScroll += m.contentHeight() - 6
+				m.clampEventsScroll()
+			}
+		case "pgup":
+			if m.tab == ViewEvents {
+				m.eventsScroll -= m.contentHeight() - 6
+				if m.eventsScroll < 0 {
+					m.eventsScroll = 0
+				}
+			}
 		case "g":
-			m.table.First()
+			if m.tab == ViewEvents {
+				m.eventsScroll = 0
+			} else {
+				m.table.First()
+			}
 		case "G":
-			m.table.Last()
+			if m.tab == ViewEvents {
+				m.eventsScroll = ui.MaxEventsScroll(m.buf, m.contentHeight())
+			} else {
+				m.table.Last()
+			}
 		case "h":
 			m.table.CycleSort()
 		case "L":
 			m.filter.HideListen = !m.filter.HideListen
 			m.table.InvalidateCache()
 		case "e":
-			m.export("json")
+			if m.tab == ViewEvents {
+				m.exportEvents("json")
+			} else {
+				m.export("json")
+			}
 		case "E":
-			m.export("csv")
+			if m.tab == ViewEvents {
+				m.exportEvents("csv")
+			} else {
+				m.export("csv")
+			}
 		}
 
 	case tickMsg:
@@ -350,7 +391,7 @@ func (m *AppModel) View() string {
 		content = ui.RenderPerf(m.buf, m.width, ch)
 
 	case ViewEvents:
-		content = ui.RenderEvents(m.buf, m.width, ch)
+		content = ui.RenderEvents(m.buf, m.width, ch, m.eventsScroll)
 
 	case ViewFilter:
 		content = "\n  Filter connections:\n\n"
@@ -439,6 +480,51 @@ func (m *AppModel) renderFilterText() string {
 		parts = append(parts, "signal="+m.filter.Signal)
 	}
 	return strings.Join(parts, " ")
+}
+
+func (m *AppModel) clampEventsScroll() {
+	max := ui.MaxEventsScroll(m.buf, m.contentHeight())
+	if m.eventsScroll > max {
+		m.eventsScroll = max
+	}
+	if m.eventsScroll < 0 {
+		m.eventsScroll = 0
+	}
+}
+
+func (m *AppModel) exportEvents(kind string) {
+	events := ui.CollectEvents(m.buf)
+	if len(events) == 0 {
+		m.statusMsg = "no events to export"
+		m.statusExpiry = time.Now().Add(5 * time.Second)
+		return
+	}
+
+	ts := time.Now().Format("20060102-150405")
+	name := fmt.Sprintf("ss-events-%s.%s", ts, kind)
+	cwd, err := os.Getwd()
+	if err != nil {
+		cwd = "."
+	}
+	path := filepath.Join(cwd, name)
+
+	var n int
+	switch kind {
+	case "json":
+		n, err = ui.ExportEventsJSON(events, path)
+	case "csv":
+		n, err = ui.ExportEventsCSV(events, path)
+	default:
+		m.statusMsg = "unknown export kind: " + kind
+		m.statusExpiry = time.Now().Add(5 * time.Second)
+		return
+	}
+	if err != nil {
+		m.statusMsg = "events export failed: " + err.Error()
+	} else {
+		m.statusMsg = fmt.Sprintf("Exported %d events → %s", n, path)
+	}
+	m.statusExpiry = time.Now().Add(5 * time.Second)
 }
 
 func (m *AppModel) export(kind string) {

@@ -60,6 +60,9 @@ var (
 	reAppLimited   = regexp.MustCompile(`\bapp_limited\b`)
 	reRcvRTT       = regexp.MustCompile(`\brcv_rtt:(\d+\.?\d*)`)
 	reRcvWnd       = regexp.MustCompile(`\brcv_wnd:(\d+)`)
+	reReordering   = regexp.MustCompile(`\breordering:(\d+)`)
+	reReordSeen    = regexp.MustCompile(`\breord_seen:(\d+)`)
+	reRcvOOOPack   = regexp.MustCompile(`\brcv_ooopack:(\d+)`)
 	// Standalone congestion-control algorithm tokens emitted by ss.
 	reCongAlgo = regexp.MustCompile(`\b(cubic|bbr|reno|vegas|htcp|cdg|dctcp|lp|nv|hybla|illinois|highspeed|scalable|westwood|yeah|bic)\b`)
 )
@@ -299,6 +302,15 @@ func ParseLine(line string) (*model.Connection, error) {
 	if m := reCongAlgo.FindStringSubmatch(rest); len(m) == 2 {
 		algo := m[1]
 		c.CongAlgo = &algo
+	}
+	if m := reReordering.FindStringSubmatch(rest); len(m) == 2 {
+		c.Reordering = mustInt(m[1])
+	}
+	if m := reReordSeen.FindStringSubmatch(rest); len(m) == 2 {
+		c.ReordSeen = mustInt(m[1])
+	}
+	if m := reRcvOOOPack.FindStringSubmatch(rest); len(m) == 2 {
+		c.RcvOOOPack = mustInt(m[1])
 	}
 
 	return c, nil

@@ -223,6 +223,18 @@ func Classify(c *model.Connection) []model.Signal {
 		signals = append(signals, model.Signal{Type: model.SignalDSACKSpurious, Severity: sev, Value: *c.DeltaDSACKDups})
 	}
 
+	// Reordering: receiver saw out-of-order packets this poll. Distinguishes
+	// real packet reordering on the path from straight loss — both can
+	// trigger spurious retransmits, but the fix is different (often a queue
+	// or LACP issue, not congestion).
+	if c.DeltaRcvOOOPack != nil && *c.DeltaRcvOOOPack > 0 {
+		sev := 1
+		if *c.DeltaRcvOOOPack > 50 {
+			sev = 2
+		}
+		signals = append(signals, model.Signal{Type: model.SignalReordering, Severity: sev, Value: *c.DeltaRcvOOOPack})
+	}
+
 	// BBR delivering less than half its bandwidth estimate while actively
 	// trying to send (and not app-limited). Surfaces BBR-specific
 	// under-utilization that the generic DEL_DROP signal may miss when

@@ -86,14 +86,17 @@ type Connection struct {
 	// bare token by ss; absent on non-TCP sockets.
 	CongAlgo *string
 
-	BusyMS    *float64
-	PMTU      *int
-	AdvMSS    *int
-	RcvMSS    *int
-	LastSnd   *int
-	LastRcv   *int
-	LastAck   *int
-	DSACKDups *int
+	BusyMS     *float64
+	PMTU       *int
+	AdvMSS     *int
+	RcvMSS     *int
+	LastSnd    *int
+	LastRcv    *int
+	LastAck    *int
+	DSACKDups  *int
+	Reordering *int // reordering: kernel's reordering distance estimate
+	ReordSeen  *int // reord_seen: cumulative reorder events observed
+	RcvOOOPack *int // rcv_ooopack: cumulative out-of-order packets received
 
 	// BBR
 	BBRBW         *int
@@ -108,6 +111,7 @@ type Connection struct {
 	DeltaSegsIn        *int
 	DeltaBytesRetrans  *int
 	DeltaDSACKDups     *int
+	DeltaRcvOOOPack    *int
 	DeltaBusyMS        *float64
 
 	// Previous values kept for non-monotonic signals (e.g. cwnd collapse).

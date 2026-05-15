@@ -23,6 +23,7 @@ const (
 	SignalCWndCollapse       SignalType = "cwnd_collapse"
 	SignalDSACKSpurious      SignalType = "dsack_spurious"
 	SignalBBRUnderutil       SignalType = "bbr_underutil"
+	SignalReordering         SignalType = "reordering"
 )
 
 // SignalColor returns a display string for the signal.
@@ -47,6 +48,7 @@ func (s SignalType) Label() string {
 		SignalCWndCollapse:       "CWND_DROP",
 		SignalDSACKSpurious:      "DSACK",
 		SignalBBRUnderutil:       "BBR_LOW",
+		SignalReordering:         "REORDER",
 	}
 	if l, ok := labels[s]; ok {
 		return l

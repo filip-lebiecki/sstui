@@ -124,7 +124,7 @@ func renderPerfSummary(buf *poller.Buffer, snap *poller.Snapshot, width int) str
 		chartW := min(width-30, 60)
 		sb.WriteString(fmt.Sprintf("  %s %s\n",
 			styleTopHdr.Render("Signals over time:"),
-			renderSparkline(vals, chartW, lipgloss.Color("#ffa94d"))))
+			renderBarChart(vals, chartW, lipgloss.Color("#ffa94d"))))
 	}
 	return sb.String()
 }

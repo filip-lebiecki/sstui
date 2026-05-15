@@ -34,8 +34,9 @@ func RenderHelp() string {
 		{"h", "Cycle sort column / direction"},
 		{"L", "Toggle hiding LISTEN sockets"},
 		{"/", "Open filter mode"},
-		{"e", "Export ring buffer to JSON"},
-		{"E", "Export current snapshot to CSV"},
+		{"e", "Export ring buffer to JSON (events list on Events tab)"},
+		{"E", "Export current snapshot to CSV (events list on Events tab)"},
+		{"PgUp/PgDn", "Page scroll (Events tab)"},
 		{"?", "Toggle this help"},
 		{"q", "Quit"},
 	}

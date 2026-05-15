@@ -63,6 +63,7 @@ var (
 		model.SignalCWndCollapse:       lipgloss.Color("#ffa94d"),
 		model.SignalDSACKSpurious:      lipgloss.Color("#ffd43b"),
 		model.SignalBBRUnderutil:       lipgloss.Color("#ffa94d"),
+		model.SignalReordering:         lipgloss.Color("#ffa94d"),
 	}
 )
 

@@ -36,7 +36,6 @@ func RenderDetail(conn *model.Connection, buf *poller.Buffer, width, height int)
 		return "\n  No connection selected. Use Enter on a connection to view details."
 	}
 
-	signals := conn.Signals
 	var b strings.Builder
 
 	b.WriteString(styleDetailTitle.Render(" Connection Detail") + "\n\n")
@@ -61,6 +60,9 @@ func RenderDetail(conn *model.Connection, buf *poller.Buffer, width, height int)
 		if conn.UID != nil {
 			sb.WriteString(fmtRowColor("UID", fmt.Sprintf("%d", *conn.UID), colPID))
 		}
+		if conn.Cgroup != nil {
+			sb.WriteString(fmtRowColor("Cgroup", *conn.Cgroup, colDim))
+		}
 		if conn.CongAlgo != nil {
 			algoColor := colPort
 			if *conn.CongAlgo == "bbr" {
@@ -75,12 +77,6 @@ func RenderDetail(conn *model.Connection, buf *poller.Buffer, width, height int)
 		}
 		return sb.String()
 	})
-
-	if len(signals) > 0 {
-		add("Signals", func() string {
-			return RenderSignals(signals) + "\n"
-		})
-	}
 
 	add("Performance", func() string {
 		var sb strings.Builder
@@ -183,6 +179,9 @@ func RenderDetail(conn *model.Connection, buf *poller.Buffer, width, height int)
 		sb.WriteString(fmtRowColor("Bytes Retrans", fmtBytes(conn.BytesRetrans), dimIfZero(conn.BytesRetrans, colRetrans)))
 		sb.WriteString(fmtRowColor("Lost", fmtNumRaw(conn.Lost), dimIfZero(conn.Lost, colRetrans)))
 		sb.WriteString(fmtRowColor("DSACK Dups", fmtNumRaw(conn.DSACKDups), dimIfZero(conn.DSACKDups, colQ)))
+		sb.WriteString(fmtRowColor("Reordering", fmtNumRaw(conn.Reordering), colDim))
+		sb.WriteString(fmtRowColor("Reord Seen", fmtNumRaw(conn.ReordSeen), dimIfZero(conn.ReordSeen, colQ)))
+		sb.WriteString(fmtRowColor("Rcv OOO", fmtNumRaw(conn.RcvOOOPack), dimIfZero(conn.RcvOOOPack, colQ)))
 		{
 			rate := 0.0
 			if conn.DeltaBytesSent != nil && *conn.DeltaBytesSent > 0 && conn.DeltaBytesRetrans != nil {
@@ -196,6 +195,9 @@ func RenderDetail(conn *model.Connection, buf *poller.Buffer, width, height int)
 	})
 
 	b.WriteString(layoutSections(sections, width))
+	if len(conn.Signals) > 0 {
+		b.WriteString("\n" + RenderSignals(conn.Signals) + "\n")
+	}
 	return b.String()
 }
 
@@ -269,6 +271,8 @@ func RenderSocket(conn *model.Connection, buf *poller.Buffer, width, height int)
 		sb.WriteString(fmtRowColor("fwd alloc", fmtBytes(conn.SkmemF), dimIfZero(conn.SkmemF, colAddr)))
 		sb.WriteString(fmtRowColor("write alloc", fmtBytes(conn.SkmemW), dimIfZero(conn.SkmemW, colAddr)))
 		sb.WriteString(fmtRowColor("optmem", fmtBytes(conn.SkmemO), dimIfZero(conn.SkmemO, colAddr)))
+		sb.WriteString(fmtRowColor("backlog", fmtBytes(conn.SkmemBL), dimIfZero(conn.SkmemBL, colQ)))
+		sb.WriteString(fmtRowColor("drops", fmtNumRaw(conn.SkmemD), dimIfZero(conn.SkmemD, colRetrans)))
 		return sb.String()
 	})
 

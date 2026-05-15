@@ -147,6 +147,7 @@ func computeDeltas(cur, prev *model.Connection) {
 		{curVal: cur.SegsIn, prevVal: prev.SegsIn, out: &cur.DeltaSegsIn},
 		{curVal: cur.BytesRetrans, prevVal: prev.BytesRetrans, out: &cur.DeltaBytesRetrans},
 		{curVal: cur.DSACKDups, prevVal: prev.DSACKDups, out: &cur.DeltaDSACKDups},
+		{curVal: cur.RcvOOOPack, prevVal: prev.RcvOOOPack, out: &cur.DeltaRcvOOOPack},
 	}
 
 	for _, p := range pairs {

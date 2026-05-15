@@ -39,15 +39,6 @@ func (b *Buffer) ExportJSON(path string) (int, error) {
 	return len(snaps), nil
 }
 
-// MarshalJSON exposes the snapshot's connection list (the byKey index is just
-// a render-time accelerator and isn't worth serializing).
-func (s *Snapshot) MarshalJSON() ([]byte, error) {
-	return json.Marshal(struct {
-		Timestamp time.Time           `json:"timestamp"`
-		Conns     []*model.Connection `json:"conns"`
-	}{s.Timestamp, s.Conns})
-}
-
 // ExportCSV writes the latest snapshot as a flat CSV (one row per connection).
 // Signals are joined as "LABEL:sev;LABEL:sev". Returns row count and any error.
 func (b *Buffer) ExportCSV(path string) (int, error) {

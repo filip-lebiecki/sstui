@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -387,21 +388,23 @@ func (m *AppModel) View() string {
 		Render(b.String())
 }
 
-// clipToHeight clips a string to at most maxLines lines.
+// clipToHeight clips a string to at most maxLines lines, replacing the last
+// visible line with a dim "↓ N more lines" indicator when content overflows
+// so users know the bottom is hidden rather than missing.
 func clipToHeight(s string, maxLines int) string {
 	lines := strings.Split(s, "\n")
 	if len(lines) <= maxLines {
 		return s
 	}
-	return strings.Join(lines[:maxLines], "\n")
-}
-
-func (m *AppModel) getLatestConns() []*model.Connection {
-	snap := m.buf.GetLatest()
-	if snap == nil {
-		return nil
+	if maxLines < 1 {
+		return ""
 	}
-	return snap.Conns
+	hidden := len(lines) - maxLines + 1
+	indicator := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#666")).
+		Italic(true).
+		Render(fmt.Sprintf("  ↓ %d more line(s)", hidden))
+	return strings.Join(lines[:maxLines-1], "\n") + "\n" + indicator
 }
 
 func (m *AppModel) getConnectionByKey(key string) *model.Connection {
@@ -445,22 +448,28 @@ func (m *AppModel) export(kind string) {
 	if err != nil {
 		cwd = "."
 	}
-	path := cwd + string(os.PathSeparator) + name
+	path := filepath.Join(cwd, name)
 
-	var n int
+	var (
+		n     int
+		unit  string
+	)
 	switch kind {
 	case "json":
 		n, err = m.buf.ExportJSON(path)
+		unit = "snapshots"
 	case "csv":
 		n, err = m.buf.ExportCSV(path)
+		unit = "rows"
+	default:
+		m.statusMsg = "unknown export kind: " + kind
+		m.statusExpiry = time.Now().Add(5 * time.Second)
+		return
 	}
 	if err != nil {
 		m.statusMsg = "export failed: " + err.Error()
 	} else {
-		m.statusMsg = fmt.Sprintf("Exported %d %s → %s",
-			n,
-			map[string]string{"json": "snapshots", "csv": "rows"}[kind],
-			path)
+		m.statusMsg = fmt.Sprintf("Exported %d %s → %s", n, unit, path)
 	}
 	m.statusExpiry = time.Now().Add(5 * time.Second)
 }
@@ -473,6 +482,14 @@ func (m *AppModel) renderFooter() string {
 			Bold(true).
 			Padding(0, 1).
 			Render(m.statusMsg)
+	}
+	if m.lastError != nil {
+		return lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#000")).
+			Background(lipgloss.Color("#ff6b6b")).
+			Bold(true).
+			Padding(0, 1).
+			Render("ss error: " + m.lastError.Error() + "  (data may be stale)")
 	}
 	snap := m.buf.GetLatest()
 	total := 0

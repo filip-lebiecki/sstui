@@ -18,6 +18,9 @@ type Snapshot struct {
 	Timestamp time.Time
 	Conns     []*model.Connection
 	byKey     map[string]*model.Connection
+	// stateCounts is precomputed at snapshot creation so render-time code
+	// doesn't have to walk Conns for every snapshot it visits.
+	stateCounts map[string]int
 }
 
 // Lookup returns the connection in this snapshot with the given key, or nil.
@@ -26,6 +29,16 @@ func (s *Snapshot) Lookup(key string) *model.Connection {
 		return nil
 	}
 	return s.byKey[key]
+}
+
+// StateCount returns the number of connections in this snapshot with the
+// given state. Cheap O(1) lookup; the index is built when the snapshot is
+// added to the buffer.
+func (s *Snapshot) StateCount(state string) int {
+	if s == nil {
+		return 0
+	}
+	return s.stateCounts[state]
 }
 
 // Buffer holds a ring buffer of snapshots.
@@ -45,43 +58,62 @@ func NewBuffer() *Buffer {
 	}
 }
 
-// AddSnapshot stores a new snapshot and computes deltas.
+// AddSnapshot stores a new snapshot and computes deltas. Delta computation
+// and classification run outside the write lock so concurrent readers
+// (GetLatest, GetAll) aren't blocked while we walk every connection. We
+// only take the lock briefly when reading prev pointers and again to
+// publish the new snapshot.
 func (b *Buffer) AddSnapshot(conns []*model.Connection) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
+	// Phase 1: snapshot the prev pointers we need under a read lock. The
+	// Connection structs they point to are immutable after publication, so
+	// reading their fields outside the lock is safe.
+	b.mu.RLock()
+	prevs := make(map[string]*model.Connection, len(conns))
+	for _, c := range conns {
+		if p, ok := b.prevMap[c.ConnKey()]; ok {
+			prevs[c.ConnKey()] = p
+		}
+	}
+	b.mu.RUnlock()
 
-	// Build a set of current keys for cleanup
+	// Phase 2: compute deltas and classify with no lock held. The new conns
+	// are only visible to this goroutine until we publish in phase 3.
+	for _, c := range conns {
+		if prev, ok := prevs[c.ConnKey()]; ok && sameConnection(c, prev) {
+			computeDeltas(c, prev)
+		}
+		c.Signals = classifier.Classify(c)
+	}
+
+	// Phase 3: build indexes and publish under the write lock.
+	byKey := make(map[string]*model.Connection, len(conns))
+	stateCounts := make(map[string]int)
 	currentKeys := make(map[string]bool, len(conns))
-
-	// Compute deltas from previous snapshot, then classify once per poll.
 	for _, c := range conns {
 		key := c.ConnKey()
 		currentKeys[key] = true
-		prev := b.prevMap[key]
-		if prev != nil && sameConnection(c, prev) {
-			b.computeDeltas(c, prev)
-		}
-		c.Signals = classifier.Classify(c)
-		b.prevMap[key] = c
+		byKey[key] = c
+		stateCounts[c.State]++
 	}
 
-	// Remove stale entries for connections that no longer exist
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	for _, c := range conns {
+		b.prevMap[c.ConnKey()] = c
+	}
 	for k := range b.prevMap {
 		if !currentKeys[k] {
 			delete(b.prevMap, k)
 		}
 	}
 
-	byKey := make(map[string]*model.Connection, len(conns))
-	for _, c := range conns {
-		byKey[c.ConnKey()] = c
-	}
 	snap := &Snapshot{
-		Timestamp: time.Now(),
-		Conns:     conns,
-		byKey:     byKey,
+		Timestamp:   time.Now(),
+		Conns:       conns,
+		byKey:       byKey,
+		stateCounts: stateCounts,
 	}
-
 	b.snapshots[b.head] = snap
 	b.head = (b.head + 1) % BufferSize
 	if b.count < BufferSize {
@@ -101,7 +133,7 @@ func sameConnection(cur, prev *model.Connection) bool {
 	return true
 }
 
-func (b *Buffer) computeDeltas(cur, prev *model.Connection) {
+func computeDeltas(cur, prev *model.Connection) {
 	type deltaPair struct {
 		curVal  *int
 		prevVal *int

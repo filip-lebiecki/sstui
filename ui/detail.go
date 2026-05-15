@@ -26,9 +26,6 @@ var (
 				Foreground(lipgloss.Color("#fff")).
 				Bold(true).
 				PaddingLeft(1)
-
-	styleSparkline = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#51cf66"))
 )
 
 // RenderDetail renders the network-level detail view: identity, signals,
@@ -152,8 +149,8 @@ func RenderDetail(conn *model.Connection, buf *poller.Buffer, width, height int)
 		sb.WriteString(fmtRowColor("Bytes Sent", fmtBytes(conn.BytesSent), dimIfZero(conn.BytesSent, colTX)))
 		sb.WriteString(fmtRowColor("Bytes Recv", fmtBytes(conn.BytesReceived), dimIfZero(conn.BytesReceived, colRX)))
 		sb.WriteString(fmtRowColor("Bytes Acked", fmtBytes(conn.BytesAcked), dimIfZero(conn.BytesAcked, colTX)))
-		sb.WriteString(fmtRowColor("TX Rate", fmtRate(conn.DeltaBytesSent), dimIfZeroDelta(conn.DeltaBytesSent, colTX)))
-		sb.WriteString(fmtRowColor("RX Rate", fmtRate(conn.DeltaBytesReceived), dimIfZeroDelta(conn.DeltaBytesReceived, colRX)))
+		sb.WriteString(fmtRowColor("TX Rate", fmtRate(conn.DeltaBytesSent), dimIfZero(conn.DeltaBytesSent, colTX)))
+		sb.WriteString(fmtRowColor("RX Rate", fmtRate(conn.DeltaBytesReceived), dimIfZero(conn.DeltaBytesReceived, colRX)))
 		sb.WriteString(fmtRowColor("Pacing Rate", fmtBPS(conn.PacingRate), dimIfZero(conn.PacingRate, colPort)))
 		sb.WriteString(fmtRowColor("Delivery Rate", fmtBPS(conn.DeliveryRate), dimIfZero(conn.DeliveryRate, colPort)))
 		sb.WriteString(fmtRowColor("Send (inst)", fmtBPS(conn.SendBPS), dimIfZero(conn.SendBPS, colTX)))
@@ -232,8 +229,8 @@ func RenderSocket(conn *model.Connection, buf *poller.Buffer, width, height int)
 		sb.WriteString(fmtRowColor("Segs In", fmtNumRaw(conn.SegsIn), colRX))
 		sb.WriteString(fmtRowColor("Data Segs Out", fmtNumRaw(conn.DataSegsOut), colTX))
 		sb.WriteString(fmtRowColor("Data Segs In", fmtNumRaw(conn.DataSegsIn), colRX))
-		sb.WriteString(fmtRowColor("TX Δ", fmtSegRate(conn.DeltaSegsOut), dimIfZeroDelta(conn.DeltaSegsOut, colTX)))
-		sb.WriteString(fmtRowColor("RX Δ", fmtSegRate(conn.DeltaSegsIn), dimIfZeroDelta(conn.DeltaSegsIn, colRX)))
+		sb.WriteString(fmtRowColor("TX Δ", fmtSegRate(conn.DeltaSegsOut), dimIfZero(conn.DeltaSegsOut, colTX)))
+		sb.WriteString(fmtRowColor("RX Δ", fmtSegRate(conn.DeltaSegsIn), dimIfZero(conn.DeltaSegsIn, colRX)))
 		return sb.String()
 	})
 
@@ -369,17 +366,13 @@ func fmtRowColor(label, value string, color lipgloss.Color) string {
 }
 
 // dimIfZero returns colDim when the int pointer is nil or 0, else accent.
+// Used for both totals and per-poll deltas — in both cases nil and 0 mean
+// "no activity worth highlighting".
 func dimIfZero(v *int, accent lipgloss.Color) lipgloss.Color {
 	if v == nil || *v == 0 {
 		return colDim
 	}
 	return accent
-}
-
-// dimIfZeroDelta is like dimIfZero but for delta-rate pointers; nil and 0 both
-// mean "no activity this poll", so render dimmed.
-func dimIfZeroDelta(v *int, accent lipgloss.Color) lipgloss.Color {
-	return dimIfZero(v, accent)
 }
 
 // rttColor picks a color from the same three-tier scale used in the table:
@@ -442,19 +435,18 @@ func renderSparklines(conn *model.Connection, buf *poller.Buffer, width int) str
 	}
 
 	for _, snap := range snapshots {
-		for _, c := range snap.Conns {
-			if c.ConnKey() == key {
-				rttVals = append(rttVals, pickF(c.RTT))
-				cwndVals = append(cwndVals, pickI(c.CWnd))
-				txVals = append(txVals, pickI(c.DeltaBytesSent))
-				rxVals = append(rxVals, pickI(c.DeltaBytesReceived))
-				sqVals = append(sqVals, pickI(c.SendQ))
-				rqVals = append(rqVals, pickI(c.RecvQ))
-				unackedVals = append(unackedVals, pickI(c.Unacked))
-				retransVals = append(retransVals, pickI(c.Retrans))
-				break
-			}
+		c := snap.Lookup(key)
+		if c == nil {
+			continue
 		}
+		rttVals = append(rttVals, pickF(c.RTT))
+		cwndVals = append(cwndVals, pickI(c.CWnd))
+		txVals = append(txVals, pickI(c.DeltaBytesSent))
+		rxVals = append(rxVals, pickI(c.DeltaBytesReceived))
+		sqVals = append(sqVals, pickI(c.SendQ))
+		rqVals = append(rqVals, pickI(c.RecvQ))
+		unackedVals = append(unackedVals, pickI(c.Unacked))
+		retransVals = append(retransVals, pickI(c.Retrans))
 	}
 
 	var b strings.Builder

@@ -34,10 +34,16 @@ func RenderEvents(buf *poller.Buffer, width, height int) string {
 	// Track which signal types were active on each connection in the *previous*
 	// snapshot it appeared in. A signal counts as a new event when it's in the
 	// current snapshot's signal set but not in the prior one.
+	//
+	// After processing each snapshot we drop keys that didn't appear — that
+	// way, if a 4-tuple is later reused (e.g. ephemeral port recycle), we
+	// don't suppress legitimate new signals because the dead connection's
+	// signal set is still hanging around in prev.
 	prev := make(map[string]map[model.SignalType]bool)
 	var events []event
 
 	for _, snap := range snapshots {
+		seen := make(map[string]map[model.SignalType]bool, len(snap.Conns))
 		for _, c := range snap.Conns {
 			key := c.ConnKey()
 			before := prev[key]
@@ -57,8 +63,9 @@ func RenderEvents(buf *poller.Buffer, width, height int) string {
 					})
 				}
 			}
-			prev[key] = cur
+			seen[key] = cur
 		}
+		prev = seen
 	}
 
 	var b strings.Builder
@@ -122,14 +129,14 @@ func RenderEvents(buf *poller.Buffer, width, height int) string {
 	return b.String()
 }
 
+// severityTag returns a short tag and color for a warn/crit severity.
+// Info-level signals are filtered before they reach this point, so only
+// the two non-zero cases are reachable.
 func severityTag(sev int) (string, lipgloss.Color) {
-	switch sev {
-	case 2:
+	if sev >= 2 {
 		return "CRIT", lipgloss.Color("#ff6b6b")
-	case 1:
-		return "WARN", lipgloss.Color("#ffa94d")
 	}
-	return "INFO", lipgloss.Color("#868e96")
+	return "WARN", lipgloss.Color("#ffa94d")
 }
 
 func fmtEventValue(v any) string {

@@ -515,23 +515,12 @@ func renderSystemWide(buf *poller.Buffer, snap *poller.Snapshot, width int) stri
 }
 
 func renderTimeWaitGrowth(buf *poller.Buffer, snap *poller.Snapshot, width int) string {
-	current := 0
-	for _, c := range snap.Conns {
-		if c.State == "TIME-WAIT" {
-			current++
-		}
-	}
+	current := snap.StateCount("TIME-WAIT")
 
 	snapshots := buf.GetAll()
-	var counts []float64
+	counts := make([]float64, 0, len(snapshots))
 	for _, sn := range snapshots {
-		var n int
-		for _, c := range sn.Conns {
-			if c.State == "TIME-WAIT" {
-				n++
-			}
-		}
-		counts = append(counts, float64(n))
+		counts = append(counts, float64(sn.StateCount("TIME-WAIT")))
 	}
 
 	// Growth since ~30s ago (15 polls @ 2s).
@@ -637,8 +626,7 @@ func renderPortExhaustion(snap *poller.Snapshot, width int) string {
 
 	return fmt.Sprintf("  Ephemeral ports: %s %s %s\n",
 		lipgloss.NewStyle().Foreground(color).Bold(true).Render(fmt.Sprintf("%d/%d", count, size)),
-		styleTopDim.Render(fmt.Sprintf("(%s-%s, %.1f%% used)",
-			strconv.Itoa(lo), strconv.Itoa(hi), pct)),
+		styleTopDim.Render(fmt.Sprintf("(%d-%d, %.1f%% used)", lo, hi, pct)),
 		fmtPropBar(float64(count), float64(size), barW))
 }
 

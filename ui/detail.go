@@ -246,6 +246,8 @@ func RenderDetail(conn *model.Connection, buf *poller.Buffer, width, height int)
 }
 
 // layoutSections arranges detail sections into 1 or 2 columns based on width.
+// In 2-column mode the right column is aligned by padding every left section
+// to a uniform width — the widest line found among all left sections.
 func layoutSections(sections []string, width int) string {
 	const minTwoCol = 100
 	const gap = "    "
@@ -257,9 +259,20 @@ func layoutSections(sections []string, width int) string {
 		}
 		return b.String()
 	}
+	// Find max visible width across all left-column sections.
+	leftMax := 0
 	for i := 0; i < len(sections); i += 2 {
+		for _, line := range strings.Split(sections[i], "\n") {
+			if w := lipgloss.Width(line); w > leftMax {
+				leftMax = w
+			}
+		}
+	}
+	padLeft := lipgloss.NewStyle().Width(leftMax)
+	for i := 0; i < len(sections); i += 2 {
+		left := padLeft.Render(sections[i])
 		if i+1 < len(sections) {
-			b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, sections[i], gap, sections[i+1]))
+			b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, left, gap, sections[i+1]))
 		} else {
 			b.WriteString(sections[i])
 		}
@@ -282,10 +295,11 @@ func fmtRow(label, value string) string {
 }
 
 // fmtRowBar renders a label/value pair followed by a 10-cell ratio bar.
+// The bar sits immediately after the value with a single-space gap.
 func fmtRowBar(label, value string, ratio float64) string {
-	return fmt.Sprintf("  %s %s  %s\n",
+	return fmt.Sprintf("  %s %s %s\n",
 		styleDetailLabel.Render(fmt.Sprintf("%-16s: ", label)),
-		lipgloss.NewStyle().Foreground(lipgloss.Color("#fff")).Bold(true).PaddingLeft(1).Render(fmt.Sprintf("%-14s", value)),
+		styleDetailValue.Render(value),
 		fmtRatioBar(ratio, 10))
 }
 

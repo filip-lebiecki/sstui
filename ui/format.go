@@ -176,6 +176,27 @@ func fmtSegRate(v *int) string {
 	return fmt.Sprintf("%.0f seg/s", r)
 }
 
+// portService maps well-known ports to a short protocol/service name.
+var portService = map[string]string{
+	"22": "SSH", "25": "SMTP", "53": "DNS", "67": "DHCP", "68": "DHCP",
+	"80": "HTTP", "110": "POP3", "123": "NTP", "143": "IMAP", "161": "SNMP",
+	"389": "LDAP", "443": "HTTPS", "445": "SMB", "465": "SMTPS", "514": "SYSLOG",
+	"587": "SUBMIT", "636": "LDAPS", "853": "DoT", "993": "IMAPS", "995": "POP3S",
+	"1080": "SOCKS", "1194": "OVPN", "1433": "MSSQL", "1812": "RADIUS",
+	"2049": "NFS", "3000": "DEV", "3306": "MYSQL", "3389": "RDP", "4040": "DEV",
+	"4444": "DEV", "5000": "DEV", "5060": "SIP", "5173": "VITE", "5353": "MDNS",
+	"5432": "POSTGRES", "5672": "AMQP", "5900": "VNC", "5938": "TEAMV",
+	"6379": "REDIS", "6443": "K8S", "8000": "DEV", "8080": "HTTP-A",
+	"8443": "HTTPS-A", "8888": "DEV", "9000": "DEV", "9090": "PROM",
+	"9092": "KAFKA", "9200": "ES", "11211": "MEMCACHE", "27017": "MONGO",
+	"51820": "WG",
+}
+
+// PortServiceName returns the service for a port, or "" if unknown.
+func PortServiceName(port string) string {
+	return portService[port]
+}
+
 // fmtRatioBar renders an inline horizontal progress bar for ratios in [0, 1].
 // Values above 1 saturate. Color shifts from green → yellow → orange → red
 // as the ratio climbs.
@@ -205,6 +226,15 @@ func fmtRatioBar(ratio float64, width int) string {
 	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#444"))
 	return filledStyle.Render(strings.Repeat("█", filled)) +
 		dimStyle.Render(strings.Repeat("░", width-filled))
+}
+
+// fmtPropBar renders a proportional bar for `value` against `max`, width cells.
+// Uses the same color gradient as fmtRatioBar (green → yellow → orange → red).
+func fmtPropBar(value, max float64, width int) string {
+	if max <= 0 {
+		return strings.Repeat(" ", width)
+	}
+	return fmtRatioBar(value/max, width)
 }
 
 // fmtMs renders an int millisecond value with "ms" or seconds when large.

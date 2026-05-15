@@ -5,8 +5,8 @@ import (
 	"strconv"
 	"strings"
 
-	"ss-stats-tui/model"
-	"ss-stats-tui/poller"
+	"sstui/model"
+	"sstui/poller"
 
 	"github.com/charmbracelet/lipgloss"
 )

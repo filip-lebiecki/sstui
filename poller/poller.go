@@ -4,8 +4,8 @@ import (
 	"sync"
 	"time"
 
-	"ss-stats-tui/classifier"
-	"ss-stats-tui/model"
+	"sstui/classifier"
+	"sstui/model"
 )
 
 const (

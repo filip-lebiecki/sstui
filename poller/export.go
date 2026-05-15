@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"ss-stats-tui/model"
+	"sstui/model"
 )
 
 // ExportJSON writes the full ring buffer as a single JSON document.

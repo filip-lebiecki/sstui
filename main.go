@@ -8,10 +8,10 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"ss-stats-tui/model"
-	"ss-stats-tui/parser"
-	"ss-stats-tui/poller"
-	"ss-stats-tui/ui"
+	"sstui/model"
+	"sstui/parser"
+	"sstui/poller"
+	"sstui/ui"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"

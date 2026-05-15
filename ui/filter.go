@@ -3,7 +3,7 @@ package ui
 import (
 	"strings"
 
-	"ss-stats-tui/model"
+	"sstui/model"
 )
 
 // Filter holds the current filter state.

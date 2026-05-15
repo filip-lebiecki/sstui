@@ -6,7 +6,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"ss-stats-tui/model"
+	"sstui/model"
 
 	"github.com/charmbracelet/lipgloss"
 )

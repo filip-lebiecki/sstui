@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"ss-stats-tui/model"
+	"sstui/model"
 )
 
 var (

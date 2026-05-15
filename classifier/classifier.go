@@ -2,7 +2,7 @@ package classifier
 
 import (
 	"fmt"
-	"ss-stats-tui/model"
+	"sstui/model"
 )
 
 // Classify analyzes a connection and returns detected signals.

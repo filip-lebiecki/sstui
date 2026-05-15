@@ -1,4 +1,4 @@
-module ss-stats-tui
+module sstui
 
 go 1.26.3
 

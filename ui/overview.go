@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"ss-stats-tui/poller"
+	"sstui/poller"
 
 	"github.com/charmbracelet/lipgloss"
 )

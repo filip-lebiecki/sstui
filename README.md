@@ -174,15 +174,15 @@ sudo setcap cap_net_admin+ep /usr/sbin/ss
 
 ```
 ┌─ sstui ────────────────────── ESTAB 245   LISTEN 38   TIME-WAIT 12 ─┐
-│ Live  Detail  Socket  Overview  Top  Perf  Events                    │
-│                                                                       │
-│ 🔴 TCP  ESTAB     10.0.0.1:443   …  17.2ms  ↑  120 KB/s   chrome  …  │
-│ 🟡 TCP  ESTAB     10.0.0.5:5432  …   1.1ms  ↓   55 KB/s   psql    …  │
-│ ...                                                                   │
-│                                                                       │
-│  RETRANS  RTO  CWND_DROP  ← signal badges for the selected row       │
-│  245 conns | snapshots: 312 | updated: just now                       │
-└──────────────────────────────────────────────────────────────────────┘
+│ Live  Detail  Socket  Overview  Top  Perf  Events                   │
+│                                                                     │
+│ 🔴 TCP  ESTAB     10.0.0.1:443   …  17.2ms  ↑  120 KB/s   chrome  … │
+│ 🟡 TCP  ESTAB     10.0.0.5:5432  …   1.1ms  ↓   55 KB/s   psql    … │
+│ ...                                                                 │
+│                                                                     │
+│  RETRANS  RTO  CWND_DROP  ← signal badges for the selected row      │
+│  245 conns | snapshots: 312 | updated: just now                     │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
 Press `1`–`7` to switch tabs, `Enter` on a row to drill in, `/` to filter,

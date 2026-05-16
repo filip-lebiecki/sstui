@@ -411,51 +411,28 @@ There are **20 signal types**, each at one of three severities: `info`
 (grey), `warn` (yellow/orange), `crit` (red). Severity is reflected in the
 badge color and in the Live-tab indicator glyph.
 
-```
-┌────────────┬──────────────────────┬───────────────────────────────────────────────────┬──────────────────────────────────────┬──────────┬────────┐
-│   Label    │      Type const      │                    Fires when                     │           Inputs (parsed?)           │ Severity │ Color  │
-├────────────┼──────────────────────┼───────────────────────────────────────────────────┼──────────────────────────────────────┼──────────┼────────┤
-│ RETRANS    │ retrans_in_flight    │ retrans_now > 3 (crit >10)                        │ retrans:N/M ✓                        │ 1–2      │ red    │
-├────────────┼──────────────────────┼───────────────────────────────────────────────────┼──────────────────────────────────────┼──────────┼────────┤
-│ APP_LIM    │ app_limited          │ app_limited flag set                              │ app_limited ✓                        │ 0 (info) │ green  │
-├────────────┼──────────────────────┼───────────────────────────────────────────────────┼──────────────────────────────────────┼──────────┼────────┤
-│ IDLE       │ idle                 │ ESTAB & no bytes moved this poll                  │ computed deltas ✓                    │ 0 (info) │ gray   │
-├────────────┼──────────────────────┼───────────────────────────────────────────────────┼──────────────────────────────────────┼──────────┼────────┤
-│ ZERO_WIN   │ zero_window          │ snd_wnd == 0 on ESTAB                             │ snd_wnd: ✓                           │ 2        │ red    │
-├────────────┼──────────────────────┼───────────────────────────────────────────────────┼──────────────────────────────────────┼──────────┼────────┤
-│ LOSS       │ congestion_loss      │ lost > 2 (crit >10)                               │ lost: ✓                              │ 1–2      │ red    │
-├────────────┼──────────────────────┼───────────────────────────────────────────────────┼──────────────────────────────────────┼──────────┼────────┤
-│ PMTU       │ pmtu_mismatch        │ pmtu < advmss+40                                  │ pmtu: advmss: ✓                      │ 1        │ orange │
-├────────────┼──────────────────────┼───────────────────────────────────────────────────┼──────────────────────────────────────┼──────────┼────────┤
-│ RTT_SPIKE  │ rtt_spike            │ rtt/minrtt > 5 (crit >15)                         │ rtt: minrtt: ✓                       │ 1–2      │ orange │
-├────────────┼──────────────────────┼───────────────────────────────────────────────────┼──────────────────────────────────────┼──────────┼────────┤
-│ SEND_Q     │ send_buffer_pressure │ Send-Q > 0 (crit >100)                            │ column ✓                             │ 1–2      │ yellow │
-├────────────┼──────────────────────┼───────────────────────────────────────────────────┼──────────────────────────────────────┼──────────┼────────┤
-│ RCV_Q      │ recv_buffer_pressure │ Recv-Q > 0 (crit >100)                            │ column ✓                             │ 1–2      │ yellow │
-├────────────┼──────────────────────┼───────────────────────────────────────────────────┼──────────────────────────────────────┼──────────┼────────┤
-│ HI_RETRANS │ high_retrans_rate    │ retrans/sent > 5% (crit >20%)                     │ deltas of bytes_sent/bytes_retrans ✓ │ 1–2      │ red    │
-├────────────┼──────────────────────┼───────────────────────────────────────────────────┼──────────────────────────────────────┼──────────┼────────┤
-│ DEL_DROP   │ delivery_drop        │ not app-limited & sending & delivery/pacing < 0.5 │ delivery_rate pacing_rate ✓          │ 1        │ orange │
-├────────────┼──────────────────────┼───────────────────────────────────────────────────┼──────────────────────────────────────┼──────────┼────────┤
-│ UNACKED    │ unacked_buildup      │ unacked > 0.8·cwnd && > 10                        │ unacked: cwnd: ✓                     │ 1        │ yellow │
-├────────────┼──────────────────────┼───────────────────────────────────────────────────┼──────────────────────────────────────┼──────────┼────────┤
-│ LISTEN_Q   │ listen_queue_full    │ LISTEN RecvQ/SendQ > 0.8 (crit ≥1.0)              │ RecvQ/SendQ column ✓                 │ 1–2      │ red    │
-├────────────┼──────────────────────┼───────────────────────────────────────────────────┼──────────────────────────────────────┼──────────┼────────┤
-│ RTO        │ rto_firing           │ ESTAB, timer on, TimerRetrans ≥ 2 (crit ≥4)       │ timer: TimerRetrans ✓                │ 1–2      │ red    │
-├────────────┼──────────────────────┼───────────────────────────────────────────────────┼──────────────────────────────────────┼──────────┼────────┤
-│ SYN_STALL  │ syn_stall            │ SYN-SENT, TimerRetrans > 0 (crit ≥3)              │ state, TimerRetrans ✓                │ 1–2      │ orange │
-├────────────┼──────────────────────┼───────────────────────────────────────────────────┼──────────────────────────────────────┼──────────┼────────┤
-│ ONE_WAY    │ one_way_stall        │ ESTAB, sending but no recv >30s (or symmetric)    │ lastsnd: lastrcv: computed deltas ✓  │ 1        │ yellow │
-├────────────┼──────────────────────┼───────────────────────────────────────────────────┼──────────────────────────────────────┼──────────┼────────┤
-│ CWND_DROP  │ cwnd_collapse        │ CWnd/PrevCWnd < 0.5 (crit <0.25), prev ≥ 20      │ cwnd: + prev poll cwnd ✓             │ 1–2      │ orange │
-├────────────┼──────────────────────┼───────────────────────────────────────────────────┼──────────────────────────────────────┼──────────┼────────┤
-│ DSACK      │ dsack_spurious       │ Δdsack_dups > 0 (crit >5)                         │ dsack_dups: delta ✓                  │ 1–2      │ yellow │
-├────────────┼──────────────────────┼───────────────────────────────────────────────────┼──────────────────────────────────────┼──────────┼────────┤
-│ BBR_LOW    │ bbr_underutil        │ BBR active, not app-limited, sending, delivery < 0.5×BBR_BW │ bbr:BW delivery_rate ✓   │ 1        │ orange │
-├────────────┼──────────────────────┼───────────────────────────────────────────────────┼──────────────────────────────────────┼──────────┼────────┤
-│ REORDER    │ reordering           │ Δrcv_ooopack > 0 (crit >50)                       │ rcv_ooopack: delta ✓                 │ 1–2      │ orange │
-└────────────┴──────────────────────┴───────────────────────────────────────────────────┴──────────────────────────────────────┴──────────┴────────┘
-```
+| Label      | Type const           | Fires when                                                                 | Inputs (parsed?)                       | Severity | Color  |
+|------------|----------------------|----------------------------------------------------------------------------|----------------------------------------|----------|--------|
+| `RETRANS`  | `retrans_in_flight`  | `retrans_now > 3` (crit >10)                                               | `retrans:N/M` ✓                        | 1–2      | red    |
+| `APP_LIM`  | `app_limited`        | `app_limited` flag set                                                      | `app_limited` ✓                        | 0 (info) | green  |
+| `IDLE`     | `idle`               | ESTAB & no bytes moved this poll                                            | computed deltas ✓                      | 0 (info) | gray   |
+| `ZERO_WIN` | `zero_window`        | `snd_wnd == 0` on ESTAB                                                     | `snd_wnd:` ✓                           | 2        | red    |
+| `LOSS`     | `congestion_loss`    | `lost > 2` (crit >10)                                                       | `lost:` ✓                              | 1–2      | red    |
+| `PMTU`     | `pmtu_mismatch`      | `pmtu < advmss+40`                                                          | `pmtu:` `advmss:` ✓                    | 1        | orange |
+| `RTT_SPIKE`| `rtt_spike`          | `rtt/minrtt > 5` (crit >15)                                                 | `rtt:` `minrtt:` ✓                     | 1–2      | orange |
+| `SEND_Q`   | `send_buffer_pressure` | `Send-Q > 0` (crit >100)                                                 | column ✓                               | 1–2      | yellow |
+| `RCV_Q`    | `recv_buffer_pressure` | `Recv-Q > 0` (crit >100)                                                 | column ✓                               | 1–2      | yellow |
+| `HI_RETRANS`| `high_retrans_rate` | `retrans/sent > 5%` (crit >20%)                                            | deltas of `bytes_sent`/`bytes_retrans` ✓ | 1–2    | red    |
+| `DEL_DROP` | `delivery_drop`      | not app-limited & sending & `delivery/pacing < 0.5`                        | `delivery_rate` `pacing_rate` ✓        | 1        | orange |
+| `UNACKED`  | `unacked_buildup`    | `unacked > 0.8·cwnd` && `> 10`                                              | `unacked:` `cwnd:` ✓                   | 1        | yellow |
+| `LISTEN_Q` | `listen_queue_full`  | LISTEN `RecvQ/SendQ > 0.8` (crit ≥1.0)                                      | `RecvQ/SendQ` column ✓                 | 1–2      | red    |
+| `RTO`      | `rto_firing`         | ESTAB, timer on, `TimerRetrans ≥ 2` (crit ≥4)                               | `timer:` `TimerRetrans` ✓              | 1–2      | red    |
+| `SYN_STALL`| `syn_stall`          | SYN-SENT, `TimerRetrans > 0` (crit ≥3)                                      | `state`, `TimerRetrans` ✓              | 1–2      | orange |
+| `ONE_WAY`  | `one_way_stall`      | ESTAB, sending but no recv >30s (or symmetric)                              | `lastsnd:` `lastrcv:` computed deltas ✓ | 1       | yellow |
+| `CWND_DROP`| `cwnd_collapse`      | `CWnd/PrevCWnd < 0.5` (crit <0.25), prev ≥ 20                              | `cwnd:` + prev poll `cwnd` ✓           | 1–2      | orange |
+| `DSACK`    | `dsack_spurious`     | `Δdsack_dups > 0` (crit >5)                                                 | `dsack_dups:` delta ✓                  | 1–2      | yellow |
+| `BBR_LOW`  | `bbr_underutil`      | BBR active, not app-limited, sending, `delivery < 0.5×BBR_BW`              | `bbr:BW` `delivery_rate` ✓             | 1        | orange |
+| `REORDER`  | `reordering`         | `Δrcv_ooopack > 0` (crit >50)                                               | `rcv_ooopack:` delta ✓                 | 1–2      | orange |
 
 ### Connection-state signals
 

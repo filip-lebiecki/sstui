@@ -122,8 +122,8 @@ func RenderHeader(buf *poller.Buffer, width int) string {
 	prefix := "ss-stats"
 
 	content := prefix + " " + pillsStr
-	if len(content) < width {
-		content += strings.Repeat(" ", width-len(content))
+	if pad := width - lipgloss.Width(content); pad > 0 {
+		content += strings.Repeat(" ", pad)
 	}
 
 	return lipgloss.NewStyle().
@@ -161,8 +161,8 @@ func RenderTabs(current int, width int) string {
 	}
 
 	content := strings.Join(parts, "")
-	if len(content) < width {
-		content += strings.Repeat(" ", width-len(content))
+	if pad := width - lipgloss.Width(content); pad > 0 {
+		content += strings.Repeat(" ", pad)
 	}
 	return content
 }

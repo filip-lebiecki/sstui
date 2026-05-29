@@ -49,14 +49,14 @@ func RenderTop(buf *poller.Buffer, width, height int) string {
 }
 
 type procStats struct {
-	name        string
-	conns       int
-	totalRTT    float64
-	rttCount    int
-	totalSent   float64
-	totalRecv   float64
-	issuesWarn  int
-	issuesCrit  int
+	name       string
+	conns      int
+	totalRTT   float64
+	rttCount   int
+	totalSent  float64
+	totalRecv  float64
+	issuesWarn int
+	issuesCrit int
 }
 
 func renderTopProcesses(snap *poller.Snapshot) string {
@@ -186,10 +186,10 @@ func renderTopPorts(snap *poller.Snapshot) string {
 }
 
 type peerStats struct {
-	addr       string
-	conns      int
-	totalSent  float64
-	totalRecv  float64
+	addr      string
+	conns     int
+	totalSent float64
+	totalRecv float64
 }
 
 func renderTopPeers(snap *poller.Snapshot) string {

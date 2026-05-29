@@ -51,7 +51,6 @@ const (
 	ViewPerf
 	ViewEvents
 	ViewFilter
-	ViewHelp
 )
 
 // tabOrder is the cycle order for tab/shift-tab.
@@ -179,8 +178,6 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "esc":
 			if m.tab == ViewDetail || m.tab == ViewSocket {
 				m.selectedKey = ""
-				m.tab = ViewLive
-			} else if m.tab == ViewHelp {
 				m.tab = ViewLive
 			} else if m.filter.IsActive() {
 				m.filter.Reset()
@@ -538,8 +535,8 @@ func (m *AppModel) export(kind string) {
 	path := filepath.Join(cwd, name)
 
 	var (
-		n     int
-		unit  string
+		n    int
+		unit string
 	)
 	switch kind {
 	case "json":

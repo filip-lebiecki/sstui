@@ -24,15 +24,6 @@ var (
 			Padding(0, 1).
 			MarginRight(1)
 
-	styleStatLabel = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#888")).
-			Inherit(styleStat)
-
-	styleStatValue = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#fff")).
-			Bold(true).
-			Inherit(styleStat)
-
 	styleTabSelected = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("#fff")).
 				Background(lipgloss.Color("#5a56e7")).
@@ -207,8 +198,6 @@ func RenderSignalBar(signals []model.Signal) string {
 		return "🔴"
 	case warnCount >= 4:
 		return "🟠"
-	case warnCount >= 2:
-		return "🟡"
 	case warnCount > 0:
 		return "🟡"
 	default:

@@ -41,16 +41,25 @@ func (s *Snapshot) StateCount(state string) int {
 	return s.stateCounts[state]
 }
 
-// compact slims every connection in the snapshot down to the fields that
+// compact returns a slimmed copy of the snapshot, keeping only the fields that
 // historical views actually read (overview/perf aggregates, the per-signal
 // sparklines, the detail sparklines, and the events list). Each ~60-field
 // Connection — most of whose fields are heap-allocated pointers — is replaced
-// with a lean copy, which lets the GC reclaim the rest. The current latest
-// snapshot is never compacted, so the full-detail Socket/Detail views still
-// have everything they need; only snapshots that have aged out of "latest"
-// are slimmed. Idempotent: a snapshot is compacted exactly once, when it is
-// demoted from latest.
-func (s *Snapshot) compact() {
+// with a lean copy, which lets the GC reclaim the rest once the original
+// snapshot is no longer referenced.
+//
+// It returns a *new* Snapshot rather than mutating the receiver: published
+// snapshots must stay immutable so the lockless readers (Snapshot.Lookup, and
+// the unlocked field reads in AddSnapshot's delta phase) never race. The
+// caller swaps the ring slot pointer under the buffer write lock. stateCounts
+// is immutable post-publication, so it is shared rather than copied.
+//
+// The current latest snapshot is never compacted, so the full-detail
+// Socket/Detail views still have everything they need; only snapshots that
+// have aged out of "latest" are slimmed.
+func (s *Snapshot) compact() *Snapshot {
+	conns := make([]*model.Connection, len(s.Conns))
+	byKey := make(map[string]*model.Connection, len(s.Conns))
 	for i, c := range s.Conns {
 		if c == nil {
 			continue
@@ -77,8 +86,14 @@ func (s *Snapshot) compact() {
 			DeltaBytesReceived: c.DeltaBytesReceived,
 			Signals:            c.Signals,
 		}
-		s.Conns[i] = slim
-		s.byKey[slim.ConnKey()] = slim
+		conns[i] = slim
+		byKey[slim.ConnKey()] = slim
+	}
+	return &Snapshot{
+		Timestamp:   s.Timestamp,
+		Conns:       conns,
+		byKey:       byKey,
+		stateCounts: s.stateCounts,
 	}
 }
 
@@ -157,8 +172,11 @@ func (b *Buffer) AddSnapshot(conns []*model.Connection) {
 	}
 	// Slim the snapshot being demoted from "latest" before publishing the new
 	// one, so at most a single full-detail snapshot is retained at a time.
-	if demoted := b.snapshots[(b.head-1+BufferSize)%BufferSize]; demoted != nil {
-		demoted.compact()
+	// Replace the slot with a fresh compacted snapshot (rather than mutating
+	// in place) so any reader still holding the old pointer keeps seeing an
+	// immutable, fully-formed snapshot.
+	if demotedIdx := (b.head - 1 + BufferSize) % BufferSize; b.snapshots[demotedIdx] != nil {
+		b.snapshots[demotedIdx] = b.snapshots[demotedIdx].compact()
 	}
 	b.snapshots[b.head] = snap
 	b.head = (b.head + 1) % BufferSize

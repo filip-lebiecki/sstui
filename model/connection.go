@@ -122,7 +122,18 @@ type Connection struct {
 	Signals []Signal
 }
 
-// ConnKey returns a unique identifier for this connection.
+// ConnKey returns a stable identifier for this connection across polls.
+//
+// The 4-tuple alone is not unique: SO_REUSEPORT listeners share the same
+// local addr:port with a wildcard peer, so several distinct sockets collapse
+// to one key. When ss reports a socket inode (ino:), we fold it in to keep
+// such sockets distinct. The inode is stable for a socket's lifetime, so the
+// key stays consistent across snapshots. Inode "0" is the kernel's no-inode
+// sentinel (TIME-WAIT/orphans) and is treated as absent.
 func (c *Connection) ConnKey() string {
-	return c.Protocol + "|" + c.LocalAddr + ":" + c.LocalPort + "|" + c.PeerAddr + ":" + c.PeerPort
+	key := c.Protocol + "|" + c.LocalAddr + ":" + c.LocalPort + "|" + c.PeerAddr + ":" + c.PeerPort
+	if c.Inode != nil && *c.Inode != "" && *c.Inode != "0" {
+		key += "|" + *c.Inode
+	}
+	return key
 }

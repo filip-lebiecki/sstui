@@ -41,6 +41,47 @@ func (s *Snapshot) StateCount(state string) int {
 	return s.stateCounts[state]
 }
 
+// compact slims every connection in the snapshot down to the fields that
+// historical views actually read (overview/perf aggregates, the per-signal
+// sparklines, the detail sparklines, and the events list). Each ~60-field
+// Connection — most of whose fields are heap-allocated pointers — is replaced
+// with a lean copy, which lets the GC reclaim the rest. The current latest
+// snapshot is never compacted, so the full-detail Socket/Detail views still
+// have everything they need; only snapshots that have aged out of "latest"
+// are slimmed. Idempotent: a snapshot is compacted exactly once, when it is
+// demoted from latest.
+func (s *Snapshot) compact() {
+	for i, c := range s.Conns {
+		if c == nil {
+			continue
+		}
+		slim := &model.Connection{
+			Timestamp: c.Timestamp,
+			Protocol:  c.Protocol,
+			State:     c.State,
+			LocalAddr: c.LocalAddr,
+			LocalPort: c.LocalPort,
+			PeerAddr:  c.PeerAddr,
+			PeerPort:  c.PeerPort,
+			Process:   c.Process,
+			PID:       c.PID,
+			Inode:     c.Inode, // kept: ConnKey/Lookup depend on it
+			// Fields read by historical charts/lists:
+			RecvQ:              c.RecvQ,
+			SendQ:              c.SendQ,
+			RTT:                c.RTT,
+			CWnd:               c.CWnd,
+			Unacked:            c.Unacked,
+			Retrans:            c.Retrans,
+			DeltaBytesSent:     c.DeltaBytesSent,
+			DeltaBytesReceived: c.DeltaBytesReceived,
+			Signals:            c.Signals,
+		}
+		s.Conns[i] = slim
+		s.byKey[slim.ConnKey()] = slim
+	}
+}
+
 // Buffer holds a ring buffer of snapshots.
 type Buffer struct {
 	mu         sync.RWMutex
@@ -113,6 +154,11 @@ func (b *Buffer) AddSnapshot(conns []*model.Connection) {
 		Conns:       conns,
 		byKey:       byKey,
 		stateCounts: stateCounts,
+	}
+	// Slim the snapshot being demoted from "latest" before publishing the new
+	// one, so at most a single full-detail snapshot is retained at a time.
+	if demoted := b.snapshots[(b.head-1+BufferSize)%BufferSize]; demoted != nil {
+		demoted.compact()
 	}
 	b.snapshots[b.head] = snap
 	b.head = (b.head + 1) % BufferSize

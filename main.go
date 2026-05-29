@@ -251,10 +251,11 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, pollCmd()
 
 	case pollResultMsg:
-		if msg.err != nil {
-			m.lastError = msg.err
-		} else {
-			m.lastError = nil
+		m.lastError = msg.err
+		// Ingest on full success (even if zero sockets) or on a partial
+		// failure that still returned data; skip only when both queries
+		// failed (nil slice) so the last good snapshot is preserved.
+		if msg.err == nil || len(msg.conns) > 0 {
 			m.buf.AddSnapshot(msg.conns)
 			m.table.SetConnections(msg.conns)
 			m.table.SetSize(m.width, m.contentHeight())

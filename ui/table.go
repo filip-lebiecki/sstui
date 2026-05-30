@@ -724,6 +724,11 @@ func shortenAddrPort(addr, port string, max int) string {
 	return colorize(string(r)+"…"+close+":", colAddr) + colorize(port, colPort)
 }
 
+var (
+	selBg = lipgloss.Color("#444")
+	selFg = lipgloss.Color("#fff")
+)
+
 // renderCell lays out one table cell. The content is first truncated (ANSI-aware,
 // so color codes are preserved and never counted) to contentW so it can never
 // wrap, then lipgloss pads it out to renderW. Letting lipgloss do the padding is
@@ -736,9 +741,35 @@ func renderCell(content string, contentW, renderW int, bold, selected bool) stri
 	content = ansi.Truncate(content, contentW, "…")
 	style := lipgloss.NewStyle().Width(renderW).MaxWidth(renderW).Bold(bold)
 	if selected {
-		style = style.Background(lipgloss.Color("#444")).Foreground(lipgloss.Color("#fff"))
+		// colorize emits a full SGR reset between segments (e.g. between an
+		// address and its port), which would clear the background mid-cell.
+		// Re-apply the background after every inner reset so the highlight
+		// stays solid across the whole cell.
+		content = reapplyBackground(content, selectionBgSeq())
+		style = style.Background(selBg).Foreground(selFg)
 	}
 	return style.Render(content)
+}
+
+// selectionBgSeq returns the SGR sequence that sets the selected-row background
+// in the active color profile (e.g. "\x1b[48;5;59m"), or "" if color is off.
+func selectionBgSeq() string {
+	seq := lipgloss.DefaultRenderer().ColorProfile().Color(string(selBg)).Sequence(true)
+	if seq == "" {
+		return ""
+	}
+	return "\x1b[" + seq + "m"
+}
+
+// reapplyBackground re-injects bg immediately after every SGR reset in s, so a
+// background set around s survives the resets that colorize embeds.
+func reapplyBackground(s, bg string) string {
+	if bg == "" || !strings.Contains(s, "\x1b[") {
+		return s
+	}
+	s = strings.ReplaceAll(s, "\x1b[0m", "\x1b[0m"+bg)
+	s = strings.ReplaceAll(s, "\x1b[m", "\x1b[m"+bg)
+	return s
 }
 
 func truncate(s string, max int) string {

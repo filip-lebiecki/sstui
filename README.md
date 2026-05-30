@@ -296,26 +296,32 @@ focused on real anomalies.
 
 ## Filtering
 
-Press `/`, type one or more space-separated terms, hit `Enter`:
+Press `/`, type one or more terms, hit `Enter`:
 
 | Term                | Match                                                |
 |---------------------|------------------------------------------------------|
 | `local=<substr>`    | Substring match on local address                     |
 | `peer=<substr>`     | Substring match on peer address                      |
-| `lport=<port>`      | Exact local port                                     |
-| `pport=<port>`      | Exact peer port                                      |
+| `sport=<port>`      | Exact source (local) port                            |
+| `dport=<port>`      | Exact destination (peer) port                        |
 | `state=<state>`     | Exact TCP state (`ESTAB`, `LISTEN`, `TIME-WAIT`, ...)|
 | `proc=<substr>`     | Substring match on process name (case-insensitive)   |
+| `pid=<pid>`         | Exact process ID                                     |
 | `signal=<label>`    | Connection has this signal active (e.g. `RETRANS`, `cwnd_collapse`) |
 | bare `<state>`      | Shortcut for `state=…` if it matches a known state   |
 | any other bare term | Treated as `local=<term>`                            |
+
+Terms can be combined with the boolean operators `and`, `or`, `not`, and
+grouped with parentheses. A space between terms is an implicit `and`.
 
 Examples:
 
 ```
 /state=ESTAB peer=10.0    # all established connections to a /16
 /proc=nginx signal=RETRANS # retransmitting nginx connections
-/pport=443 lport=51234     # one specific socket pair
+/dport=443 sport=51234     # one specific socket pair
+/(peer=10.0.0.1 or peer=10.1.0.1) and sport=1234
+/proc=nginx not signal=RETRANS
 ```
 
 `Esc` clears the filter.

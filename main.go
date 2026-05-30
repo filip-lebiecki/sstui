@@ -295,40 +295,7 @@ func (m *AppModel) handleFilterInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *AppModel) applyFilter() {
-	parts := strings.Fields(m.filterBuf)
-	m.filter.Reset()
-
-	for _, p := range parts {
-		switch {
-		case strings.HasPrefix(p, "local="):
-			m.filter.LocalAddr = strings.TrimPrefix(p, "local=")
-		case strings.HasPrefix(p, "peer="):
-			m.filter.PeerAddr = strings.TrimPrefix(p, "peer=")
-		case strings.HasPrefix(p, "lport="):
-			m.filter.LocalPort = strings.TrimPrefix(p, "lport=")
-		case strings.HasPrefix(p, "pport="):
-			m.filter.PeerPort = strings.TrimPrefix(p, "pport=")
-		case strings.HasPrefix(p, "state="):
-			m.filter.State = strings.ToUpper(strings.TrimPrefix(p, "state="))
-		case strings.HasPrefix(p, "proc="):
-			m.filter.Process = strings.TrimPrefix(p, "proc=")
-		case strings.HasPrefix(p, "signal="):
-			m.filter.Signal = strings.TrimPrefix(p, "signal=")
-		default:
-			states := []string{"ESTAB", "LISTEN", "TIME-WAIT", "CLOSE-WAIT", "FIN-WAIT-1", "FIN-WAIT-2", "LAST-ACK", "SYN-SENT", "SYN-RECV"}
-			isState := false
-			for _, s := range states {
-				if strings.ToUpper(p) == s {
-					m.filter.State = s
-					isState = true
-					break
-				}
-			}
-			if !isState {
-				m.filter.LocalAddr = p
-			}
-		}
-	}
+	m.filter.SetQuery(m.filterBuf)
 }
 
 func (m *AppModel) View() string {
@@ -395,10 +362,12 @@ func (m *AppModel) View() string {
 		content = "\n  Filter connections:\n\n"
 		content += "  " + m.filterBuf + cursor() + "\n\n"
 		content += lipgloss.NewStyle().Foreground(lipgloss.Color("#888")).Render(
-			"  Syntax: local=<addr> peer=<addr> lport=<port> pport=<port>\n" +
-				"          state=<state> proc=<name> signal=<label>\n" +
-				"  Examples: state=ESTAB local=192.168 pport=443\n" +
-				"            proc=nginx signal=RETRANS\n" +
+			"  Syntax: local=<addr> peer=<addr> sport=<port> dport=<port>\n" +
+				"          state=<state> proc=<name> pid=<pid> signal=<label>\n" +
+				"  Operators: and  or  not  ( )   (space = and)\n" +
+				"  Examples: state=ESTAB local=192.168 dport=443\n" +
+				"            (peer=10.0.0.1 or peer=10.1.0.1) and sport=1234\n" +
+				"            proc=nginx not signal=RETRANS\n" +
 				"  Enter to apply, Escape to cancel")
 	}
 
@@ -455,29 +424,7 @@ func (m *AppModel) getConnectionByKey(key string) *model.Connection {
 }
 
 func (m *AppModel) renderFilterText() string {
-	var parts []string
-	if m.filter.LocalAddr != "" {
-		parts = append(parts, "local="+m.filter.LocalAddr)
-	}
-	if m.filter.PeerAddr != "" {
-		parts = append(parts, "peer="+m.filter.PeerAddr)
-	}
-	if m.filter.LocalPort != "" {
-		parts = append(parts, "lport="+m.filter.LocalPort)
-	}
-	if m.filter.PeerPort != "" {
-		parts = append(parts, "pport="+m.filter.PeerPort)
-	}
-	if m.filter.State != "" {
-		parts = append(parts, "state="+m.filter.State)
-	}
-	if m.filter.Process != "" {
-		parts = append(parts, "proc="+m.filter.Process)
-	}
-	if m.filter.Signal != "" {
-		parts = append(parts, "signal="+m.filter.Signal)
-	}
-	return strings.Join(parts, " ")
+	return m.filter.Query()
 }
 
 func (m *AppModel) clampEventsScroll() {

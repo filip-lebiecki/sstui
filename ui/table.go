@@ -9,7 +9,11 @@ import (
 	"sstui/model"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
+
+// colGap is the number of spaces rendered between every pair of columns.
+const colGap = 1
 
 // SortDir is the sort direction.
 type SortDir int
@@ -366,47 +370,100 @@ func (t *TableModel) SetConnections(conns []*model.Connection) {
 	t.cachedConns = nil
 }
 
-// SetSize updates the table dimensions.
+// SetSize updates the table dimensions. Column widths are computed per-frame in
+// RenderBody from the visible content, so only the overall budget is stored here.
 func (t *TableModel) SetSize(width, height int) {
 	t.width = width
 	t.pageSize = height
 	if t.pageSize < 1 {
 		t.pageSize = 1
 	}
+}
 
-	// Reset expandable columns to base width
-	for i := range t.columns {
-		if t.columns[i].Expand {
-			t.columns[i].Width = t.columns[i].BaseWidth
+// addrPortWidth returns the display width of "addr:port" (IPv6 addresses are
+// bracketed), used to size the address columns to their content.
+func addrPortWidth(addr, port string) int {
+	w := len(addr) + 1 + len(port)
+	if strings.Count(addr, ":") >= 2 {
+		w += 2 // brackets
+	}
+	return w
+}
+
+// naturalWidth returns the display width an unconstrained cell would occupy.
+func (t *TableModel) naturalWidth(col TableColumn, c *model.Connection) int {
+	switch col.Key {
+	case "local":
+		return addrPortWidth(c.LocalAddr, c.LocalPort)
+	case "peer":
+		return addrPortWidth(c.PeerAddr, c.PeerPort)
+	default:
+		return ansi.StringWidth(col.Render(c))
+	}
+}
+
+// computeWidths returns the rendered width of each column. Fixed columns keep
+// their configured width; expandable columns grow to fit their widest visible
+// value (so there's no dead whitespace) and only shrink toward BaseWidth when
+// the total would overflow the terminal.
+func (t *TableModel) computeWidths(visible []*model.Connection) []int {
+	widths := make([]int, len(t.columns))
+	for i, col := range t.columns {
+		if !col.Expand {
+			widths[i] = col.Width
+			continue
 		}
+		w := col.BaseWidth
+		if tw := titleWidth(col, t.sortKey); tw > w {
+			w = tw
+		}
+		for _, c := range visible {
+			if cw := t.naturalWidth(col, c); cw > w {
+				w = cw
+			}
+		}
+		widths[i] = w
 	}
 
-	// Distribute extra width to expandable columns
-	totalBase := 0
-	expandableCount := 0
-	for _, col := range t.columns {
-		if col.Expand {
-			totalBase += col.BaseWidth
-			expandableCount++
-		} else {
-			totalBase += col.Width
-		}
+	total := colGap * (len(t.columns) - 1)
+	for _, w := range widths {
+		total += w
 	}
 
-	if expandableCount > 0 && width > totalBase {
-		extra := width - totalBase
-		extraPerCol := extra / expandableCount
-		remainder := extra % expandableCount
-		for i := range t.columns {
-			if t.columns[i].Expand {
-				t.columns[i].Width = t.columns[i].BaseWidth + extraPerCol
-				if remainder > 0 {
-					t.columns[i].Width++
-					remainder--
+	// Shrink expandable columns if the row would overflow the terminal width,
+	// first down to BaseWidth, then below it as a last resort.
+	for _, floor := range []func(TableColumn) int{
+		func(c TableColumn) int { return c.BaseWidth },
+		func(TableColumn) int { return 5 },
+	} {
+		for total > t.width && t.width > 0 {
+			reduced := false
+			for i, col := range t.columns {
+				if total <= t.width {
+					break
 				}
+				if col.Expand && widths[i] > floor(col) {
+					widths[i]--
+					total--
+					reduced = true
+				}
+			}
+			if !reduced {
+				break
 			}
 		}
 	}
+
+	return widths
+}
+
+// titleWidth is the display width of a column header including its sort arrow.
+func titleWidth(col TableColumn, sortKey string) int {
+	w := lipgloss.Width(col.Title)
+	if col.Key == sortKey {
+		w++ // sort arrow
+	}
+	return w
 }
 
 // GetSelected returns the currently selected connection.
@@ -545,53 +602,54 @@ func (t *TableModel) RenderBody() string {
 		return "  No connections"
 	}
 
+	widths := t.computeWidths(visible)
+	gap := strings.Repeat(" ", colGap)
+
 	var b strings.Builder
 
 	// Header
 	var headerParts []string
-	for _, col := range t.columns {
-		style := lipgloss.NewStyle().Width(col.Width).MaxWidth(col.Width).Bold(true)
+	for i, col := range t.columns {
+		title := col.Title
 		if col.Key == t.sortKey {
-			dir := "↑"
 			if t.sortDir == SortDesc {
-				dir = "↓"
+				title += "↓"
+			} else {
+				title += "↑"
 			}
-			headerParts = append(headerParts, style.Render(col.Title+dir))
-		} else {
-			headerParts = append(headerParts, style.Render(col.Title))
 		}
+		style := lipgloss.NewStyle().Bold(true)
+		headerParts = append(headerParts, padCell(style.Render(title), widths[i]))
 	}
-	b.WriteString(strings.Join(headerParts, "") + "\n")
+	b.WriteString(strings.Join(headerParts, gap) + "\n")
 
-	// Separator
-	var sepParts []string
-	for _, col := range t.columns {
-		sepParts = append(sepParts, strings.Repeat("─", col.Width))
+	// Separator: one continuous rule spanning the full row width.
+	totalWidth := colGap * (len(t.columns) - 1)
+	for _, w := range widths {
+		totalWidth += w
 	}
-	b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#555")).Render(strings.Join(sepParts, "")) + "\n")
+	b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#555")).Render(strings.Repeat("─", totalWidth)) + "\n")
 
 	// Rows
 	for i, c := range visible {
 		var rowParts []string
-		for _, col := range t.columns {
+		for j, col := range t.columns {
 			var val string
 			switch col.Key {
 			case "local":
-				val = shortenAddrPort(c.LocalAddr, c.LocalPort, col.Width)
+				val = shortenAddrPort(c.LocalAddr, c.LocalPort, widths[j])
 			case "peer":
-				val = shortenAddrPort(c.PeerAddr, c.PeerPort, col.Width)
-			case "process":
-				val = truncate(col.Render(c), col.Width)
+				val = shortenAddrPort(c.PeerAddr, c.PeerPort, widths[j])
 			default:
 				val = col.Render(c)
 			}
-			style := lipgloss.NewStyle().Width(col.Width).MaxWidth(col.Width)
+			cell := padCell(val, widths[j])
 			if i == t.cursor {
-				style = style.Background(lipgloss.Color("#444")).Foreground(lipgloss.Color("#fff"))
+				cell = lipgloss.NewStyle().Background(lipgloss.Color("#444")).Foreground(lipgloss.Color("#fff")).Render(cell)
 			}
-			rowParts = append(rowParts, style.Render(val))
+			rowParts = append(rowParts, cell)
 		}
-		b.WriteString(strings.Join(rowParts, "") + "\n")
+		b.WriteString(strings.Join(rowParts, gap) + "\n")
 	}
 
 	return b.String()
@@ -655,6 +713,20 @@ func shortenAddrPort(addr, port string, max int) string {
 		r = r[:budget]
 	}
 	return colorize(string(r)+"…"+close+":", colAddr) + colorize(port, colPort)
+}
+
+// padCell truncates s to exactly width display cells (ANSI-aware, so color
+// codes are preserved and never counted) and right-pads with spaces. The result
+// always occupies exactly width columns on a single line, so cells never wrap.
+func padCell(s string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	s = ansi.Truncate(s, width, "…")
+	if pad := width - ansi.StringWidth(s); pad > 0 {
+		s += strings.Repeat(" ", pad)
+	}
+	return s
 }
 
 func truncate(s string, max int) string {

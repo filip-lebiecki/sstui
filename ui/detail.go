@@ -2,7 +2,6 @@ package ui
 
 import (
 	"fmt"
-	"math"
 	"strings"
 	"time"
 
@@ -483,55 +482,6 @@ func renderSparklines(conn *model.Connection, buf *poller.Buffer, width int) str
 	line("Retrans: ", retransVals, lipgloss.Color("#ff6b6b"))
 
 	return b.String()
-}
-
-func renderSparkline(values []float64, width int, color lipgloss.Color) string {
-	if len(values) == 0 || width <= 0 {
-		return ""
-	}
-
-	n := len(values)
-	if n > width {
-		step := float64(n) / float64(width)
-		var sampled []float64
-		for i := 0; i < width; i++ {
-			idx := int(math.Floor(step*float64(i) + 0.5))
-			if idx >= n {
-				idx = n - 1
-			}
-			sampled = append(sampled, values[idx])
-		}
-		values = sampled
-		n = len(values)
-	}
-
-	minV, maxV := values[0], values[0]
-	for _, v := range values {
-		if v < minV {
-			minV = v
-		}
-		if v > maxV {
-			maxV = v
-		}
-	}
-
-	rangeV := maxV - minV
-	if rangeV == 0 {
-		rangeV = 1
-	}
-
-	levels := " .:-=+*#%@#"
-	var b strings.Builder
-	for _, v := range values {
-		normalized := (v - minV) / rangeV
-		idx := int(normalized * float64(len(levels)-1))
-		if idx >= len(levels) {
-			idx = len(levels) - 1
-		}
-		b.WriteString(string(levels[idx]))
-	}
-
-	return lipgloss.NewStyle().Foreground(color).Render(b.String())
 }
 
 func min(a, b int) int {

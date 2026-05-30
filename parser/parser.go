@@ -320,6 +320,19 @@ func ParseLine(line string) (*model.Connection, error) {
 func RunSS() ([]*model.Connection, error) {
 	tcpConns, tcpErr := runSS("-atnpeimOH", "tcp")
 	udpConns, udpErr := runSS("-aunpeimOH", "udp")
+	return mergeResults(tcpConns, tcpErr, udpConns, udpErr)
+}
+
+// mergeResults combines the per-protocol ss results into a single list and a
+// single error. Split out from RunSS so the success / partial / total-failure
+// branches are testable without invoking the real ss binary.
+//
+// When both queries fail it returns a nil slice and an error (the caller keeps
+// the last good snapshot). When only one fails it returns the protocol that
+// succeeded together with a non-nil error describing the partial result, so
+// the caller can ingest what it got while still flagging the failure rather
+// than silently dropping a whole protocol.
+func mergeResults(tcpConns []*model.Connection, tcpErr error, udpConns []*model.Connection, udpErr error) ([]*model.Connection, error) {
 	if tcpErr != nil && udpErr != nil {
 		return nil, fmt.Errorf("tcp: %v; udp: %v", tcpErr, udpErr)
 	}
@@ -328,6 +341,12 @@ func RunSS() ([]*model.Connection, error) {
 		if c.Protocol == "udp" {
 			applyUDPState(c)
 		}
+	}
+	switch {
+	case tcpErr != nil:
+		return conns, fmt.Errorf("tcp query failed (showing UDP only): %v", tcpErr)
+	case udpErr != nil:
+		return conns, fmt.Errorf("udp query failed (showing TCP only): %v", udpErr)
 	}
 	return conns, nil
 }

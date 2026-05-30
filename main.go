@@ -51,7 +51,6 @@ const (
 	ViewPerf
 	ViewEvents
 	ViewFilter
-	ViewHelp
 )
 
 // tabOrder is the cycle order for tab/shift-tab.
@@ -180,8 +179,6 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.tab == ViewDetail || m.tab == ViewSocket {
 				m.selectedKey = ""
 				m.tab = ViewLive
-			} else if m.tab == ViewHelp {
-				m.tab = ViewLive
 			} else if m.filter.IsActive() {
 				m.filter.Reset()
 				m.table.InvalidateCache()
@@ -251,10 +248,11 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, pollCmd()
 
 	case pollResultMsg:
-		if msg.err != nil {
-			m.lastError = msg.err
-		} else {
-			m.lastError = nil
+		m.lastError = msg.err
+		// Ingest on full success (even if zero sockets) or on a partial
+		// failure that still returned data; skip only when both queries
+		// failed (nil slice) so the last good snapshot is preserved.
+		if msg.err == nil || len(msg.conns) > 0 {
 			m.buf.AddSnapshot(msg.conns)
 			m.table.SetConnections(msg.conns)
 			m.table.SetSize(m.width, m.contentHeight())
@@ -537,8 +535,8 @@ func (m *AppModel) export(kind string) {
 	path := filepath.Join(cwd, name)
 
 	var (
-		n     int
-		unit  string
+		n    int
+		unit string
 	)
 	switch kind {
 	case "json":

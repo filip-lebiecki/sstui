@@ -346,7 +346,6 @@ type TableModel struct {
 	pageSize     int
 	columns      []TableColumn
 	width        int
-	showDetail   bool
 	cachedConns  []*model.Connection
 }
 
@@ -418,11 +417,6 @@ func (t *TableModel) GetSelected() *model.Connection {
 		return nil
 	}
 	return filtered[idx]
-}
-
-// GetCursor returns the absolute cursor position.
-func (t *TableModel) GetCursor() int {
-	return t.page*t.pageSize + t.cursor
 }
 
 // SetCursor sets the absolute cursor position.

@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"sstui/model"
@@ -14,6 +15,33 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 )
+
+// Event collection is O(snapshots × conns) over the whole ring buffer. The
+// Events tab calls it on every render and every scroll keypress (via
+// MaxEventsScroll), so without caching a single j/k keystroke re-scans up to
+// BufferSize snapshots several times. The buffer only changes once per poll,
+// so key the cache on its LastUpdate timestamp: scrolling between polls hits
+// the cache; a new snapshot invalidates it. The app has a single Buffer and
+// these calls run on bubbletea's Update/View goroutine, but a mutex keeps it
+// safe regardless.
+var (
+	evCacheMu      sync.Mutex
+	evCacheVersion time.Time
+	evCacheValid   bool
+	evCacheEvents  []Event
+)
+
+func collectEventsCached(buf *poller.Buffer) []Event {
+	evCacheMu.Lock()
+	defer evCacheMu.Unlock()
+	v := buf.LastUpdate()
+	if !evCacheValid || !v.Equal(evCacheVersion) {
+		evCacheEvents = CollectEvents(buf)
+		evCacheVersion = v
+		evCacheValid = true
+	}
+	return evCacheEvents
+}
 
 // Event is a single signal-onset moment: the first poll in which a given
 // signal type appeared on a connection after being absent (or after the
@@ -73,7 +101,7 @@ func CollectEvents(buf *poller.Buffer) []Event {
 // older events). The renderer caps overflows internally — callers can pass
 // any non-negative offset.
 func RenderEvents(buf *poller.Buffer, width, height, scroll int) string {
-	events := CollectEvents(buf)
+	events := collectEventsCached(buf)
 	snapshotCount := buf.Count()
 
 	var b strings.Builder
@@ -156,7 +184,7 @@ func RenderEvents(buf *poller.Buffer, width, height, scroll int) string {
 // buffer + viewport so callers can cap input keys without re-collecting
 // events themselves.
 func MaxEventsScroll(buf *poller.Buffer, height int) int {
-	events := CollectEvents(buf)
+	events := collectEventsCached(buf)
 	rows := height - 5
 	if rows < 1 {
 		rows = 1

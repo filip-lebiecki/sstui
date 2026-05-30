@@ -58,22 +58,6 @@ func fmtKeepalive(c *model.Connection) string {
 
 // Format helpers for display values.
 
-func fmtNum(v *int) string {
-	if v == nil {
-		return "-"
-	}
-	switch {
-	case *v >= 1_000_000_000:
-		return fmt.Sprintf("%.1fG", float64(*v)/1e9)
-	case *v >= 1_000_000:
-		return fmt.Sprintf("%.1fM", float64(*v)/1e6)
-	case *v >= 1_000:
-		return fmt.Sprintf("%.1fK", float64(*v)/1e3)
-	default:
-		return strconv.Itoa(*v)
-	}
-}
-
 func fmtNumRaw(v *int) string {
 	if v == nil {
 		return "-"
@@ -142,10 +126,6 @@ func fmtRate(v *int) string {
 	default:
 		return fmt.Sprintf("%.0fB/s", b)
 	}
-}
-
-func fmtPill(label, value string) string {
-	return fmt.Sprintf(" %s: %s ", label, value)
 }
 
 // fmtPackets renders a packet count with the "pkts" suffix.

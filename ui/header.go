@@ -24,15 +24,6 @@ var (
 			Padding(0, 1).
 			MarginRight(1)
 
-	styleStatLabel = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#888")).
-			Inherit(styleStat)
-
-	styleStatValue = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#fff")).
-			Bold(true).
-			Inherit(styleStat)
-
 	styleTabSelected = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("#fff")).
 				Background(lipgloss.Color("#5a56e7")).
@@ -122,8 +113,8 @@ func RenderHeader(buf *poller.Buffer, width int) string {
 	prefix := "ss-stats"
 
 	content := prefix + " " + pillsStr
-	if len(content) < width {
-		content += strings.Repeat(" ", width-len(content))
+	if pad := width - lipgloss.Width(content); pad > 0 {
+		content += strings.Repeat(" ", pad)
 	}
 
 	return lipgloss.NewStyle().
@@ -161,8 +152,8 @@ func RenderTabs(current int, width int) string {
 	}
 
 	content := strings.Join(parts, "")
-	if len(content) < width {
-		content += strings.Repeat(" ", width-len(content))
+	if pad := width - lipgloss.Width(content); pad > 0 {
+		content += strings.Repeat(" ", pad)
 	}
 	return content
 }
@@ -207,8 +198,6 @@ func RenderSignalBar(signals []model.Signal) string {
 		return "🔴"
 	case warnCount >= 4:
 		return "🟠"
-	case warnCount >= 2:
-		return "🟡"
 	case warnCount > 0:
 		return "🟡"
 	default:

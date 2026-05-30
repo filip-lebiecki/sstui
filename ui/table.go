@@ -15,6 +15,10 @@ import (
 // colGap is the number of spaces rendered between every pair of columns.
 const colGap = 1
 
+// minColWidth is the floor an expandable column may be shrunk to when the row
+// would otherwise overflow the terminal.
+const minColWidth = 5
+
 // SortDir is the sort direction.
 type SortDir int
 
@@ -71,7 +75,7 @@ var defaultColumns = []TableColumn{
 	{
 		Key:   "proto",
 		Title: "Proto",
-		Width: 5,
+		Width: 6, // fits the "Proto↑/↓" sort-arrow header
 		Render: func(c *model.Connection) string {
 			return colorize(strings.ToUpper(c.Protocol), ProtoColor(c.Protocol))
 		},
@@ -434,7 +438,7 @@ func (t *TableModel) computeWidths(visible []*model.Connection) []int {
 	// first down to BaseWidth, then below it as a last resort.
 	for _, floor := range []func(TableColumn) int{
 		func(c TableColumn) int { return c.BaseWidth },
-		func(TableColumn) int { return 5 },
+		func(TableColumn) int { return minColWidth },
 	} {
 		for total > t.width && t.width > 0 {
 			reduced := false
@@ -603,7 +607,17 @@ func (t *TableModel) RenderBody() string {
 	}
 
 	widths := t.computeWidths(visible)
-	gap := strings.Repeat(" ", colGap)
+	last := len(t.columns) - 1
+
+	// renderWidth is a column's content width plus its trailing gutter (every
+	// column except the last). Padding the gutter inside the cell's style means
+	// the selected-row background spans the gutter too, giving a solid bar.
+	renderWidth := func(j int) int {
+		if j < last {
+			return widths[j] + colGap
+		}
+		return widths[j]
+	}
 
 	var b strings.Builder
 
@@ -618,13 +632,12 @@ func (t *TableModel) RenderBody() string {
 				title += "↑"
 			}
 		}
-		style := lipgloss.NewStyle().Bold(true)
-		headerParts = append(headerParts, padCell(style.Render(title), widths[i]))
+		headerParts = append(headerParts, renderCell(title, widths[i], renderWidth(i), true, false))
 	}
-	b.WriteString(strings.Join(headerParts, gap) + "\n")
+	b.WriteString(strings.Join(headerParts, "") + "\n")
 
 	// Separator: one continuous rule spanning the full row width.
-	totalWidth := colGap * (len(t.columns) - 1)
+	totalWidth := colGap * last
 	for _, w := range widths {
 		totalWidth += w
 	}
@@ -643,13 +656,9 @@ func (t *TableModel) RenderBody() string {
 			default:
 				val = col.Render(c)
 			}
-			cell := padCell(val, widths[j])
-			if i == t.cursor {
-				cell = lipgloss.NewStyle().Background(lipgloss.Color("#444")).Foreground(lipgloss.Color("#fff")).Render(cell)
-			}
-			rowParts = append(rowParts, cell)
+			rowParts = append(rowParts, renderCell(val, widths[j], renderWidth(j), false, i == t.cursor))
 		}
-		b.WriteString(strings.Join(rowParts, gap) + "\n")
+		b.WriteString(strings.Join(rowParts, "") + "\n")
 	}
 
 	return b.String()
@@ -715,18 +724,21 @@ func shortenAddrPort(addr, port string, max int) string {
 	return colorize(string(r)+"…"+close+":", colAddr) + colorize(port, colPort)
 }
 
-// padCell truncates s to exactly width display cells (ANSI-aware, so color
-// codes are preserved and never counted) and right-pads with spaces. The result
-// always occupies exactly width columns on a single line, so cells never wrap.
-func padCell(s string, width int) string {
-	if width <= 0 {
+// renderCell lays out one table cell. The content is first truncated (ANSI-aware,
+// so color codes are preserved and never counted) to contentW so it can never
+// wrap, then lipgloss pads it out to renderW. Letting lipgloss do the padding is
+// what makes the selection background span the padding and trailing gutter,
+// producing a solid highlight bar rather than highlighting only the glyphs.
+func renderCell(content string, contentW, renderW int, bold, selected bool) string {
+	if renderW <= 0 {
 		return ""
 	}
-	s = ansi.Truncate(s, width, "…")
-	if pad := width - ansi.StringWidth(s); pad > 0 {
-		s += strings.Repeat(" ", pad)
+	content = ansi.Truncate(content, contentW, "…")
+	style := lipgloss.NewStyle().Width(renderW).MaxWidth(renderW).Bold(bold)
+	if selected {
+		style = style.Background(lipgloss.Color("#444")).Foreground(lipgloss.Color("#fff"))
 	}
-	return s
+	return style.Render(content)
 }
 
 func truncate(s string, max int) string {

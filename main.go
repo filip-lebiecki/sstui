@@ -80,6 +80,7 @@ type AppModel struct {
 	lastError    error
 	filterMode   bool
 	filterBuf    string
+	filterCursor int // byte offset of the edit cursor within filterBuf
 	selectedKey  string
 	quitting     bool
 	statusMsg    string
@@ -165,7 +166,8 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.tab = nextTab(m.tab, -1)
 		case "/":
 			m.filterMode = true
-			m.filterBuf = ""
+			m.filterBuf = m.filter.Query()
+			m.filterCursor = len(m.filterBuf)
 			m.tab = ViewFilter
 			return m, nil
 		case "enter":
@@ -275,20 +277,46 @@ func (m *AppModel) handleFilterInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.filterMode = false
 		m.tab = ViewLive
 		return m, nil
+	case "left":
+		if m.filterCursor > 0 {
+			_, size := utf8.DecodeLastRuneInString(m.filterBuf[:m.filterCursor])
+			m.filterCursor -= size
+		}
+	case "right":
+		if m.filterCursor < len(m.filterBuf) {
+			_, size := utf8.DecodeRuneInString(m.filterBuf[m.filterCursor:])
+			m.filterCursor += size
+		}
+	case "home", "ctrl+a":
+		m.filterCursor = 0
+	case "end", "ctrl+e":
+		m.filterCursor = len(m.filterBuf)
 	case "backspace":
-		if n := len(m.filterBuf); n > 0 {
-			_, size := utf8.DecodeLastRuneInString(m.filterBuf)
-			m.filterBuf = m.filterBuf[:n-size]
+		if m.filterCursor > 0 {
+			_, size := utf8.DecodeLastRuneInString(m.filterBuf[:m.filterCursor])
+			m.filterBuf = m.filterBuf[:m.filterCursor-size] + m.filterBuf[m.filterCursor:]
+			m.filterCursor -= size
+		}
+	case "delete":
+		if m.filterCursor < len(m.filterBuf) {
+			_, size := utf8.DecodeRuneInString(m.filterBuf[m.filterCursor:])
+			m.filterBuf = m.filterBuf[:m.filterCursor] + m.filterBuf[m.filterCursor+size:]
 		}
 	case "ctrl+w":
-		words := strings.Fields(m.filterBuf)
-		if len(words) > 0 {
-			m.filterBuf = strings.Join(words[:len(words)-1], " ")
+		// Delete the word immediately before the cursor, leaving the rest intact.
+		left := strings.TrimRight(m.filterBuf[:m.filterCursor], " ")
+		if i := strings.LastIndex(left, " "); i >= 0 {
+			left = left[:i+1]
+		} else {
+			left = ""
 		}
+		m.filterBuf = left + m.filterBuf[m.filterCursor:]
+		m.filterCursor = len(left)
 	default:
 		s := msg.String()
 		if utf8.RuneCountInString(s) == 1 {
-			m.filterBuf += s
+			m.filterBuf = m.filterBuf[:m.filterCursor] + s + m.filterBuf[m.filterCursor:]
+			m.filterCursor += len(s)
 		}
 	}
 	return m, nil
@@ -360,7 +388,7 @@ func (m *AppModel) View() string {
 
 	case ViewFilter:
 		content = "\n  Filter connections:\n\n"
-		content += "  " + m.filterBuf + cursor() + "\n\n"
+		content += "  " + renderFilterInput(m.filterBuf, m.filterCursor) + "\n\n"
 		content += lipgloss.NewStyle().Foreground(lipgloss.Color("#888")).Render(
 			"  Syntax: local=<addr> peer=<addr> sport=<port> dport=<port>\n" +
 				"          state=<state> proc=<name> pid=<pid> signal=<label>\n" +
@@ -542,10 +570,19 @@ func (m *AppModel) renderFooter() string {
 		Render("  " + strings.Join(parts, "  |  "))
 }
 
-func cursor() string {
-	return lipgloss.NewStyle().
-		Background(lipgloss.Color("#5a56e7")).
-		Render(" ")
+// renderFilterInput renders the filter buffer with a block cursor at byte
+// offset pos, highlighting the character under the cursor (or a trailing space
+// when the cursor sits at the end of the text).
+func renderFilterInput(buf string, pos int) string {
+	style := lipgloss.NewStyle().Background(lipgloss.Color("#5a56e7"))
+	if pos < 0 {
+		pos = 0
+	}
+	if pos >= len(buf) {
+		return buf + style.Render(" ")
+	}
+	_, size := utf8.DecodeRuneInString(buf[pos:])
+	return buf[:pos] + style.Render(buf[pos:pos+size]) + buf[pos+size:]
 }
 
 func main() {

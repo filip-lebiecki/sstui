@@ -84,7 +84,7 @@ var defaultColumns = []TableColumn{
 	{
 		Key:   "state",
 		Title: "State",
-		Width: 12,
+		Width: 10, // fits the longest state names (CLOSE-WAIT, FIN-WAIT-1, UDP_ACTIVE)
 		Render: func(c *model.Connection) string {
 			return colorize(c.State, StateColor(c.State))
 		},
@@ -194,7 +194,7 @@ var defaultColumns = []TableColumn{
 	{
 		Key:   "tx",
 		Title: "TX",
-		Width: 8,
+		Width: 9,
 		Render: func(c *model.Connection) string {
 			s := fmtRate(c.DeltaBytesSent)
 			if c.DeltaBytesSent == nil || *c.DeltaBytesSent == 0 {
@@ -218,7 +218,7 @@ var defaultColumns = []TableColumn{
 	{
 		Key:   "rx",
 		Title: "RX",
-		Width: 8,
+		Width: 9,
 		Render: func(c *model.Connection) string {
 			s := fmtRate(c.DeltaBytesReceived)
 			if c.DeltaBytesReceived == nil || *c.DeltaBytesReceived == 0 {

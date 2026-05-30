@@ -239,7 +239,7 @@ func StateColor(state string) lipgloss.Color {
 func ProtoColor(proto string) lipgloss.Color {
 	switch proto {
 	case "tcp":
-		return lipgloss.Color("#5a56e7")
+		return lipgloss.Color("#4dabf7")
 	case "udp":
 		return lipgloss.Color("#22b8cf")
 	}

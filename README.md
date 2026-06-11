@@ -9,7 +9,7 @@ Built for triage: tab through running connections, see signals like
 automatically, and drill into the underlying kernel metrics on a single
 key press.
 
-![tabs](https://img.shields.io/badge/tabs-7-blue) ![signals](https://img.shields.io/badge/signals-23-orange) ![ring%20buffer](https://img.shields.io/badge/history-50%20min-green)
+![tabs](https://img.shields.io/badge/tabs-7-blue) ![signals](https://img.shields.io/badge/signals-25-orange) ![ring%20buffer](https://img.shields.io/badge/history-50%20min-green)
 
 ---
 
@@ -54,7 +54,7 @@ What you get out of the box:
 
 - **Live table** of every TCP/UDP socket on the host with sortable columns,
   state-coloured fields, and an at-a-glance signal indicator per row.
-- **Automatic problem detection** through 20 named signals — retransmits,
+- **Automatic problem detection** through 25 named signals — retransmits,
   RTO storms, zero-window stalls, listen-queue overflow, ephemeral port
   exhaustion, packet reordering, CWnd collapse, BBR underutilization, and
   more. Each is tunable in one place (`classifier/classifier.go`).
@@ -108,7 +108,7 @@ human-paced triage:
 | Per-connection RTT, CWnd, retrans, BBR        | ✓ with `-i`      | ✓ parsed and labelled         |
 | Refreshes automatically                       | `watch ss`       | Built-in, 2 s ticks            |
 | **Per-poll deltas** (TX/RX rates, retrans rate, OOO growth) | ✗   | ✓ computed in poller          |
-| **Anomaly classification** (named signals)    | ✗                | ✓ 20 rules                    |
+| **Anomaly classification** (named signals)    | ✗                | ✓ 25 rules                    |
 | **History** for "when did this start?"        | ✗                | ✓ 50 min ring                 |
 | **Time-series view** per connection           | ✗                | ✓ bar-graph sparklines        |
 | **Event log** of signal onsets                | ✗                | ✓ Events tab                  |
@@ -434,7 +434,7 @@ A green status line at the bottom confirms the path and row/snapshot count.
 
 ## Signals reference
 
-There are **23 signal types**, each at one of three severities: `info`
+There are **25 signal types**, each at one of three severities: `info`
 (grey), `warn` (yellow/orange), `crit` (red). Severity is reflected in the
 badge color and in the Live-tab indicator glyph.
 
@@ -463,6 +463,8 @@ badge color and in the Live-tab indicator glyph.
 | `DROPS`    | `socket_drops`       | `Δskmem.d > 0` (crit >10) — kernel dropped data at this socket              | `skmem` `d` delta ✓                     | 1–2      | red    |
 | `RWND_LIM` | `rwnd_limited`       | sending & `Δrwnd_limited ≥ 25%` of poll (crit ≥75%) — blocked on peer window | `rwnd_limited:` delta ✓               | 1–2      | yellow |
 | `SNDBUF_LIM`| `sndbuf_limited`    | sending & `Δsndbuf_limited ≥ 25%` of poll (crit ≥75%) — blocked on send buffer | `sndbuf_limited:` delta ✓          | 1–2      | yellow |
+| `CW_LEAK`  | `close_wait_leak`    | one process holds ≥20 CLOSE-WAIT sockets (crit ≥50) — fd leak              | per-process CLOSE-WAIT count ✓          | 1–2      | red    |
+| `TW_STORM` | `time_wait_storm`    | ≥200 TIME-WAIT toward one peer endpoint (crit ≥2000) — port exhaustion risk | per-peer TIME-WAIT count ✓            | 1–2      | orange |
 
 ### Connection-state signals
 

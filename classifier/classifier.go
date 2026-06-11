@@ -2,8 +2,78 @@ package classifier
 
 import (
 	"fmt"
+	"strconv"
+
 	"sstui/model"
 )
+
+// Aggregate-signal thresholds. These count sockets across the whole snapshot
+// rather than inspecting one connection, so they live in ClassifyAggregate.
+const (
+	closeWaitWarn = 20  // CLOSE-WAIT sockets held by one process
+	closeWaitCrit = 50  //   — likely an fd leak (app not calling close())
+	timeWaitWarn  = 200 // TIME-WAIT sockets toward one peer endpoint
+	timeWaitCrit  = 2000
+)
+
+// ClassifyAggregate adds signals that depend on counts across the whole
+// snapshot, not a single connection. It runs once per poll after per-connection
+// Classify and appends to each affected connection's Signals:
+//
+//   - CLOSE_WAIT leak: a process sitting on many CLOSE-WAIT sockets has received
+//     the peer's FIN but isn't calling close() — a classic file-descriptor leak.
+//   - TIME-WAIT storm: many TIME-WAIT sockets toward one peer endpoint risk
+//     exhausting the local ephemeral port range for that 4-tuple.
+func ClassifyAggregate(conns []*model.Connection) {
+	closeWaitByPID := make(map[int][]*model.Connection)
+	timeWaitByPeer := make(map[string]int)
+
+	for _, c := range conns {
+		switch c.State {
+		case "CLOSE-WAIT":
+			if c.PID != nil { // a leak is attributable only to a known process
+				closeWaitByPID[*c.PID] = append(closeWaitByPID[*c.PID], c)
+			}
+		case "TIME-WAIT":
+			timeWaitByPeer[c.PeerAddr+":"+c.PeerPort]++
+		}
+	}
+
+	for _, group := range closeWaitByPID {
+		if sev := tierSeverity(len(group), closeWaitWarn, closeWaitCrit); sev > 0 {
+			for _, c := range group {
+				c.Signals = append(c.Signals, model.Signal{
+					Type: model.SignalCloseWaitLeak, Severity: sev,
+					Value: strconv.Itoa(len(group)) + " CLOSE-WAIT",
+				})
+			}
+		}
+	}
+
+	for _, c := range conns {
+		if c.State != "TIME-WAIT" {
+			continue
+		}
+		n := timeWaitByPeer[c.PeerAddr+":"+c.PeerPort]
+		if sev := tierSeverity(n, timeWaitWarn, timeWaitCrit); sev > 0 {
+			c.Signals = append(c.Signals, model.Signal{
+				Type: model.SignalTimeWaitStorm, Severity: sev,
+				Value: strconv.Itoa(n) + " to peer",
+			})
+		}
+	}
+}
+
+// tierSeverity returns 2 at/above crit, 1 at/above warn, else 0.
+func tierSeverity(n, warn, crit int) int {
+	switch {
+	case n >= crit:
+		return 2
+	case n >= warn:
+		return 1
+	}
+	return 0
+}
 
 // PollIntervalMS is the poll cadence in milliseconds. It's used to judge what
 // fraction of an interval a connection spent blocked on the receive window or

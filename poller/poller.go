@@ -167,6 +167,10 @@ func (b *Buffer) AddSnapshot(conns []*model.Connection) {
 		}
 		c.Signals = classifier.Classify(c)
 	}
+	// Signals that depend on counts across the whole snapshot (fd leaks,
+	// TIME-WAIT storms) run after the per-connection pass and append to the
+	// affected connections.
+	classifier.ClassifyAggregate(conns)
 
 	// Phase 3: build indexes and publish under the write lock.
 	byKey := make(map[string]*model.Connection, len(conns))

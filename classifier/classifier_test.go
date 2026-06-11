@@ -121,6 +121,71 @@ func TestClassifyBottleneckRequiresSending(t *testing.T) {
 	}
 }
 
+func hasSig(c *model.Connection, typ model.SignalType) bool {
+	_, ok := sigByType(c.Signals, typ)
+	return ok
+}
+
+func TestClassifyAggregateCloseWaitLeak(t *testing.T) {
+	var conns []*model.Connection
+	// 25 CLOSE-WAIT sockets on PID 100 (over the warn threshold of 20).
+	for i := 0; i < 25; i++ {
+		conns = append(conns, &model.Connection{Protocol: "tcp", State: "CLOSE-WAIT", PID: ip(100)})
+	}
+	// A healthy ESTAB on a different PID, and a lone CLOSE-WAIT on PID 200.
+	conns = append(conns, &model.Connection{Protocol: "tcp", State: "ESTAB", PID: ip(200)})
+	conns = append(conns, &model.Connection{Protocol: "tcp", State: "CLOSE-WAIT", PID: ip(200)})
+
+	ClassifyAggregate(conns)
+
+	for i := 0; i < 25; i++ {
+		if !hasSig(conns[i], model.SignalCloseWaitLeak) {
+			t.Fatalf("conn %d should carry CW_LEAK", i)
+		}
+	}
+	if hasSig(conns[26], model.SignalCloseWaitLeak) {
+		t.Errorf("a single CLOSE-WAIT on PID 200 should not be a leak")
+	}
+	if hasSig(conns[25], model.SignalCloseWaitLeak) {
+		t.Errorf("the ESTAB socket should not carry CW_LEAK")
+	}
+}
+
+func TestClassifyAggregateCloseWaitNeedsPID(t *testing.T) {
+	var conns []*model.Connection
+	for i := 0; i < 30; i++ {
+		conns = append(conns, &model.Connection{Protocol: "tcp", State: "CLOSE-WAIT"}) // no PID
+	}
+	ClassifyAggregate(conns)
+	for _, c := range conns {
+		if hasSig(c, model.SignalCloseWaitLeak) {
+			t.Fatalf("CLOSE-WAIT with unknown PID cannot be attributed to a leak")
+		}
+	}
+}
+
+func TestClassifyAggregateTimeWaitStorm(t *testing.T) {
+	var conns []*model.Connection
+	// 250 TIME-WAIT toward one peer endpoint (over warn 200), plus a few toward
+	// another peer that should stay quiet.
+	for i := 0; i < 250; i++ {
+		conns = append(conns, &model.Connection{Protocol: "tcp", State: "TIME-WAIT",
+			PeerAddr: "10.0.0.1", PeerPort: "443"})
+	}
+	for i := 0; i < 5; i++ {
+		conns = append(conns, &model.Connection{Protocol: "tcp", State: "TIME-WAIT",
+			PeerAddr: "10.0.0.2", PeerPort: "443"})
+	}
+	ClassifyAggregate(conns)
+
+	if !hasSig(conns[0], model.SignalTimeWaitStorm) {
+		t.Errorf("250 TIME-WAIT to one peer should raise TW_STORM")
+	}
+	if hasSig(conns[250], model.SignalTimeWaitStorm) {
+		t.Errorf("5 TIME-WAIT to another peer should not raise TW_STORM")
+	}
+}
+
 func TestClassifySocketDrops(t *testing.T) {
 	// No new drops this poll: no signal.
 	none := &model.Connection{Protocol: "udp", State: "UDP_ESTAB", DeltaSkmemD: ip(0)}

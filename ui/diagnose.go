@@ -41,6 +41,10 @@ func diagnose(c *model.Connection) Diagnosis {
 		headline string
 		hint     string
 	}{
+		{model.SignalCloseWaitLeak, "File-descriptor leak: process stuck on many CLOSE-WAIT sockets",
+			"the app received the peer's FIN but isn't calling close()"},
+		{model.SignalTimeWaitStorm, "TIME-WAIT storm toward this peer",
+			"many short-lived connections — risks exhausting ephemeral ports; consider connection reuse"},
 		{model.SignalSocketDrops, "Kernel dropping data at this socket",
 			"buffer overran — the receiving end isn't reading fast enough"},
 		{model.SignalListenQueueFull, "Accept queue full — new connections are being dropped",

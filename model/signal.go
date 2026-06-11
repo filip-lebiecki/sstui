@@ -27,6 +27,8 @@ const (
 	SignalSocketDrops        SignalType = "socket_drops"
 	SignalRwndLimited        SignalType = "rwnd_limited"
 	SignalSndbufLimited      SignalType = "sndbuf_limited"
+	SignalCloseWaitLeak      SignalType = "close_wait_leak"
+	SignalTimeWaitStorm      SignalType = "time_wait_storm"
 )
 
 // SignalColor returns a display string for the signal.
@@ -55,6 +57,8 @@ func (s SignalType) Label() string {
 		SignalSocketDrops:        "DROPS",
 		SignalRwndLimited:        "RWND_LIM",
 		SignalSndbufLimited:      "SNDBUF_LIM",
+		SignalCloseWaitLeak:      "CW_LEAK",
+		SignalTimeWaitStorm:      "TW_STORM",
 	}
 	if l, ok := labels[s]; ok {
 		return l

@@ -114,8 +114,12 @@ type Connection struct {
 	DeltaRcvOOOPack    *int
 	DeltaBusyMS        *float64
 
-	// Previous values kept for non-monotonic signals (e.g. cwnd collapse).
-	PrevCWnd *int
+	// Previous values kept for non-monotonic signals (e.g. cwnd collapse) and
+	// for queue-pressure persistence (a queue must stay full across two polls
+	// before the signal fires, so normal transfer bursts don't trip it).
+	PrevCWnd  *int
+	PrevSendQ *int
+	PrevRecvQ *int
 
 	// Signals are populated by poller.AddSnapshot after deltas, so the
 	// classifier runs once per poll rather than once per render frame.

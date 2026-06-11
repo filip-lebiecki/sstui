@@ -49,6 +49,7 @@ func RenderOverview(buf *poller.Buffer, width, height int) string {
 	// Average RTT over time
 	{
 		var rtts []float64
+		var lastRTT float64 // carried forward across sample-less snapshots
 		for _, snap := range snapshots {
 			var sum, cnt float64
 			for _, c := range snap.Conns {
@@ -58,10 +59,12 @@ func RenderOverview(buf *poller.Buffer, width, height int) string {
 				}
 			}
 			if cnt > 0 {
-				rtts = append(rtts, sum/cnt)
-			} else {
-				rtts = append(rtts, 0)
+				lastRTT = sum / cnt
 			}
+			// Carry the previous average forward when a snapshot has no RTT
+			// samples (e.g. only UDP/LISTEN sockets) rather than injecting a 0,
+			// which would drag the chart floor down and distort the curve.
+			rtts = append(rtts, lastRTT)
 		}
 		stats := fmt.Sprintf("  (min: %.1fms, max: %.1fms)", getMin(rtts), getMax(rtts))
 		b.WriteString(styleSectionTitle.Render(" Avg RTT Over Time") + stats + "\n")

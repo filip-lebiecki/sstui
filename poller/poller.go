@@ -58,9 +58,9 @@ func (s *Snapshot) StateCount(state string) int {
 // Socket/Detail views still have everything they need; only snapshots that
 // have aged out of "latest" are slimmed.
 func (s *Snapshot) compact() *Snapshot {
-	conns := make([]*model.Connection, len(s.Conns))
+	conns := make([]*model.Connection, 0, len(s.Conns))
 	byKey := make(map[string]*model.Connection, len(s.Conns))
-	for i, c := range s.Conns {
+	for _, c := range s.Conns {
 		if c == nil {
 			continue
 		}
@@ -86,7 +86,7 @@ func (s *Snapshot) compact() *Snapshot {
 			DeltaBytesReceived: c.DeltaBytesReceived,
 			Signals:            c.Signals,
 		}
-		conns[i] = slim
+		conns = append(conns, slim)
 		byKey[slim.ConnKey()] = slim
 	}
 	return &Snapshot{
@@ -234,6 +234,18 @@ func computeDeltas(cur, prev *model.Connection) {
 		cur.PrevCWnd = &v
 	}
 
+	// Stash prev send/recv queue depths so the classifier can require queue
+	// pressure to persist across two polls before firing (these are levels,
+	// not monotonic counters, so a plain delta isn't meaningful).
+	if prev.SendQ != nil {
+		v := *prev.SendQ
+		cur.PrevSendQ = &v
+	}
+	if prev.RecvQ != nil {
+		v := *prev.RecvQ
+		cur.PrevRecvQ = &v
+	}
+
 	// busy: is cumulative ms of TCP work since socket creation; the per-poll
 	// delta is what tells us how busy the kernel was on this socket recently.
 	if cur.BusyMS != nil && prev.BusyMS != nil {
@@ -253,6 +265,26 @@ func (b *Buffer) GetLatest() *Snapshot {
 	}
 	idx := (b.head - 1 + BufferSize) % BufferSize
 	return b.snapshots[idx]
+}
+
+// LookupRecent returns the most recent connection with the given key, searching
+// the ring buffer newest-first. When the key is in the latest snapshot this is
+// the live connection; once it closes and drops out, the caller still gets the
+// last captured state (so Detail/Socket views keep showing a just-closed socket
+// instead of going blank) until it ages out of the buffer. Returns nil if the
+// key was never seen.
+func (b *Buffer) LookupRecent(key string) *model.Connection {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	for i := 0; i < b.count; i++ {
+		idx := ((b.head-1-i)%BufferSize + BufferSize) % BufferSize
+		if snap := b.snapshots[idx]; snap != nil {
+			if c := snap.Lookup(key); c != nil {
+				return c
+			}
+		}
+	}
+	return nil
 }
 
 // GetAll returns all snapshots in chronological order.

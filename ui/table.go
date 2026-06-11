@@ -574,7 +574,10 @@ func (t *TableModel) getFiltered() []*model.Connection {
 		for _, col := range t.columns {
 			if col.Key == t.sortKey && col.SortFunc != nil {
 				if t.sortDir == SortDesc {
-					return !col.SortFunc(filtered[i], filtered[j])
+					// Reverse by swapping operands, not negating: negation makes
+					// equal elements compare true both ways, which violates the
+					// strict-weak-ordering contract sort.SliceStable requires.
+					return col.SortFunc(filtered[j], filtered[i])
 				}
 				return col.SortFunc(filtered[i], filtered[j])
 			}

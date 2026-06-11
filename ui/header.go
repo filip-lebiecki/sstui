@@ -58,10 +58,21 @@ var (
 	}
 )
 
+// styleWarnStat is a high-visibility pill used for conditions that should catch
+// the eye, e.g. unparsed ss records.
+var styleWarnStat = lipgloss.NewStyle().
+	Foreground(lipgloss.Color("#000")).
+	Background(lipgloss.Color("#ffa94d")).
+	Padding(0, 1).
+	MarginRight(1).
+	Bold(true)
+
 // RenderHeader renders the top status bar with stat pills. When filter is
 // active, the aggregates count only connections matching it, so the totals
-// line up with the rows shown in the table.
-func RenderHeader(buf *poller.Buffer, filter *Filter, width int) string {
+// line up with the rows shown in the table. drops is the number of ss records
+// the parser couldn't read on the last poll; when non-zero it gets its own pill
+// so a silent parse regression is visible rather than swallowed.
+func RenderHeader(buf *poller.Buffer, filter *Filter, drops, width int) string {
 	snap := buf.GetLatest()
 	if snap == nil {
 		return styleHeader.Render(fmt.Sprintf(" ss-stats | waiting for data... | %d cols", width))
@@ -119,6 +130,9 @@ func RenderHeader(buf *poller.Buffer, filter *Filter, width int) string {
 		styleStat.Render(fmt.Sprintf("TX %s", txRate)),
 		styleStat.Render(fmt.Sprintf("RX %s", rxRate)),
 		styleStat.Render(ts),
+	}
+	if drops > 0 {
+		pills = append(pills, styleWarnStat.Render(fmt.Sprintf("⚠ %d unparsed", drops)))
 	}
 
 	pillsStr := strings.Join(pills, "")

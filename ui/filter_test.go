@@ -37,6 +37,12 @@ func TestFilterExpressions(t *testing.T) {
 		{"proc=NGINX", false},
 		{"state=ESTAB", true},
 		{"state=listen", false},
+		// barewords match local addr, peer addr, or process name
+		{"10.1.0.1", true},  // local addr
+		{"10.0.0.1", true},  // peer addr
+		{"sing", true},      // process name substring
+		{"10.9.9.9", false}, // matches nothing
+		{"ESTAB", true},     // known state name
 		// boolean operators
 		{"peer=10.0.0.1 and sport=1234", true},
 		{"peer=10.0.0.1 and sport=9999", false},

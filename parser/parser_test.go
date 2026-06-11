@@ -58,9 +58,12 @@ func TestMergeResultsUDPFails(t *testing.T) {
 // TestRunSSIntegration exercises the real ss binary when present so we catch
 // regressions in flag handling / parsing end to end.
 func TestRunSSIntegration(t *testing.T) {
-	conns, err := RunSS()
+	conns, drops, err := RunSS()
 	if err != nil {
 		t.Skipf("RunSS returned error (ss unavailable or restricted?): %v", err)
+	}
+	if drops < 0 {
+		t.Errorf("drop count should never be negative, got %d", drops)
 	}
 	if len(conns) == 0 {
 		t.Skip("no sockets reported; nothing to assert")

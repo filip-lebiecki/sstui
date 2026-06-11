@@ -109,7 +109,10 @@ func matchPred(key, value string, c *model.Connection) bool {
 }
 
 // matchBareword matches a token with no "key=": a known state name filters by
-// state, otherwise it's treated as a local-address substring.
+// state, otherwise it's a substring match against either endpoint address or
+// the process name — whichever the user most likely meant. Restricting it to
+// the local address (as it once did) silently missed the common cases of
+// filtering by peer host or process.
 func matchBareword(value string, c *model.Connection) bool {
 	up := strings.ToUpper(value)
 	for _, s := range knownStates {
@@ -117,7 +120,13 @@ func matchBareword(value string, c *model.Connection) bool {
 			return c.State == s
 		}
 	}
-	return strings.Contains(c.LocalAddr, value)
+	if strings.Contains(c.LocalAddr, value) || strings.Contains(c.PeerAddr, value) {
+		return true
+	}
+	if c.Process != nil && strings.Contains(strings.ToLower(*c.Process), strings.ToLower(value)) {
+		return true
+	}
+	return false
 }
 
 // --- query parsing -------------------------------------------------------

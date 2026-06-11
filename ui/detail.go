@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"sstui/model"
@@ -414,7 +415,43 @@ func fmtRowBar(label, value string, ratio float64) string {
 		fmtRatioBar(ratio, 10))
 }
 
+// Sparkline rendering walks the entire ring buffer (every snapshot, a Lookup
+// per snapshot) for the inspected connection. The Detail/Socket views re-render
+// on every bubbletea message, and j/k navigation can fire many in a row, so
+// without caching each keystroke re-scans up to BufferSize snapshots. The buffer
+// only changes once per poll and the output depends on (connection, width), so
+// key the cache on all three: re-renders and held selections hit the cache; a
+// new poll, a different connection, or a resize recomputes. Access is on the
+// single Update/View goroutine, but a mutex keeps it safe regardless.
+var (
+	splCacheMu      sync.Mutex
+	splCacheVersion time.Time
+	splCacheKey     string
+	splCacheWidth   int
+	splCacheValid   bool
+	splCacheResult  string
+)
+
 func renderSparklines(conn *model.Connection, buf *poller.Buffer, width int) string {
+	key := conn.ConnKey()
+	v := buf.LastUpdate()
+
+	splCacheMu.Lock()
+	defer splCacheMu.Unlock()
+	if splCacheValid && splCacheKey == key && splCacheWidth == width && v.Equal(splCacheVersion) {
+		return splCacheResult
+	}
+
+	result := computeSparklines(conn, buf, width)
+	splCacheVersion = v
+	splCacheKey = key
+	splCacheWidth = width
+	splCacheResult = result
+	splCacheValid = true
+	return result
+}
+
+func computeSparklines(conn *model.Connection, buf *poller.Buffer, width int) string {
 	snapshots := buf.GetAll()
 	if len(snapshots) < 2 {
 		return ""
@@ -482,11 +519,4 @@ func renderSparklines(conn *model.Connection, buf *poller.Buffer, width int) str
 	line("Retrans: ", retransVals, lipgloss.Color("#ff6b6b"))
 
 	return b.String()
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }

@@ -5,24 +5,65 @@ import (
 	"sstui/model"
 )
 
+// Queue-pressure thresholds. When the socket buffer size is known (from skmem)
+// the queue is judged as a fraction of capacity; otherwise these absolute byte
+// floors apply. A few hundred bytes in flight during a normal transfer is not
+// pressure, so the floors sit at kilobyte scale to keep the signal meaningful.
+const (
+	queueWarnRatio = 0.5
+	queueCritRatio = 0.8
+	queueWarnBytes = 16 * 1024
+	queueCritBytes = 64 * 1024
+)
+
+// queueSeverity rates a single queue depth against its buffer capacity (or the
+// absolute fallback when capacity is unknown). 0 means "not under pressure".
+func queueSeverity(q int, bufCap *int) int {
+	if bufCap != nil && *bufCap > 0 {
+		ratio := float64(q) / float64(*bufCap)
+		switch {
+		case ratio >= queueCritRatio:
+			return 2
+		case ratio >= queueWarnRatio:
+			return 1
+		}
+		return 0
+	}
+	switch {
+	case q >= queueCritBytes:
+		return 2
+	case q >= queueWarnBytes:
+		return 1
+	}
+	return 0
+}
+
+// queuePressure returns the severity for a socket queue, but only when it has
+// been under pressure on *both* this poll and the previous one. Requiring
+// persistence (and stashed prev value) means a momentary queue during a normal
+// burst doesn't fire — only sustained backpressure does. Returns 0 to suppress
+// the signal (including on a connection's first poll, when prev is nil).
+func queuePressure(cur, prev, bufCap *int) int {
+	if cur == nil || prev == nil {
+		return 0
+	}
+	curSev := queueSeverity(*cur, bufCap)
+	if curSev == 0 || queueSeverity(*prev, bufCap) == 0 {
+		return 0
+	}
+	return curSev
+}
+
 // Classify analyzes a connection and returns detected signals.
 func Classify(c *model.Connection) []model.Signal {
 	var signals []model.Signal
 
 	if c.Protocol == "udp" {
-		if v := c.RecvQ; v != nil && *v > 0 {
-			sev := 1
-			if *v > 100 {
-				sev = 2
-			}
-			signals = append(signals, model.Signal{Type: model.SignalRecvBufferPressure, Severity: sev, Value: *v})
+		if sev := queuePressure(c.RecvQ, c.PrevRecvQ, c.SkmemRB); sev > 0 {
+			signals = append(signals, model.Signal{Type: model.SignalRecvBufferPressure, Severity: sev, Value: *c.RecvQ})
 		}
-		if v := c.SendQ; v != nil && *v > 0 {
-			sev := 1
-			if *v > 100 {
-				sev = 2
-			}
-			signals = append(signals, model.Signal{Type: model.SignalSendBufferPressure, Severity: sev, Value: *v})
+		if sev := queuePressure(c.SendQ, c.PrevSendQ, c.SkmemTB); sev > 0 {
+			signals = append(signals, model.Signal{Type: model.SignalSendBufferPressure, Severity: sev, Value: *c.SendQ})
 		}
 		if c.State == "UDP_IDLE" {
 			signals = append(signals, model.Signal{Type: model.SignalIdle, Severity: 0})
@@ -127,20 +168,12 @@ func Classify(c *model.Connection) []model.Signal {
 		}
 	}
 
-	if v := c.SendQ; v != nil && *v > 0 {
-		sev := 1
-		if *v > 100 {
-			sev = 2
-		}
-		signals = append(signals, model.Signal{Type: model.SignalSendBufferPressure, Severity: sev, Value: *v})
+	if sev := queuePressure(c.SendQ, c.PrevSendQ, c.SkmemTB); sev > 0 {
+		signals = append(signals, model.Signal{Type: model.SignalSendBufferPressure, Severity: sev, Value: *c.SendQ})
 	}
 
-	if v := c.RecvQ; v != nil && *v > 0 {
-		sev := 1
-		if *v > 100 {
-			sev = 2
-		}
-		signals = append(signals, model.Signal{Type: model.SignalRecvBufferPressure, Severity: sev, Value: *v})
+	if sev := queuePressure(c.RecvQ, c.PrevRecvQ, c.SkmemRB); sev > 0 {
+		signals = append(signals, model.Signal{Type: model.SignalRecvBufferPressure, Severity: sev, Value: *c.RecvQ})
 	}
 
 	if c.DeltaBytesRetrans != nil && c.DeltaBytesSent != nil && *c.DeltaBytesSent > 0 {

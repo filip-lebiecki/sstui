@@ -23,6 +23,7 @@ type tickMsg struct{}
 // pollResultMsg carries the result of an async ss invocation.
 type pollResultMsg struct {
 	conns []*model.Connection
+	drops int // record lines ss emitted that we couldn't parse
 	err   error
 }
 
@@ -34,8 +35,8 @@ func tickCmd(d time.Duration) tea.Cmd {
 
 func pollCmd() tea.Cmd {
 	return func() tea.Msg {
-		conns, err := parser.RunSS()
-		return pollResultMsg{conns: conns, err: err}
+		conns, drops, err := parser.RunSS()
+		return pollResultMsg{conns: conns, drops: drops, err: err}
 	}
 }
 
@@ -70,22 +71,24 @@ func nextTab(cur ViewMode, delta int) ViewMode {
 
 // AppModel is the main bubbletea model.
 type AppModel struct {
-	width        int
-	height       int
-	buf          *poller.Buffer
-	table        *ui.TableModel
-	filter       *ui.Filter
-	tab          ViewMode
-	showHelp     bool
-	lastError    error
-	filterMode   bool
-	filterBuf    string
-	filterCursor int // byte offset of the edit cursor within filterBuf
-	selectedKey  string
-	quitting     bool
-	statusMsg    string
-	statusExpiry time.Time
-	eventsScroll int
+	width         int
+	height        int
+	buf           *poller.Buffer
+	table         *ui.TableModel
+	filter        *ui.Filter
+	tab           ViewMode
+	showHelp      bool
+	lastError     error
+	lastDrops     int // unparsed ss records from the most recent poll
+	filterMode    bool
+	filterBuf     string
+	filterCursor  int      // byte offset of the edit cursor within filterBuf
+	filterPrevTab ViewMode // tab to restore when filter input is cancelled/applied
+	selectedKey   string
+	quitting      bool
+	statusMsg     string
+	statusExpiry  time.Time
+	eventsScroll  int
 }
 
 func NewApp() *AppModel {
@@ -168,6 +171,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.filterMode = true
 			m.filterBuf = m.filter.Query()
 			m.filterCursor = len(m.filterBuf)
+			m.filterPrevTab = m.tab
 			m.tab = ViewFilter
 			return m, nil
 		case "enter":
@@ -193,6 +197,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.clampEventsScroll()
 			} else {
 				m.table.Next()
+				m.syncSelectedKey()
 			}
 		case "k", "up":
 			if m.tab == ViewEvents {
@@ -202,6 +207,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			} else {
 				m.table.Prev()
+				m.syncSelectedKey()
 			}
 		case "pgdown":
 			if m.tab == ViewEvents {
@@ -220,12 +226,14 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.eventsScroll = 0
 			} else {
 				m.table.First()
+				m.syncSelectedKey()
 			}
 		case "G":
 			if m.tab == ViewEvents {
 				m.eventsScroll = ui.MaxEventsScroll(m.buf, m.contentHeight())
 			} else {
 				m.table.Last()
+				m.syncSelectedKey()
 			}
 		case "h":
 			m.table.CycleSort()
@@ -251,6 +259,7 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case pollResultMsg:
 		m.lastError = msg.err
+		m.lastDrops = msg.drops
 		// Ingest on full success (even if zero sockets) or on a partial
 		// failure that still returned data; skip only when both queries
 		// failed (nil slice) so the last good snapshot is preserved.
@@ -269,13 +278,13 @@ func (m *AppModel) handleFilterInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
 		m.filterMode = false
-		m.tab = ViewLive
+		m.tab = m.restoreTab()
 		return m, nil
 	case "enter":
 		m.applyFilter()
 		m.table.InvalidateCache()
 		m.filterMode = false
-		m.tab = ViewLive
+		m.tab = m.restoreTab()
 		return m, nil
 	case "left":
 		if m.filterCursor > 0 {
@@ -326,6 +335,29 @@ func (m *AppModel) applyFilter() {
 	m.filter.SetQuery(m.filterBuf)
 }
 
+// syncSelectedKey makes the Detail/Socket views follow table navigation: when
+// either of those tabs is open, moving the table cursor (j/k/g/G) re-points the
+// inspected connection at the new selection. On the Live tab it is a no-op —
+// selectedKey is only consulted once the user presses Enter to drill in.
+func (m *AppModel) syncSelectedKey() {
+	if m.tab != ViewDetail && m.tab != ViewSocket {
+		return
+	}
+	if conn := m.table.GetSelected(); conn != nil {
+		m.selectedKey = conn.ConnKey()
+	}
+}
+
+// restoreTab returns the tab to show after leaving filter input. It falls back
+// to ViewLive if the stashed tab is unset or somehow still ViewFilter, so the
+// user can never be stranded on the filter view with no input box.
+func (m *AppModel) restoreTab() ViewMode {
+	if m.filterPrevTab == ViewFilter {
+		return ViewLive
+	}
+	return m.filterPrevTab
+}
+
 func (m *AppModel) View() string {
 	if m.quitting {
 		return "\n  Goodbye!\n"
@@ -334,7 +366,7 @@ func (m *AppModel) View() string {
 	var b strings.Builder
 
 	// Header (fixed)
-	b.WriteString(ui.RenderHeader(m.buf, m.filter, m.width) + "\n")
+	b.WriteString(ui.RenderHeader(m.buf, m.filter, m.lastDrops, m.width) + "\n")
 
 	// Tabs (fixed)
 	b.WriteString(ui.RenderTabs(int(m.tab), m.width) + "\n")
@@ -444,11 +476,10 @@ func clipToHeight(s string, maxLines int) string {
 }
 
 func (m *AppModel) getConnectionByKey(key string) *model.Connection {
-	snap := m.buf.GetLatest()
-	if snap == nil {
-		return nil
-	}
-	return snap.Lookup(key)
+	// Search newest-first across the whole buffer rather than only the latest
+	// snapshot, so the Detail/Socket views keep rendering a connection that has
+	// just closed instead of blanking out the moment it drops off the table.
+	return m.buf.LookupRecent(key)
 }
 
 func (m *AppModel) renderFilterText() string {

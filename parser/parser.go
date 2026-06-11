@@ -316,11 +316,14 @@ func ParseLine(line string) (*model.Connection, error) {
 	return c, nil
 }
 
-// RunSS runs ss for both TCP and UDP and returns merged connections.
-func RunSS() ([]*model.Connection, error) {
-	tcpConns, tcpErr := runSS("-atnpeimOH", "tcp")
-	udpConns, udpErr := runSS("-aunpeimOH", "udp")
-	return mergeResults(tcpConns, tcpErr, udpConns, udpErr)
+// RunSS runs ss for both TCP and UDP and returns merged connections plus the
+// number of record lines that could not be parsed (so the UI can surface a
+// silent parse failure rather than dropping sockets invisibly).
+func RunSS() ([]*model.Connection, int, error) {
+	tcpConns, tcpDrops, tcpErr := runSS("-atnpeimOH", "tcp")
+	udpConns, udpDrops, udpErr := runSS("-aunpeimOH", "udp")
+	conns, err := mergeResults(tcpConns, tcpErr, udpConns, udpErr)
+	return conns, tcpDrops + udpDrops, err
 }
 
 // mergeResults combines the per-protocol ss results into a single list and a
@@ -364,20 +367,21 @@ func applyUDPState(c *model.Connection) {
 	}
 }
 
-func runSS(flags, protocol string) ([]*model.Connection, error) {
+func runSS(flags, protocol string) ([]*model.Connection, int, error) {
 	cmd := exec.Command("ss", flags)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return nil, fmt.Errorf("ss: %w", err)
+		return nil, 0, fmt.Errorf("ss: %w", err)
 	}
 	if err := cmd.Start(); err != nil {
 		if errors.Is(err, exec.ErrNotFound) {
-			return nil, fmt.Errorf("ss not found in PATH; install iproute2")
+			return nil, 0, fmt.Errorf("ss not found in PATH; install iproute2")
 		}
-		return nil, fmt.Errorf("ss: %w", err)
+		return nil, 0, fmt.Errorf("ss: %w", err)
 	}
 
 	var conns []*model.Connection
+	var drops int // record lines that looked like sockets but didn't parse
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	var pending string
@@ -385,9 +389,14 @@ func runSS(flags, protocol string) ([]*model.Connection, error) {
 		if pending == "" {
 			return
 		}
+		// ss is run with -H, so every non-continuation line is a socket record.
+		// A nil/error result means a record we couldn't parse — count it rather
+		// than discarding it silently.
 		if c, err := ParseLine(pending); err == nil && c != nil {
 			c.Protocol = protocol
 			conns = append(conns, c)
+		} else {
+			drops++
 		}
 		pending = ""
 	}
@@ -410,10 +419,10 @@ func runSS(flags, protocol string) ([]*model.Connection, error) {
 	flush()
 	scanErr := scanner.Err()
 	if err := cmd.Wait(); err != nil {
-		return nil, fmt.Errorf("ss: %w", err)
+		return nil, 0, fmt.Errorf("ss: %w", err)
 	}
 	if scanErr != nil {
-		return nil, fmt.Errorf("ss scan: %w", scanErr)
+		return nil, 0, fmt.Errorf("ss scan: %w", scanErr)
 	}
-	return conns, nil
+	return conns, drops, nil
 }

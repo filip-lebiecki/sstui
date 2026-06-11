@@ -215,7 +215,10 @@ row.
 
 Network-level deep dive for one connection: Identity, Performance,
 Congestion, Throughput, Retransmit. Two-column layout above 100 cols,
-single column otherwise. Signal badges sit at the bottom.
+single column otherwise. Signal badges sit at the bottom. A **diagnosis
+banner** at the top synthesizes the active signals into a one-line,
+plain-English verdict and a suggested next step — root causes (zero window,
+SYN stall) win over downstream symptoms.
 
 ### 3. Socket
 

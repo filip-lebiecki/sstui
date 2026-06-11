@@ -39,6 +39,7 @@ func RenderDetail(conn *model.Connection, buf *poller.Buffer, width, height int)
 	var b strings.Builder
 
 	b.WriteString(styleDetailTitle.Render(" Connection Detail") + "\n\n")
+	b.WriteString(RenderDiagnosis(conn) + "\n\n")
 
 	var sections []string
 	add := func(title string, body func() string) {

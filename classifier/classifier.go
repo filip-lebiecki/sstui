@@ -58,6 +58,18 @@ func queuePressure(cur, prev, bufCap *int) int {
 func Classify(c *model.Connection) []model.Signal {
 	var signals []model.Signal
 
+	// Socket-buffer drops (skmem 'd') are the kernel telling us it discarded
+	// data at this socket because the buffer was full — the receiver couldn't
+	// keep up. Applies to both TCP and UDP; a per-poll increase is a hard data
+	// loss event, not a soft warning, so even one drop is worth surfacing.
+	if c.DeltaSkmemD != nil && *c.DeltaSkmemD > 0 {
+		sev := 1
+		if *c.DeltaSkmemD > 10 {
+			sev = 2
+		}
+		signals = append(signals, model.Signal{Type: model.SignalSocketDrops, Severity: sev, Value: *c.DeltaSkmemD})
+	}
+
 	if c.Protocol == "udp" {
 		if sev := queuePressure(c.RecvQ, c.PrevRecvQ, c.SkmemRB); sev > 0 {
 			signals = append(signals, model.Signal{Type: model.SignalRecvBufferPressure, Severity: sev, Value: *c.RecvQ})

@@ -24,6 +24,7 @@ const (
 	SignalDSACKSpurious      SignalType = "dsack_spurious"
 	SignalBBRUnderutil       SignalType = "bbr_underutil"
 	SignalReordering         SignalType = "reordering"
+	SignalSocketDrops        SignalType = "socket_drops"
 )
 
 // SignalColor returns a display string for the signal.
@@ -49,6 +50,7 @@ func (s SignalType) Label() string {
 		SignalDSACKSpurious:      "DSACK",
 		SignalBBRUnderutil:       "BBR_LOW",
 		SignalReordering:         "REORDER",
+		SignalSocketDrops:        "DROPS",
 	}
 	if l, ok := labels[s]; ok {
 		return l

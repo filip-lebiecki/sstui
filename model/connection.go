@@ -112,6 +112,7 @@ type Connection struct {
 	DeltaBytesRetrans  *int
 	DeltaDSACKDups     *int
 	DeltaRcvOOOPack    *int
+	DeltaSkmemD        *int // new socket-buffer drops since the previous poll
 	DeltaBusyMS        *float64
 
 	// Previous values kept for non-monotonic signals (e.g. cwnd collapse) and

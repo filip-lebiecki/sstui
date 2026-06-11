@@ -9,7 +9,7 @@ Built for triage: tab through running connections, see signals like
 automatically, and drill into the underlying kernel metrics on a single
 key press.
 
-![tabs](https://img.shields.io/badge/tabs-7-blue) ![signals](https://img.shields.io/badge/signals-20-orange) ![ring%20buffer](https://img.shields.io/badge/history-50%20min-green)
+![tabs](https://img.shields.io/badge/tabs-7-blue) ![signals](https://img.shields.io/badge/signals-21-orange) ![ring%20buffer](https://img.shields.io/badge/history-50%20min-green)
 
 ---
 
@@ -413,7 +413,7 @@ A green status line at the bottom confirms the path and row/snapshot count.
 
 ## Signals reference
 
-There are **20 signal types**, each at one of three severities: `info`
+There are **21 signal types**, each at one of three severities: `info`
 (grey), `warn` (yellow/orange), `crit` (red). Severity is reflected in the
 badge color and in the Live-tab indicator glyph.
 
@@ -426,8 +426,8 @@ badge color and in the Live-tab indicator glyph.
 | `LOSS`     | `congestion_loss`    | `lost > 2` (crit >10)                                                       | `lost:` ✓                              | 1–2      | red    |
 | `PMTU`     | `pmtu_mismatch`      | `pmtu < advmss+40`                                                          | `pmtu:` `advmss:` ✓                    | 1        | orange |
 | `RTT_SPIKE`| `rtt_spike`          | `rtt/minrtt > 5` (crit >15)                                                 | `rtt:` `minrtt:` ✓                     | 1–2      | orange |
-| `SEND_Q`   | `send_buffer_pressure` | `Send-Q > 0` (crit >100)                                                 | column ✓                               | 1–2      | yellow |
-| `RCV_Q`    | `recv_buffer_pressure` | `Recv-Q > 0` (crit >100)                                                 | column ✓                               | 1–2      | yellow |
+| `SEND_Q`   | `send_buffer_pressure` | Send-Q ≥ 50% of send buffer (crit ≥80%), sustained 2 polls; 16K/64K abs fallback | column + `skmem` `tb` ✓        | 1–2      | yellow |
+| `RCV_Q`    | `recv_buffer_pressure` | Recv-Q ≥ 50% of recv buffer (crit ≥80%), sustained 2 polls; 16K/64K abs fallback | column + `skmem` `rb` ✓        | 1–2      | yellow |
 | `HI_RETRANS`| `high_retrans_rate` | `retrans/sent > 5%` (crit >20%)                                            | deltas of `bytes_sent`/`bytes_retrans` ✓ | 1–2    | red    |
 | `DEL_DROP` | `delivery_drop`      | not app-limited & sending & `delivery/pacing < 0.5`                        | `delivery_rate` `pacing_rate` ✓        | 1        | orange |
 | `UNACKED`  | `unacked_buildup`    | `unacked > 0.8·cwnd` && `> 10`                                              | `unacked:` `cwnd:` ✓                   | 1        | yellow |
@@ -439,6 +439,7 @@ badge color and in the Live-tab indicator glyph.
 | `DSACK`    | `dsack_spurious`     | `Δdsack_dups > 0` (crit >5)                                                 | `dsack_dups:` delta ✓                  | 1–2      | yellow |
 | `BBR_LOW`  | `bbr_underutil`      | BBR active, not app-limited, sending, `delivery < 0.5×BBR_BW`              | `bbr:BW` `delivery_rate` ✓             | 1        | orange |
 | `REORDER`  | `reordering`         | `Δrcv_ooopack > 0` (crit >50)                                               | `rcv_ooopack:` delta ✓                 | 1–2      | orange |
+| `DROPS`    | `socket_drops`       | `Δskmem.d > 0` (crit >10) — kernel dropped data at this socket              | `skmem` `d` delta ✓                     | 1–2      | red    |
 
 ### Connection-state signals
 
@@ -460,6 +461,7 @@ badge color and in the Live-tab indicator glyph.
 | `HI_RETRANS`  | `Δbytes_retrans / Δbytes_sent > 5%`                                    | warn / crit (>20%)      | Current-poll retransmit rate is bad                        |
 | `DSACK`       | `dsack_dups` grew this poll                                            | warn / crit (>5)        | Spurious retransmits — RTO too aggressive                  |
 | `REORDER`     | `rcv_ooopack` grew this poll                                           | warn / crit (>50)       | Path is reordering packets (often LACP / multipath / queue issue)|
+| `DROPS`       | `skmem` drop counter (`d`) grew this poll                             | warn / crit (>10)       | Kernel discarded data at the socket — buffer overran, receiver too slow|
 
 ### Congestion & flow control
 

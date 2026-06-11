@@ -55,6 +55,7 @@ var (
 		model.SignalDSACKSpurious:      lipgloss.Color("#ffd43b"),
 		model.SignalBBRUnderutil:       lipgloss.Color("#ffa94d"),
 		model.SignalReordering:         lipgloss.Color("#ffa94d"),
+		model.SignalSocketDrops:        lipgloss.Color("#ff6b6b"),
 	}
 )
 

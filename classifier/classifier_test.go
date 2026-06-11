@@ -67,3 +67,32 @@ func TestClassifyQueueNoiseSuppressed(t *testing.T) {
 		}
 	}
 }
+
+func sigByType(sigs []model.Signal, t model.SignalType) (model.Signal, bool) {
+	for _, s := range sigs {
+		if s.Type == t {
+			return s, true
+		}
+	}
+	return model.Signal{}, false
+}
+
+func TestClassifySocketDrops(t *testing.T) {
+	// No new drops this poll: no signal.
+	none := &model.Connection{Protocol: "udp", State: "UDP_ESTAB", DeltaSkmemD: ip(0)}
+	if _, ok := sigByType(Classify(none), model.SignalSocketDrops); ok {
+		t.Errorf("zero drop delta should not raise DROPS")
+	}
+
+	// A few drops: warn.
+	warn := &model.Connection{Protocol: "udp", State: "UDP_ESTAB", DeltaSkmemD: ip(3)}
+	if s, ok := sigByType(Classify(warn), model.SignalSocketDrops); !ok || s.Severity != 1 {
+		t.Errorf("3 drops should warn, got %+v (present=%v)", s, ok)
+	}
+
+	// A burst: crit. Works on TCP too.
+	crit := &model.Connection{Protocol: "tcp", State: "ESTAB", DeltaSkmemD: ip(50)}
+	if s, ok := sigByType(Classify(crit), model.SignalSocketDrops); !ok || s.Severity != 2 {
+		t.Errorf("50 drops should be crit, got %+v (present=%v)", s, ok)
+	}
+}

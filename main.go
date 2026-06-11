@@ -334,7 +334,7 @@ func (m *AppModel) View() string {
 	var b strings.Builder
 
 	// Header (fixed)
-	b.WriteString(ui.RenderHeader(m.buf, m.width) + "\n")
+	b.WriteString(ui.RenderHeader(m.buf, m.filter, m.width) + "\n")
 
 	// Tabs (fixed)
 	b.WriteString(ui.RenderTabs(int(m.tab), m.width) + "\n")

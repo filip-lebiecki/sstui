@@ -58,19 +58,26 @@ var (
 	}
 )
 
-// RenderHeader renders the top status bar with stat pills.
-func RenderHeader(buf *poller.Buffer, width int) string {
+// RenderHeader renders the top status bar with stat pills. When filter is
+// active, the aggregates count only connections matching it, so the totals
+// line up with the rows shown in the table.
+func RenderHeader(buf *poller.Buffer, filter *Filter, width int) string {
 	snap := buf.GetLatest()
 	if snap == nil {
 		return styleHeader.Render(fmt.Sprintf(" ss-stats | waiting for data... | %d cols", width))
 	}
 
-	total := len(snap.Conns)
+	filtered := filter != nil && filter.IsActive()
+	total := 0
 	estab, listen := 0, 0
 	var totalRTT, totalBytesSent, totalBytesRecv float64
 	var rttCount int
 
 	for _, c := range snap.Conns {
+		if filtered && !filter.Matches(c) {
+			continue
+		}
+		total++
 		switch c.State {
 		case "ESTAB":
 			estab++
@@ -99,8 +106,13 @@ func RenderHeader(buf *poller.Buffer, width int) string {
 
 	ts := buf.LastUpdate().Format("15:04:05")
 
+	totalLabel := "TOTAL"
+	if filtered {
+		totalLabel = "MATCH"
+	}
+
 	pills := []string{
-		styleStat.Render(fmt.Sprintf("TOTAL %d", total)),
+		styleStat.Render(fmt.Sprintf("%s %d", totalLabel, total)),
 		styleStat.Render(fmt.Sprintf("ESTAB %d", estab)),
 		styleStat.Render(fmt.Sprintf("LISTEN %d", listen)),
 		styleStat.Render(fmt.Sprintf("RTT %s", avgRTT)),
@@ -124,15 +136,18 @@ func RenderHeader(buf *poller.Buffer, width int) string {
 		Render(content)
 }
 
+// fmtBytesPerSec formats a per-poll byte delta as a rate. It uses the same
+// decimal (1000-based) units as fmtRate so the header totals line up exactly
+// with the sum of the per-row TX/RX rates in the table.
 func fmtBytesPerSec(b float64) string {
 	b /= poller.PollInterval.Seconds()
 	switch {
-	case b >= 1_073_741_824:
-		return fmt.Sprintf("%.1fGB/s", b/1073741824)
-	case b >= 1_048_576:
-		return fmt.Sprintf("%.1fMB/s", b/1048576)
-	case b >= 1024:
-		return fmt.Sprintf("%.1fKB/s", b/1024)
+	case b >= 1_000_000_000:
+		return fmt.Sprintf("%.1fGB/s", b/1e9)
+	case b >= 1_000_000:
+		return fmt.Sprintf("%.1fMB/s", b/1e6)
+	case b >= 1_000:
+		return fmt.Sprintf("%.1fKB/s", b/1e3)
 	default:
 		return fmt.Sprintf("%.0fB/s", b)
 	}

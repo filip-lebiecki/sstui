@@ -236,7 +236,7 @@ func renderTopPeers(snap *poller.Snapshot) string {
 		out := int(ps.totalSent)
 		in := int(ps.totalRecv)
 		sb.WriteString(fmt.Sprintf("  %s %s %s %s %s\n",
-			styleTopAddr.Render(fmt.Sprintf("%-40s", truncate(ps.addr, 40))),
+			styleTopAddr.Render(fmt.Sprintf("%-40s", truncate(displayAddr(ps.addr), 40))),
 			styleTopCount.Render(fmt.Sprintf("%5d", ps.conns)),
 			fmtPropBar(float64(ps.conns), float64(maxConns), topBarW),
 			styleTopTX.Render(fmt.Sprintf("%-10s", fmtBytes(&out))),

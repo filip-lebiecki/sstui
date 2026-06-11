@@ -261,6 +261,14 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "L":
 			m.filter.HideListen = !m.filter.HideListen
 			m.table.InvalidateCache()
+		case "r":
+			on := ui.ToggleResolveDNS()
+			if on {
+				m.statusMsg = "reverse DNS: on"
+			} else {
+				m.statusMsg = "reverse DNS: off"
+			}
+			m.statusExpiry = time.Now().Add(3 * time.Second)
 		case "e":
 			if m.tab == ViewEvents {
 				m.exportEvents("json")
@@ -742,6 +750,7 @@ func main() {
 		interval   = flag.Duration("interval", poller.PollInterval, "poll cadence (e.g. 1s, 500ms); minimum 100ms")
 		filterExpr = flag.String("filter", "", "initial filter expression (same syntax as the `/` prompt)")
 		showListen = flag.Bool("show-listen", false, "show LISTEN sockets at startup (hidden by default)")
+		resolve    = flag.Bool("resolve", false, "resolve peer addresses to hostnames (reverse DNS) at startup")
 		showVer    = flag.Bool("version", false, "print version and exit")
 	)
 	flag.Parse()
@@ -760,6 +769,9 @@ func main() {
 	app := NewApp()
 	if *showListen {
 		app.filter.HideListen = false
+	}
+	if *resolve {
+		ui.SetResolveDNS(true)
 	}
 	if *filterExpr != "" {
 		app.filter.SetQuery(*filterExpr)

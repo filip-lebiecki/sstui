@@ -398,9 +398,9 @@ func addrPortWidth(addr, port string) int {
 func (t *TableModel) naturalWidth(col TableColumn, c *model.Connection) int {
 	switch col.Key {
 	case "local":
-		return addrPortWidth(c.LocalAddr, c.LocalPort)
+		return addrPortWidth(displayAddr(c.LocalAddr), c.LocalPort)
 	case "peer":
-		return addrPortWidth(c.PeerAddr, c.PeerPort)
+		return addrPortWidth(displayAddr(c.PeerAddr), c.PeerPort)
 	default:
 		return ansi.StringWidth(col.Render(c))
 	}
@@ -653,9 +653,9 @@ func (t *TableModel) RenderBody() string {
 			var val string
 			switch col.Key {
 			case "local":
-				val = shortenAddrPort(c.LocalAddr, c.LocalPort, widths[j])
+				val = shortenAddrPort(displayAddr(c.LocalAddr), c.LocalPort, widths[j])
 			case "peer":
-				val = shortenAddrPort(c.PeerAddr, c.PeerPort, widths[j])
+				val = shortenAddrPort(displayAddr(c.PeerAddr), c.PeerPort, widths[j])
 			default:
 				val = col.Render(c)
 			}

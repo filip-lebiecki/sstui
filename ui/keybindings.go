@@ -36,6 +36,7 @@ func RenderHelp() string {
 		{"{ / }", "Scrub back / forward ten snapshots"},
 		{"h", "Cycle sort column / direction"},
 		{"L", "Toggle hiding LISTEN sockets"},
+		{"r", "Toggle reverse DNS (peer/local hostnames)"},
 		{"/", "Open filter mode"},
 		{"e", "Export ring buffer to JSON (events list on Events tab)"},
 		{"E", "Export current snapshot to CSV (events list on Events tab)"},

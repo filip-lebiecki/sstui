@@ -50,8 +50,15 @@ func RenderDetail(conn *model.Connection, buf *poller.Buffer, width, height int)
 		var sb strings.Builder
 		sb.WriteString(fmtRowColor("Protocol", strings.ToUpper(conn.Protocol), ProtoColor(conn.Protocol)))
 		sb.WriteString(fmtRowColor("State", conn.State, StateColor(conn.State)))
-		sb.WriteString(fmtRowColor("Local", conn.LocalAddr+":"+conn.LocalPort, colAddr))
-		sb.WriteString(fmtRowColor("Peer", conn.PeerAddr+":"+conn.PeerPort, colAddr))
+		addrLine := func(addr, port string) string {
+			s := addr + ":" + port
+			if name := displayAddr(addr); name != addr {
+				s += "  (" + name + ")"
+			}
+			return s
+		}
+		sb.WriteString(fmtRowColor("Local", addrLine(conn.LocalAddr, conn.LocalPort), colAddr))
+		sb.WriteString(fmtRowColor("Peer", addrLine(conn.PeerAddr, conn.PeerPort), colAddr))
 		if conn.Process != nil {
 			sb.WriteString(fmtRowColor("Process", *conn.Process, colProc))
 		}

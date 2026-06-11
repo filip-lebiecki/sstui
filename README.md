@@ -141,6 +141,7 @@ Command-line flags:
 | `--interval`     | `2s`    | Poll cadence (e.g. `1s`, `500ms`); minimum `100ms`. Rates and the ~50-min history window scale with it. |
 | `--filter`       | (none)  | Start pre-filtered with a `/`-prompt expression, e.g. `--filter 'dport=443 not state=TIME-WAIT'`. |
 | `--show-listen`  | off     | Show LISTEN sockets at startup (hidden by default).      |
+| `--resolve`      | off     | Resolve peer/local addresses to hostnames (reverse DNS). |
 | `--version`      |         | Print version and exit.                                  |
 
 ```bash
@@ -307,6 +308,7 @@ focused on real anomalies.
 | `Esc`          | Back to Live (clears selection) / close help / clear filter |
 | `h`            | Cycle sort column / direction in Live                      |
 | `L`            | Toggle hiding LISTEN sockets                               |
+| `r`            | Toggle reverse DNS (peer/local hostnames; async, cached)   |
 | `/`            | Open filter prompt                                         |
 | `e`            | Export ring buffer to JSON (events list on Events tab)     |
 | `E`            | Export latest snapshot to CSV (events list on Events tab)  |

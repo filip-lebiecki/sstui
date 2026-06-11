@@ -25,6 +25,8 @@ const (
 	SignalBBRUnderutil       SignalType = "bbr_underutil"
 	SignalReordering         SignalType = "reordering"
 	SignalSocketDrops        SignalType = "socket_drops"
+	SignalRwndLimited        SignalType = "rwnd_limited"
+	SignalSndbufLimited      SignalType = "sndbuf_limited"
 )
 
 // SignalColor returns a display string for the signal.
@@ -51,6 +53,8 @@ func (s SignalType) Label() string {
 		SignalBBRUnderutil:       "BBR_LOW",
 		SignalReordering:         "REORDER",
 		SignalSocketDrops:        "DROPS",
+		SignalRwndLimited:        "RWND_LIM",
+		SignalSndbufLimited:      "SNDBUF_LIM",
 	}
 	if l, ok := labels[s]; ok {
 		return l

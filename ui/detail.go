@@ -160,15 +160,21 @@ func RenderDetail(conn *model.Connection, buf *poller.Buffer, width, height int)
 		if conn.LastAck != nil {
 			sb.WriteString(fmtRowColor("Last Ack", fmtMs(conn.LastAck), colDim))
 		}
-		if conn.DeltaBusyMS != nil {
-			pollMs := float64(poller.PollInterval / time.Millisecond)
+		pollMs := float64(poller.PollInterval / time.Millisecond)
+		limitedRow := func(label string, d *float64) {
+			if d == nil {
+				return
+			}
 			ratio := 0.0
 			if pollMs > 0 {
-				ratio = *conn.DeltaBusyMS / pollMs
+				ratio = *d / pollMs
 			}
-			sb.WriteString(fmtRowBar("Busy",
-				fmt.Sprintf("%.0fms (%.0f%%)", *conn.DeltaBusyMS, ratio*100), ratio))
+			sb.WriteString(fmtRowBar(label,
+				fmt.Sprintf("%.0fms (%.0f%%)", *d, ratio*100), ratio))
 		}
+		limitedRow("Busy", conn.DeltaBusyMS)
+		limitedRow("Rwnd Limited", conn.DeltaRwndLimitedMS)
+		limitedRow("Sndbuf Limited", conn.DeltaSndbufLimitedMS)
 		return sb.String()
 	})
 

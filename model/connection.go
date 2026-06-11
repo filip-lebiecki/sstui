@@ -86,17 +86,19 @@ type Connection struct {
 	// bare token by ss; absent on non-TCP sockets.
 	CongAlgo *string
 
-	BusyMS     *float64
-	PMTU       *int
-	AdvMSS     *int
-	RcvMSS     *int
-	LastSnd    *int
-	LastRcv    *int
-	LastAck    *int
-	DSACKDups  *int
-	Reordering *int // reordering: kernel's reordering distance estimate
-	ReordSeen  *int // reord_seen: cumulative reorder events observed
-	RcvOOOPack *int // rcv_ooopack: cumulative out-of-order packets received
+	BusyMS          *float64
+	RwndLimitedMS   *float64 // cumulative ms the sender was blocked on the peer's recv window
+	SndbufLimitedMS *float64 // cumulative ms the sender was blocked on its own send buffer
+	PMTU            *int
+	AdvMSS          *int
+	RcvMSS          *int
+	LastSnd         *int
+	LastRcv         *int
+	LastAck         *int
+	DSACKDups       *int
+	Reordering      *int // reordering: kernel's reordering distance estimate
+	ReordSeen       *int // reord_seen: cumulative reorder events observed
+	RcvOOOPack      *int // rcv_ooopack: cumulative out-of-order packets received
 
 	// BBR
 	BBRBW         *int
@@ -105,15 +107,17 @@ type Connection struct {
 	BBRCWndGain   *float64
 
 	// Computed deltas
-	DeltaBytesSent     *int
-	DeltaBytesReceived *int
-	DeltaSegsOut       *int
-	DeltaSegsIn        *int
-	DeltaBytesRetrans  *int
-	DeltaDSACKDups     *int
-	DeltaRcvOOOPack    *int
-	DeltaSkmemD        *int // new socket-buffer drops since the previous poll
-	DeltaBusyMS        *float64
+	DeltaBytesSent       *int
+	DeltaBytesReceived   *int
+	DeltaSegsOut         *int
+	DeltaSegsIn          *int
+	DeltaBytesRetrans    *int
+	DeltaDSACKDups       *int
+	DeltaRcvOOOPack      *int
+	DeltaSkmemD          *int // new socket-buffer drops since the previous poll
+	DeltaBusyMS          *float64
+	DeltaRwndLimitedMS   *float64 // ms blocked on the peer's recv window this poll
+	DeltaSndbufLimitedMS *float64 // ms blocked on the local send buffer this poll
 
 	// Previous values kept for non-monotonic signals (e.g. cwnd collapse) and
 	// for queue-pressure persistence (a queue must stay full across two polls

@@ -5,6 +5,12 @@ import (
 	"sstui/model"
 )
 
+// PollIntervalMS is the poll cadence in milliseconds. It's used to judge what
+// fraction of an interval a connection spent blocked on the receive window or
+// send buffer. The poller sets it at startup (a package var rather than an
+// import so classifier doesn't depend on poller); it defaults to the 2s cadence.
+var PollIntervalMS float64 = 2000
+
 // Queue-pressure thresholds. When the socket buffer size is known (from skmem)
 // the queue is judged as a fraction of capacity; otherwise these absolute byte
 // floors apply. A few hundred bytes in flight during a normal transfer is not
@@ -52,6 +58,24 @@ func queuePressure(cur, prev, bufCap *int) int {
 		return 0
 	}
 	return curSev
+}
+
+// limitedSeverity rates a per-poll "blocked" duration (ms) as a fraction of the
+// poll interval: warn at ≥25%, crit at ≥75%. Returns (0, frac) below the warn
+// threshold so the caller can suppress. Sub-quarter-interval blocking is normal
+// jitter and not worth a signal.
+func limitedSeverity(deltaMS *float64) (int, float64) {
+	if deltaMS == nil || *deltaMS <= 0 || PollIntervalMS <= 0 {
+		return 0, 0
+	}
+	frac := *deltaMS / PollIntervalMS
+	switch {
+	case frac >= 0.75:
+		return 2, frac
+	case frac >= 0.25:
+		return 1, frac
+	}
+	return 0, frac
 }
 
 // Classify analyzes a connection and returns detected signals.
@@ -205,6 +229,23 @@ func Classify(c *model.Connection) []model.Signal {
 		ratio := float64(*c.DeliveryRate) / float64(*c.PacingRate)
 		if ratio < 0.5 {
 			signals = append(signals, model.Signal{Type: model.SignalDeliveryDrop, Severity: 1, Value: ratio})
+		}
+	}
+
+	// Bottleneck attribution: how much of this poll the sender spent blocked on
+	// the peer's receive window (rwnd_limited) vs. its own send buffer
+	// (sndbuf_limited). Only meaningful while actively sending — a limit on an
+	// idle connection is moot. A high fraction tells you *where* the throughput
+	// ceiling is: RWND_LIM = the receiver isn't reading/advertising window fast
+	// enough; SNDBUF_LIM = the local send buffer (SO_SNDBUF / app) is the cap.
+	if c.DeltaBytesSent != nil && *c.DeltaBytesSent > 0 {
+		if sev, frac := limitedSeverity(c.DeltaRwndLimitedMS); sev > 0 {
+			signals = append(signals, model.Signal{Type: model.SignalRwndLimited, Severity: sev,
+				Value: fmt.Sprintf("%.0f%% of poll", frac*100)})
+		}
+		if sev, frac := limitedSeverity(c.DeltaSndbufLimitedMS); sev > 0 {
+			signals = append(signals, model.Signal{Type: model.SignalSndbufLimited, Severity: sev,
+				Value: fmt.Sprintf("%.0f%% of poll", frac*100)})
 		}
 	}
 

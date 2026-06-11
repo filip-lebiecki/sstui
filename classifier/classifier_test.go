@@ -77,6 +77,50 @@ func sigByType(sigs []model.Signal, t model.SignalType) (model.Signal, bool) {
 	return model.Signal{}, false
 }
 
+func fl(f float64) *float64 { return &f }
+
+func TestLimitedSeverity(t *testing.T) {
+	old := PollIntervalMS
+	PollIntervalMS = 2000
+	defer func() { PollIntervalMS = old }()
+
+	tests := []struct {
+		name string
+		ms   *float64
+		want int
+	}{
+		{"nil", nil, 0},
+		{"zero", fl(0), 0},
+		{"below warn (10%)", fl(200), 0},
+		{"warn (40%)", fl(800), 1},
+		{"crit (90%)", fl(1800), 2},
+	}
+	for _, tt := range tests {
+		if got, _ := limitedSeverity(tt.ms); got != tt.want {
+			t.Errorf("%s: limitedSeverity = %d, want %d", tt.name, got, tt.want)
+		}
+	}
+}
+
+func TestClassifyBottleneckRequiresSending(t *testing.T) {
+	old := PollIntervalMS
+	PollIntervalMS = 2000
+	defer func() { PollIntervalMS = old }()
+
+	// Heavily rwnd-limited but not sending: no signal (the limit is moot).
+	idle := &model.Connection{Protocol: "tcp", State: "ESTAB", DeltaRwndLimitedMS: fl(1900)}
+	if _, ok := sigByType(Classify(idle), model.SignalRwndLimited); ok {
+		t.Errorf("rwnd-limited but idle should not fire RWND_LIM")
+	}
+
+	// Sending and rwnd-limited: fires.
+	busy := &model.Connection{Protocol: "tcp", State: "ESTAB",
+		DeltaBytesSent: ip(1), DeltaRwndLimitedMS: fl(1900)}
+	if s, ok := sigByType(Classify(busy), model.SignalRwndLimited); !ok || s.Severity != 2 {
+		t.Errorf("sending + rwnd-limited should fire crit, got %+v (present=%v)", s, ok)
+	}
+}
+
 func TestClassifySocketDrops(t *testing.T) {
 	// No new drops this poll: no signal.
 	none := &model.Connection{Protocol: "udp", State: "UDP_ESTAB", DeltaSkmemD: ip(0)}

@@ -56,6 +56,8 @@ var (
 		model.SignalBBRUnderutil:       lipgloss.Color("#ffa94d"),
 		model.SignalReordering:         lipgloss.Color("#ffa94d"),
 		model.SignalSocketDrops:        lipgloss.Color("#ff6b6b"),
+		model.SignalRwndLimited:        lipgloss.Color("#ffd43b"),
+		model.SignalSndbufLimited:      lipgloss.Color("#ffd43b"),
 	}
 )
 

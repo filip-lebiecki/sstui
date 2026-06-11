@@ -55,6 +55,23 @@ func TestMergeResultsUDPFails(t *testing.T) {
 	}
 }
 
+// TestParseLineLimitedMetrics verifies the bottleneck-attribution fields
+// (rwnd_limited / sndbuf_limited) are extracted from a representative ss -i line.
+func TestParseLineLimitedMetrics(t *testing.T) {
+	line := "ESTAB 0 0 10.0.0.1:1234 10.0.0.2:443 " +
+		"cubic wscale:7,7 rtt:1.2/0.5 busy:500ms rwnd_limited:1800ms(45.0%) sndbuf_limited:120ms(3.0%)"
+	c, err := ParseLine(line)
+	if err != nil || c == nil {
+		t.Fatalf("ParseLine failed: %v", err)
+	}
+	if c.RwndLimitedMS == nil || *c.RwndLimitedMS != 1800 {
+		t.Errorf("RwndLimitedMS = %v, want 1800", c.RwndLimitedMS)
+	}
+	if c.SndbufLimitedMS == nil || *c.SndbufLimitedMS != 120 {
+		t.Errorf("SndbufLimitedMS = %v, want 120", c.SndbufLimitedMS)
+	}
+}
+
 // TestRunSSIntegration exercises the real ss binary when present so we catch
 // regressions in flag handling / parsing end to end.
 func TestRunSSIntegration(t *testing.T) {

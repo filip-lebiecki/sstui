@@ -13,6 +13,13 @@ const (
 	PollInterval = 2 * time.Second
 )
 
+// Keep the classifier's notion of the poll cadence in sync with ours, so its
+// fraction-of-interval signals (rwnd/sndbuf limited) are scaled correctly. Done
+// here rather than via an import in the classifier to avoid an import cycle.
+func init() {
+	classifier.PollIntervalMS = float64(PollInterval / time.Millisecond)
+}
+
 // Snapshot is a point-in-time capture of all connections.
 type Snapshot struct {
 	Timestamp time.Time
@@ -255,6 +262,26 @@ func computeDeltas(cur, prev *model.Connection) {
 			cur.DeltaBusyMS = &d
 		}
 	}
+
+	// rwnd_limited / sndbuf_limited are likewise cumulative ms; their per-poll
+	// deltas tell us how long the sender was blocked on the peer's receive
+	// window vs. its own send buffer during the last interval — i.e. where the
+	// throughput bottleneck currently is.
+	cur.DeltaRwndLimitedMS = deltaFloat(cur.RwndLimitedMS, prev.RwndLimitedMS)
+	cur.DeltaSndbufLimitedMS = deltaFloat(cur.SndbufLimitedMS, prev.SndbufLimitedMS)
+}
+
+// deltaFloat returns cur-prev when both are present and the result is
+// non-negative (cumulative counters never decrease except on reuse), else nil.
+func deltaFloat(cur, prev *float64) *float64 {
+	if cur == nil || prev == nil {
+		return nil
+	}
+	d := *cur - *prev
+	if d < 0 {
+		return nil
+	}
+	return &d
 }
 
 // GetLatest returns the most recent snapshot.

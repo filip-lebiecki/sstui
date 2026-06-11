@@ -43,7 +43,9 @@ key press.
 parses the output, computes per-poll deltas, runs a classifier over each
 connection, and keeps the last **1500 snapshots** (≈50 min) in a ring buffer.
 Everything you see on screen — the table, the bars, the events log, the
-sparklines — is rendered from that buffer.
+sparklines — is rendered from that buffer. Hit `Space` to freeze the Live
+table and `[` / `]` to scrub back and forward through that history, so you
+can replay exactly how a connection went bad instead of only seeing "now".
 
 There's no agent, no daemon, no setuid binary. Just `ss`. Run it as the
 user whose connections you want to see, or with sudo to see everyone's.
@@ -278,6 +280,9 @@ focused on real anomalies.
 |----------------|------------------------------------------------------------|
 | `1`–`7`        | Switch tabs (Live, Detail, Socket, Overview, Top, Perf, Events) |
 | `Tab` / `S-Tab`| Next / previous tab                                        |
+| `Space`        | Pause / resume — freeze the Live table for inspection       |
+| `[` / `]`      | Scrub back / forward one snapshot (auto-pauses)             |
+| `{` / `}`      | Scrub back / forward ten snapshots                         |
 | `j` / `↓`      | Next row (Live) / scroll down (Events)                     |
 | `k` / `↑`      | Previous row (Live) / scroll up (Events)                   |
 | `g` / `G`      | First / last (or top / bottom on Events)                   |

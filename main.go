@@ -89,6 +89,13 @@ type AppModel struct {
 	statusMsg     string
 	statusExpiry  time.Time
 	eventsScroll  int
+
+	// Pause / time-travel scrub. When paused, the Live table renders a frozen
+	// snapshot `scrubOffset` polls back from newest instead of the live one.
+	// Polling continues in the background; scrubOffset is bumped on each new
+	// poll so the viewed moment stays pinned as history grows behind it.
+	paused      bool
+	scrubOffset int
 }
 
 func NewApp() *AppModel {
@@ -113,7 +120,10 @@ func (m *AppModel) Init() tea.Cmd {
 func (m *AppModel) contentHeight() int {
 	headerLines := 4
 	if m.filter.IsActive() {
-		headerLines = 5
+		headerLines++
+	}
+	if m.paused {
+		headerLines++ // scrub status bar
 	}
 	footerLines := 1
 	if m.tab == ViewLive {
@@ -167,6 +177,16 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.tab = nextTab(m.tab, 1)
 		case "shift+tab":
 			m.tab = nextTab(m.tab, -1)
+		case " ", "space":
+			m.togglePause()
+		case "[":
+			m.scrub(1) // step back in time
+		case "]":
+			m.scrub(-1) // step forward in time
+		case "{":
+			m.scrub(10)
+		case "}":
+			m.scrub(-10)
 		case "/":
 			m.filterMode = true
 			m.filterBuf = m.filter.Query()
@@ -265,8 +285,14 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// failed (nil slice) so the last good snapshot is preserved.
 		if msg.err == nil || len(msg.conns) > 0 {
 			m.buf.AddSnapshot(msg.conns)
-			m.table.SetConnections(msg.conns)
-			m.table.SetSize(m.width, m.contentHeight())
+			if m.paused {
+				// The new snapshot shifted "newest" by one; bump the offset so
+				// the frozen view stays pinned to the same absolute moment as
+				// history accumulates behind it.
+				m.scrubOffset++
+				m.clampScrub()
+			}
+			m.syncTable()
 		}
 		return m, tickCmd(poller.PollInterval)
 	}
@@ -379,6 +405,11 @@ func (m *AppModel) View() string {
 			Render(filterText) + "\n")
 	}
 
+	// Scrub status bar (fixed) — only while paused.
+	if m.paused {
+		b.WriteString(m.renderScrubBar() + "\n")
+	}
+
 	b.WriteString("\n")
 
 	ch := m.contentHeight()
@@ -476,14 +507,100 @@ func clipToHeight(s string, maxLines int) string {
 }
 
 func (m *AppModel) getConnectionByKey(key string) *model.Connection {
-	// Search newest-first across the whole buffer rather than only the latest
-	// snapshot, so the Detail/Socket views keep rendering a connection that has
-	// just closed instead of blanking out the moment it drops off the table.
+	// While scrubbing, resolve the key against the frozen snapshot so Detail/
+	// Socket stay consistent with the (historical) row the user drilled into.
+	if m.paused {
+		if snap := m.viewSnapshot(); snap != nil {
+			if c := snap.Lookup(key); c != nil {
+				return c
+			}
+		}
+	}
+	// Otherwise search newest-first across the whole buffer rather than only the
+	// latest snapshot, so Detail/Socket keep rendering a connection that has just
+	// closed instead of blanking out the moment it drops off the table.
 	return m.buf.LookupRecent(key)
+}
+
+// viewSnapshot returns the snapshot the Live table should render: the frozen
+// scrub position when paused, otherwise the latest poll.
+func (m *AppModel) viewSnapshot() *poller.Snapshot {
+	if m.paused {
+		if s := m.buf.SnapshotFromEnd(m.scrubOffset); s != nil {
+			return s
+		}
+	}
+	return m.buf.GetLatest()
+}
+
+// syncTable points the table at the currently-viewed snapshot (live or frozen)
+// and re-applies the layout size. Called whenever that snapshot changes.
+func (m *AppModel) syncTable() {
+	if snap := m.viewSnapshot(); snap != nil {
+		m.table.SetConnections(snap.Conns)
+	}
+	m.table.SetSize(m.width, m.contentHeight())
+}
+
+// clampScrub keeps the scrub offset within the available history.
+func (m *AppModel) clampScrub() {
+	max := m.buf.Count() - 1
+	if max < 0 {
+		max = 0
+	}
+	if m.scrubOffset > max {
+		m.scrubOffset = max
+	}
+	if m.scrubOffset < 0 {
+		m.scrubOffset = 0
+	}
+}
+
+// togglePause enters or leaves scrub mode, starting at the newest snapshot.
+func (m *AppModel) togglePause() {
+	m.paused = !m.paused
+	m.scrubOffset = 0
+	m.syncTable()
+}
+
+// scrub moves the frozen view by delta polls (positive = further back in time)
+// and refreshes the table. Auto-enters pause if the user starts scrubbing live.
+func (m *AppModel) scrub(delta int) {
+	if !m.paused {
+		m.paused = true
+		m.scrubOffset = 0
+	}
+	m.scrubOffset += delta
+	m.clampScrub()
+	m.syncTable()
 }
 
 func (m *AppModel) renderFilterText() string {
 	return m.filter.Query()
+}
+
+// renderScrubBar renders the paused/time-travel status line: the frozen
+// snapshot's wall-clock time, how far back it is, its position in the buffer,
+// and the scrub keys.
+func (m *AppModel) renderScrubBar() string {
+	count := m.buf.Count()
+	ts := "—"
+	if snap := m.viewSnapshot(); snap != nil {
+		ts = snap.Timestamp.Format("15:04:05")
+	}
+	ago := (time.Duration(m.scrubOffset) * poller.PollInterval).Truncate(time.Second)
+	pos := count - m.scrubOffset // 1 = oldest, count = newest
+	live := ""
+	if m.scrubOffset == 0 {
+		live = "  (newest)"
+	}
+	text := fmt.Sprintf("  ⏸ PAUSED  %s  -%s%s  ·  snapshot %d/%d  ·  [ ] step   { } ×10   space resume",
+		ts, ago, live, pos, count)
+	return lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#000")).
+		Background(lipgloss.Color("#ffd43b")).
+		Bold(true).
+		Render(text)
 }
 
 func (m *AppModel) clampEventsScroll() {

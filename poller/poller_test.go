@@ -86,3 +86,31 @@ func TestLookupRecent(t *testing.T) {
 		t.Errorf("LookupRecent should return nil for an unknown key")
 	}
 }
+
+// TestSnapshotFromEnd verifies the scrub accessor maps offsets to the right
+// snapshot newest-first and rejects out-of-range offsets.
+func TestSnapshotFromEnd(t *testing.T) {
+	buf := NewBuffer()
+	mk := func(addr string) []*model.Connection {
+		return []*model.Connection{{
+			Protocol: "tcp", State: "ESTAB",
+			LocalAddr: addr, LocalPort: "1", PeerAddr: "2.2.2.2", PeerPort: "2",
+		}}
+	}
+	buf.AddSnapshot(mk("1.1.1.1")) // oldest
+	buf.AddSnapshot(mk("2.2.2.2"))
+	buf.AddSnapshot(mk("3.3.3.3")) // newest
+
+	if s := buf.SnapshotFromEnd(0); s == nil || s.Conns[0].LocalAddr != "3.3.3.3" {
+		t.Errorf("offset 0 should be newest (3.3.3.3), got %v", s)
+	}
+	if s := buf.SnapshotFromEnd(2); s == nil || s.Conns[0].LocalAddr != "1.1.1.1" {
+		t.Errorf("offset 2 should be oldest (1.1.1.1), got %v", s)
+	}
+	if s := buf.SnapshotFromEnd(3); s != nil {
+		t.Errorf("offset past the buffer should be nil, got %v", s)
+	}
+	if s := buf.SnapshotFromEnd(-1); s != nil {
+		t.Errorf("negative offset should be nil, got %v", s)
+	}
+}

@@ -82,13 +82,16 @@ func (s *Snapshot) compact() *Snapshot {
 			Process:   c.Process,
 			PID:       c.PID,
 			Inode:     c.Inode, // kept: ConnKey/Lookup depend on it
-			// Fields read by historical charts/lists:
+			// Fields read by historical charts/lists and the pause/scrub view
+			// of the Live table (which renders the same columns from history):
 			RecvQ:              c.RecvQ,
 			SendQ:              c.SendQ,
 			RTT:                c.RTT,
 			CWnd:               c.CWnd,
 			Unacked:            c.Unacked,
 			Retrans:            c.Retrans,
+			TimerType:          c.TimerType, // kept: KA column in scrub view
+			TimerDur:           c.TimerDur,  // kept: KA column in scrub view
 			DeltaBytesSent:     c.DeltaBytesSent,
 			DeltaBytesReceived: c.DeltaBytesReceived,
 			Signals:            c.Signals,
@@ -313,6 +316,19 @@ func (b *Buffer) LookupRecent(key string) *model.Connection {
 		}
 	}
 	return nil
+}
+
+// SnapshotFromEnd returns the snapshot `offset` positions back from the newest
+// (0 = newest, 1 = one poll ago, …). Returns nil when offset is out of range.
+// Used by the pause/scrub view to render an arbitrary point in history.
+func (b *Buffer) SnapshotFromEnd(offset int) *Snapshot {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	if offset < 0 || offset >= b.count {
+		return nil
+	}
+	idx := ((b.head-1-offset)%BufferSize + BufferSize) % BufferSize
+	return b.snapshots[idx]
 }
 
 // GetAll returns all snapshots in chronological order.

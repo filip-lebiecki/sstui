@@ -2,9 +2,35 @@ package poller
 
 import (
 	"testing"
+	"time"
 
+	"sstui/classifier"
 	"sstui/model"
 )
+
+// TestSetInterval verifies the poll cadence override also updates the
+// classifier's notion of the interval, and that a non-positive value is ignored.
+func TestSetInterval(t *testing.T) {
+	origInterval := PollInterval
+	origMS := classifier.PollIntervalMS
+	defer func() {
+		PollInterval = origInterval
+		classifier.PollIntervalMS = origMS
+	}()
+
+	SetInterval(500 * time.Millisecond)
+	if PollInterval != 500*time.Millisecond {
+		t.Errorf("PollInterval = %s, want 500ms", PollInterval)
+	}
+	if classifier.PollIntervalMS != 500 {
+		t.Errorf("classifier.PollIntervalMS = %v, want 500", classifier.PollIntervalMS)
+	}
+
+	SetInterval(-1) // ignored
+	if PollInterval != 500*time.Millisecond {
+		t.Errorf("non-positive interval should be ignored, got %s", PollInterval)
+	}
+}
 
 // TestBufferCompactsDemotedSnapshots verifies item 6: once a snapshot is no
 // longer the latest, its connections are slimmed to the history-relevant

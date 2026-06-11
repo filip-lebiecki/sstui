@@ -134,6 +134,19 @@ go build .
 ./sstui
 ```
 
+Command-line flags:
+
+| Flag             | Default | Description                                              |
+|------------------|---------|----------------------------------------------------------|
+| `--interval`     | `2s`    | Poll cadence (e.g. `1s`, `500ms`); minimum `100ms`. Rates and the ~50-min history window scale with it. |
+| `--filter`       | (none)  | Start pre-filtered with a `/`-prompt expression, e.g. `--filter 'dport=443 not state=TIME-WAIT'`. |
+| `--show-listen`  | off     | Show LISTEN sockets at startup (hidden by default).      |
+| `--version`      |         | Print version and exit.                                  |
+
+```bash
+./sstui --interval 1s --filter 'proc=nginx or dport=443' --show-listen
+```
+
 Requirements:
 
 - Linux (the parser is `ss(8)`-specific — iproute2 ≥ 4.4 recommended).

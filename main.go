@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -733,10 +734,39 @@ func renderFilterInput(buf string, pos int) string {
 	return buf[:pos] + style.Render(buf[pos:pos+size]) + buf[pos+size:]
 }
 
-func main() {
-	app := NewApp()
-	p := tea.NewProgram(app, tea.WithAltScreen())
+// version is overridable at build time via -ldflags "-X main.version=...".
+var version = "dev"
 
+func main() {
+	var (
+		interval   = flag.Duration("interval", poller.PollInterval, "poll cadence (e.g. 1s, 500ms); minimum 100ms")
+		filterExpr = flag.String("filter", "", "initial filter expression (same syntax as the `/` prompt)")
+		showListen = flag.Bool("show-listen", false, "show LISTEN sockets at startup (hidden by default)")
+		showVer    = flag.Bool("version", false, "print version and exit")
+	)
+	flag.Parse()
+
+	if *showVer {
+		fmt.Printf("sstui %s\n", version)
+		return
+	}
+
+	if *interval < 100*time.Millisecond {
+		fmt.Fprintf(os.Stderr, "interval too small (%s); minimum is 100ms\n", *interval)
+		os.Exit(2)
+	}
+	poller.SetInterval(*interval)
+
+	app := NewApp()
+	if *showListen {
+		app.filter.HideListen = false
+	}
+	if *filterExpr != "" {
+		app.filter.SetQuery(*filterExpr)
+		app.table.InvalidateCache()
+	}
+
+	p := tea.NewProgram(app, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)

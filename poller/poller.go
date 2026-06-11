@@ -8,16 +8,33 @@ import (
 	"sstui/model"
 )
 
-const (
-	BufferSize   = 1500 // 50 minutes at 2s intervals
-	PollInterval = 2 * time.Second
-)
+const BufferSize = 1500 // ~50 minutes at the default 2s interval
+
+// PollInterval is the cadence between ss invocations. It's a var (not a const)
+// so it can be overridden at startup via --interval; use SetInterval to change
+// it so the classifier's cadence stays in sync. Display code derives rates from
+// it, so a change is reflected consistently everywhere.
+var PollInterval = 2 * time.Second
 
 // Keep the classifier's notion of the poll cadence in sync with ours, so its
 // fraction-of-interval signals (rwnd/sndbuf limited) are scaled correctly. Done
 // here rather than via an import in the classifier to avoid an import cycle.
 func init() {
+	syncClassifierInterval()
+}
+
+func syncClassifierInterval() {
 	classifier.PollIntervalMS = float64(PollInterval / time.Millisecond)
+}
+
+// SetInterval overrides the poll cadence and keeps dependent state in sync.
+// A non-positive duration is ignored.
+func SetInterval(d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	PollInterval = d
+	syncClassifierInterval()
 }
 
 // Snapshot is a point-in-time capture of all connections.

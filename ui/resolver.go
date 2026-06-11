@@ -20,6 +20,12 @@ type resolver struct {
 	inflight map[string]bool
 }
 
+// maxDNSCache bounds the reverse-DNS cache so a long session on a host with high
+// connection churn (many distinct peers) can't grow it without limit. On
+// overflow the cache is cleared wholesale — crude but O(1) and self-healing:
+// still-relevant names simply get re-resolved on the next render.
+const maxDNSCache = 8192
+
 var dnsResolver = &resolver{
 	cache:    make(map[string]string),
 	inflight: make(map[string]bool),
@@ -93,6 +99,9 @@ func (r *resolver) resolve(ip string) {
 	}
 
 	r.mu.Lock()
+	if len(r.cache) >= maxDNSCache {
+		r.cache = make(map[string]string)
+	}
 	r.cache[ip] = name
 	delete(r.inflight, ip)
 	r.mu.Unlock()

@@ -24,7 +24,8 @@ type tickMsg struct{}
 // pollResultMsg carries the result of an async ss invocation.
 type pollResultMsg struct {
 	conns []*model.Connection
-	drops int // record lines ss emitted that we couldn't parse
+	drops int             // record lines ss emitted that we couldn't parse
+	sys   *poller.SysStat // host-wide /proc/net counters (nil if unreadable)
 	err   error
 }
 
@@ -37,7 +38,8 @@ func tickCmd(d time.Duration) tea.Cmd {
 func pollCmd() tea.Cmd {
 	return func() tea.Msg {
 		conns, drops, err := parser.RunSS()
-		return pollResultMsg{conns: conns, drops: drops, err: err}
+		sys, _ := poller.ReadSysStat() // best-effort; nil on platforms without /proc/net
+		return pollResultMsg{conns: conns, drops: drops, sys: sys, err: err}
 	}
 }
 
@@ -52,11 +54,12 @@ const (
 	ViewTop
 	ViewPerf
 	ViewEvents
+	ViewSystem
 	ViewFilter
 )
 
 // tabOrder is the cycle order for tab/shift-tab.
-var tabOrder = []ViewMode{ViewLive, ViewDetail, ViewSocket, ViewOverview, ViewTop, ViewPerf, ViewEvents}
+var tabOrder = []ViewMode{ViewLive, ViewDetail, ViewSocket, ViewOverview, ViewTop, ViewPerf, ViewEvents, ViewSystem}
 
 func nextTab(cur ViewMode, delta int) ViewMode {
 	idx := 0
@@ -90,6 +93,11 @@ type AppModel struct {
 	statusMsg     string
 	statusExpiry  time.Time
 	eventsScroll  int
+
+	// Host-wide /proc/net counters: current read plus the previous one, so the
+	// System tab can show per-poll deltas.
+	sysCur  *poller.SysStat
+	sysPrev *poller.SysStat
 
 	// Pause / time-travel scrub. When paused, the Live table renders a frozen
 	// snapshot `scrubOffset` polls back from newest instead of the live one.
@@ -174,6 +182,8 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.tab = ViewPerf
 		case "7":
 			m.tab = ViewEvents
+		case "8":
+			m.tab = ViewSystem
 		case "tab":
 			m.tab = nextTab(m.tab, 1)
 		case "shift+tab":
@@ -289,6 +299,12 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case pollResultMsg:
 		m.lastError = msg.err
 		m.lastDrops = msg.drops
+		// Roll host counters forward only on a fresh read, so the System tab's
+		// deltas always compare two real consecutive samples.
+		if msg.sys != nil {
+			m.sysPrev = m.sysCur
+			m.sysCur = msg.sys
+		}
 		// Ingest on full success (even if zero sockets) or on a partial
 		// failure that still returned data; skip only when both queries
 		// failed (nil slice) so the last good snapshot is preserved.
@@ -457,6 +473,9 @@ func (m *AppModel) View() string {
 
 	case ViewEvents:
 		content = ui.RenderEvents(m.buf, m.width, ch, m.eventsScroll)
+
+	case ViewSystem:
+		content = ui.RenderSystem(m.sysCur, m.sysPrev, m.width, ch)
 
 	case ViewFilter:
 		content = "\n  Filter connections:\n\n"

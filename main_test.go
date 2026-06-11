@@ -3,8 +3,10 @@ package main
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"sstui/model"
+	"sstui/poller"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -82,6 +84,34 @@ func TestPauseScrub(t *testing.T) {
 	}
 	if v := m.View(); strings.Contains(v, "PAUSED") || !strings.Contains(v, "10.0.0.4") {
 		t.Fatalf("resumed view should be live (10.0.0.4) with no scrub bar:\n%s", v)
+	}
+}
+
+// TestSystemTab verifies the 8 key opens the System tab and that host counters
+// with a per-poll delta render (value + Δ/s).
+func TestSystemTab(t *testing.T) {
+	m := NewApp()
+	m = feed(m, tea.WindowSizeMsg{Width: 140, Height: 40})
+
+	prev := &poller.SysStat{Timestamp: time.Now(), Counters: map[string]int64{
+		"Tcp:RetransSegs": 100, "Tcp:OutSegs": 1000, "Tcp:CurrEstab": 5,
+	}}
+	cur := &poller.SysStat{Timestamp: time.Now(), Counters: map[string]int64{
+		"Tcp:RetransSegs": 120, "Tcp:OutSegs": 3000, "Tcp:CurrEstab": 6,
+	}}
+	m = feed(m, pollResultMsg{conns: snapWithAddr("10.0.0.1"), sys: prev})
+	m = feed(m, pollResultMsg{conns: snapWithAddr("10.0.0.1"), sys: cur})
+
+	m = feed(m, key("8"))
+	if m.tab != ViewSystem {
+		t.Fatalf("key 8 should switch to System tab, got %v", m.tab)
+	}
+	v := m.View()
+	if !strings.Contains(v, "Host Network Counters") {
+		t.Fatalf("System tab should render the counters header:\n%s", v)
+	}
+	if !strings.Contains(v, "RetransSegs") || !strings.Contains(v, "/s") {
+		t.Fatalf("System tab should show a counter with a per-second delta:\n%s", v)
 	}
 }
 

@@ -9,7 +9,7 @@ Built for triage: tab through running connections, see signals like
 automatically, and drill into the underlying kernel metrics on a single
 key press.
 
-![tabs](https://img.shields.io/badge/tabs-7-blue) ![signals](https://img.shields.io/badge/signals-25-orange) ![ring%20buffer](https://img.shields.io/badge/history-50%20min-green)
+![tabs](https://img.shields.io/badge/tabs-8-blue) ![signals](https://img.shields.io/badge/signals-25-orange) ![ring%20buffer](https://img.shields.io/badge/history-50%20min-green)
 
 ---
 
@@ -114,7 +114,7 @@ human-paced triage:
 | **Event log** of signal onsets                | ✗                | ✓ Events tab                  |
 | **Filter by signal / process / address**      | ✗                | ✓                             |
 | **Export** for offline analysis               | redirect output  | ✓ JSON / CSV                  |
-| **System-wide rollups** (TIME-WAIT growth, port exhaustion) | ✗  | ✓ Perf tab                    |
+| **System-wide rollups** (`/proc/net` counters, overflows, port exhaustion) | ✗  | ✓ System tab                |
 
 Compared to `iftop` / `nethogs` / `bmon`: those are byte-rate views.
 sstui is a TCP-state and TCP-internals view — it tells you *why* a
@@ -190,7 +190,7 @@ sudo setcap cap_net_admin+ep /usr/sbin/ss
 
 ```
 ┌─ sstui ────────────────────── ESTAB 245   LISTEN 38   TIME-WAIT 12 ─┐
-│ Live  Detail  Socket  Overview  Top  Perf  Events                   │
+│ Live  Detail  Socket  Overview  Top  Perf  Events  System           │
 │                                                                     │
 │ 🔴 TCP  ESTAB     10.0.0.1:443   …  17.2ms  ↑  120 KB/s   chrome  … │
 │ 🟡 TCP  ESTAB     10.0.0.5:5432  …   1.1ms  ↓   55 KB/s   psql    … │
@@ -288,6 +288,17 @@ list as JSON, `E` as CSV.
 
 Info-level signals (`IDLE`, `APP_LIM`) are filtered out so the log stays
 focused on real anomalies.
+
+### 8. System
+
+Host-wide networking counters from `/proc/net/snmp` and `/proc/net/netstat`,
+each shown as a cumulative value plus its per-poll delta as a rate. This is
+the one view that *isn't* per-socket: it catches things that never become
+sockets or that the kernel only tallies globally — SYN floods and syncookies,
+accept-queue overflows (`ListenOverflows`/`ListenDrops`), global retransmit
+and timeout rates, receive-buffer pruning/OFO, and UDP `RcvbufErrors`/`NoPorts`.
+Error/drop/overflow counters turn red the moment they move. Grouped into TCP,
+Accept queue / SYN, Loss / retransmit, Buffer pressure / OFO, and UDP.
 
 ---
 

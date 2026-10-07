@@ -77,7 +77,7 @@ func diagnose(c *model.Connection) Diagnosis {
 		{model.SignalRTTSpike, "Latency spike — RTT well above this connection's minimum",
 			"transient congestion or a route change"},
 		{model.SignalCWndCollapse, "Congestion window collapsed",
-			"a loss event just cut the sending rate sharply"},
+			"usually a loss event cutting the sending rate; also seen when an idle connection restarts"},
 	}
 
 	lossDrops := classifier.DropsExplainedByInboundLoss(c.Signals)

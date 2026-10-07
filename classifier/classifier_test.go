@@ -285,9 +285,10 @@ func TestClassifyReorderingUsesReordSeen(t *testing.T) {
 	}
 }
 
-// TestClassifyCWndCollapseSkipsBBRProbeRTT: BBR's periodic ProbeRTT drop to
-// 4 packets (cwnd_gain 1) is by design; the same drop in PROBE_BW is not.
-func TestClassifyCWndCollapseSkipsBBRProbeRTT(t *testing.T) {
+// TestClassifyCWndCollapse: BBR's periodic ProbeRTT drop to 4 packets
+// (cwnd_gain 1) is by design; the same drop in PROBE_BW, or on a non-BBR
+// connection (no gain reported), is not.
+func TestClassifyCWndCollapse(t *testing.T) {
 	probeRTT := &model.Connection{Protocol: "tcp", State: "ESTAB", PrevCWnd: ip(698), CWnd: ip(4), BBRCWndGain: fl(1)}
 	if _, ok := sigByType(Classify(probeRTT), model.SignalCWndCollapse); ok {
 		t.Errorf("BBR ProbeRTT should not raise CWND_DROP")
@@ -295,6 +296,10 @@ func TestClassifyCWndCollapseSkipsBBRProbeRTT(t *testing.T) {
 	probeBW := &model.Connection{Protocol: "tcp", State: "ESTAB", PrevCWnd: ip(698), CWnd: ip(4), BBRCWndGain: fl(2)}
 	if s, ok := sigByType(Classify(probeBW), model.SignalCWndCollapse); !ok || s.Severity != 2 {
 		t.Errorf("cwnd collapse outside ProbeRTT should be crit, got %+v (present=%v)", s, ok)
+	}
+	cubic := &model.Connection{Protocol: "tcp", State: "ESTAB", PrevCWnd: ip(100), CWnd: ip(40)}
+	if s, ok := sigByType(Classify(cubic), model.SignalCWndCollapse); !ok || s.Severity != 1 {
+		t.Errorf("non-BBR cwnd collapse (no gain reported) should warn, got %+v (present=%v)", s, ok)
 	}
 }
 

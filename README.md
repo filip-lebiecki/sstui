@@ -620,6 +620,23 @@ the sockets of whatever machine you run it on.
    total retrans, in-flight retrans, bytes retrans, lost, DSACK dups,
    reorder counters.
 
+### "Why is this BBR connection slow?"
+
+1. Open the connection in Detail. Identity shows `Cong Ctrl: bbr` (green).
+2. Tab to **Socket**, look at BBR: `BW` is its bottleneck-bandwidth
+   estimate (the peak delivery rate over the last ~10 round trips, or the
+   policed rate once BBR detects a token-bucket policer), `MRTT` its
+   min-RTT estimate.
+3. `Pacing Gain` / `CWnd Gain` show the phase: 2.89 / 2.89 is STARTUP,
+   0.35 / 2.89 DRAIN, 1.25 → 0.75 → 1.0 / 2 PROBE_BW (steady state), and
+   1 / 1 PROBE_RTT (cwnd cut to 4 packets for ~200 ms every ~10 s, by
+   design).
+4. A steady connection in PROBE_BW with `BW` well below the link is
+   limited elsewhere: check for `RWND_LIM`, `SNDBUF_LIM`, `APP_LIM`, or
+   loss (`LOSS`, `RTO`, `RETRANS`, `HI_RETRANS`). The window signals fire
+   only from 25% of a poll; Detail's **Rwnd Limited** / **Sndbuf
+   Limited** rows show smaller shares that can still cap throughput.
+
 ### "Capture state for a bug report"
 
 1. `sudo sstui record -o incident.jsonl.gz` on the server while the
@@ -712,7 +729,7 @@ badge color and in the Live-tab indicator glyph.
 | Signal        | Fires when                                                       | Severity         | What it means                                                       |
 |---------------|------------------------------------------------------------------|------------------|---------------------------------------------------------------------|
 | `ZERO_WIN`    | ESTAB, persist timer armed (or `snd_wnd:0`)                      | crit             | Peer's receive window is closed — peer not reading                  |
-| `CWND_DROP`   | `CWnd / PrevCWnd < 0.5` (prev ≥ 20; not BBR ProbeRTT)            | warn / crit (<0.25) | Congestion window collapsed between polls — loss event             |
+| `CWND_DROP`   | `CWnd / PrevCWnd < 0.5` (prev ≥ 20; not BBR ProbeRTT)            | warn / crit (<0.25) | Congestion window collapsed between polls — usually loss; also an idle connection restarting |
 | `CWND_LIM`    | `unacked > 0.8 × cwnd` and `unacked > 10`                        | info             | Using its full congestion window — normal for a bulk transfer       |
 | `PMTU`        | `pmtu < advmss + 40`                                             | warn             | Path MTU smaller than our advertised MSS                            |
 | `RTT_SPIKE`   | `rtt / minrtt > 5` and ≥10ms above min                            | warn / crit (>15) | Latency spike vs the connection's baseline                         |

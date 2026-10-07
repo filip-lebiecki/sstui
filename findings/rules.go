@@ -52,7 +52,7 @@ func ruleZeroWindow(a *analysis) {
 			Title:    fmt.Sprintf("%s → %s: %s stalled — peer not reading (zero window)", procLabel(c0), peer, plural(len(g.conns), "connection")),
 			Detail:   "The receiver's buffer is full because its application stopped reading, so it advertises a zero window and our data piles up unsent.",
 			Evidence: []string{fmt.Sprintf("%s · %s waiting in Send-Q", plural(len(g.conns), "socket"), humanBytes(float64(queued)))},
-			Filter:   filterJoin("signal=ZERO_WIN", procFilter(c0), "peer="+c0.PeerAddr, "dport="+c0.PeerPort),
+			Filter:   filterJoin("signal=ZERO_WIN", procFilter(c0), "peer=="+c0.PeerAddr, "dport="+c0.PeerPort),
 			Count:    len(g.conns),
 		}
 		if s, ok := signalOf(c0, model.SignalZeroWindow); ok && s.Value != nil {
@@ -96,6 +96,9 @@ func ruleRecvBacklog(a *analysis) {
 			Filter:     filterJoin(procFilter(c0), sigFilter(model.SignalRecvBufferPressure, model.SignalSocketDrops)),
 			ShowListen: listen,
 			Count:      len(g.conns),
+		}
+		if udp > 0 {
+			a.udpBacklog[f.ID] = true
 		}
 		if drops > 0 {
 			f.Severity = 2
@@ -203,7 +206,7 @@ func ruleSynStall(a *analysis) {
 				{Text: "Check the route this host would use", Command: "ip route get " + c0.PeerAddr},
 				{Text: "Check firewalls / security groups on the path, and that DNS isn't returning a stale address"},
 			},
-			Filter: filterJoin("state=SYN-SENT", "peer="+c0.PeerAddr, "dport="+c0.PeerPort),
+			Filter: filterJoin("state=SYN-SENT", "peer=="+c0.PeerAddr, "dport="+c0.PeerPort),
 			Count:  len(g.conns),
 		})
 	}
@@ -258,7 +261,7 @@ func rulePathLoss(a *analysis) {
 				{Text: "Find the lossy hop", Command: "mtr -rwzbc 100 " + g.key},
 				{Text: "If loss starts at the first hop, check this host's link instead", Command: "ip -s link"},
 			},
-			Filter: filterJoin("peer="+g.key, sigFilter(lossSignals...)),
+			Filter: filterJoin("peer=="+g.key, sigFilter(lossSignals...)),
 			Count:  len(g.conns),
 		})
 	}
@@ -314,7 +317,7 @@ func ruleReordering(a *analysis) {
 				{Text: "Linux tolerates moderate reordering; if throughput suffers, check LACP / ECMP hashing on the path (hash on the full 5-tuple)"},
 				{Text: "See which hops are involved", Command: "tracepath -n " + g.key},
 			},
-			Filter: filterJoin("peer="+g.key, "signal=REORDER"),
+			Filter: filterJoin("peer=="+g.key, "signal=REORDER"),
 			Count:  len(g.conns),
 		})
 	}
@@ -334,7 +337,7 @@ func rulePMTU(a *analysis) {
 				{Text: "Find where the MTU drops", Command: "tracepath -n " + g.key},
 				{Text: "Make sure ICMP type 3 code 4 isn't filtered; consider MSS clamping on the tunnel or VPN"},
 			},
-			Filter: filterJoin("peer="+g.key, "signal=PMTU"),
+			Filter: filterJoin("peer=="+g.key, "signal=PMTU"),
 			Count:  len(g.conns),
 		}
 		if v, ok := a.in.Sysctl.Int("net.ipv4.tcp_mtu_probing"); ok && v == 0 {
@@ -358,7 +361,7 @@ func ruleRTTInflation(a *analysis) {
 			Severity: g.sev,
 			Title:    fmt.Sprintf("Latency to %s is inflated (%s)", g.key, plural(len(g.conns), "connection")),
 			Detail:   "Round-trip time is far above this path's minimum — packets are sitting in a queue somewhere (bufferbloat) or the path changed.",
-			Filter:   filterJoin("peer="+g.key, "signal=RTT_SPIKE"),
+			Filter:   filterJoin("peer=="+g.key, "signal=RTT_SPIKE"),
 			Count:    len(g.conns),
 		}
 		if worst != nil && worst.RTT != nil && worst.MinRTT != nil {
@@ -400,7 +403,7 @@ func ruleRwndLimited(a *analysis) {
 			Severity: g.sev,
 			Title:    fmt.Sprintf("Throughput to %s is limited by the receiver's window", g.key),
 			Detail:   "We could send faster, but the receiver's advertised window is too small for this path — its buffer, not the network, is the bottleneck.",
-			Filter:   filterJoin("peer="+g.key, "signal=RWND_LIM"),
+			Filter:   filterJoin("peer=="+g.key, "signal=RWND_LIM"),
 			Count:    len(g.conns),
 		}
 		if s, ok := signalOf(c0, model.SignalRwndLimited); ok {
@@ -520,7 +523,7 @@ func ruleTimeWaitStorm(a *analysis) {
 			Actions: []Action{
 				{Text: "Reuse connections instead of opening one per request (HTTP keep-alive, a client connection pool)"},
 			},
-			Filter: filterJoin("state=TIME-WAIT", "peer="+c0.PeerAddr, "dport="+c0.PeerPort),
+			Filter: filterJoin("state=TIME-WAIT", "peer=="+c0.PeerAddr, "dport="+c0.PeerPort),
 			Count:  len(g.conns),
 		}
 		f.Actions = append(f.Actions, twReuseActions(a)...)
@@ -727,7 +730,7 @@ func ruleUDPRcvbufHost(a *analysis) {
 	ev := fmt.Sprintf("kernel: Udp RcvbufErrors +%.1f/s", r)
 	folded := false
 	for i := range a.out {
-		if strings.HasPrefix(a.out[i].ID, "recv_backlog|") {
+		if a.udpBacklog[a.out[i].ID] {
 			a.out[i].Evidence = append(a.out[i].Evidence, ev)
 			folded = true
 		}
@@ -750,15 +753,14 @@ func ruleUDPRcvbufHost(a *analysis) {
 	})
 }
 
-// ruleRetransHost: high host-wide TCP retransmit rate. Skipped when a loss
-// finding already explains it.
+// ruleRetransHost: high host-wide TCP retransmit rate. Skipped only when the
+// host-wide loss finding already covers it — a single lossy peer doesn't
+// explain a high rate across the whole host.
 func ruleRetransHost(a *analysis) {
-	out, ok := a.rate("Tcp:OutSegs")
-	if !ok || out*a.in.Interval.Seconds() < 1000 {
+	pct, ok := a.retransPct()
+	if !ok {
 		return // too little traffic for a meaningful rate
 	}
-	re, _ := a.rate("Tcp:RetransSegs")
-	pct := re / out * 100
 	sev := 0
 	switch {
 	case pct >= 10:
@@ -766,7 +768,7 @@ func ruleRetransHost(a *analysis) {
 	case pct >= 2:
 		sev = 1
 	}
-	if sev == 0 || a.findByPrefix("loss") != nil {
+	if sev == 0 || a.findByPrefix("loss_local") != nil {
 		return
 	}
 	a.add(Finding{

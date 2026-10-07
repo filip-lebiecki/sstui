@@ -190,6 +190,16 @@ func sendingState(state string) bool {
 	return false
 }
 
+// noAckFloorMS is how long a connection with data in flight may go without
+// an ACK before NO_ACK fires: the larger of its RTO and one second.
+func noAckFloorMS(c *model.Connection) float64 {
+	floor := 1000.0
+	if c.RTO != nil && *c.RTO > floor {
+		floor = *c.RTO
+	}
+	return floor
+}
+
 // fmtSecs renders milliseconds as whole seconds ("12s"), or ms below 1s.
 func fmtSecs(ms int) string {
 	if ms < 1000 {
@@ -298,7 +308,7 @@ func Classify(c *model.Connection) []model.Signal {
 	if c.State == "ESTAB" && IsZeroWindow(c) {
 		var v any
 		if c.TimerDur != nil {
-			v = "probing every " + *c.TimerDur
+			v = "next zero-window probe in " + *c.TimerDur
 		}
 		signals = append(signals, model.Signal{Type: model.SignalZeroWindow, Severity: 2, Value: v})
 	}
@@ -404,17 +414,20 @@ func Classify(c *model.Connection) []model.Signal {
 	// unacked > 0 for one RTT) and one-way bulk transfers (which are ACKed).
 	// Zero-window stalls don't trip it: probes are sent outside the window,
 	// so unacked is 0 while persisting.
+	//
+	// The ACK silence must also outlast the retransmission timeout (and 1s):
+	// with a short --interval, two polls can land inside one round trip of a
+	// slow path, where waiting for an ACK is perfectly normal.
 	if sendingState(c.State) && c.Unacked != nil && *c.Unacked > 0 &&
 		c.PrevUnacked != nil && *c.PrevUnacked > 0 &&
-		c.DeltaBytesAcked != nil && *c.DeltaBytesAcked == 0 {
-		sev, v := 1, any(*c.Unacked)
-		if c.LastAck != nil {
-			v = fmt.Sprintf("%d unacked, no ACK for %s", *c.Unacked, fmtSecs(*c.LastAck))
-			if *c.LastAck >= 10000 {
-				sev = 2
-			}
+		c.DeltaBytesAcked != nil && *c.DeltaBytesAcked == 0 &&
+		c.LastAck != nil && float64(*c.LastAck) >= noAckFloorMS(c) {
+		sev := 1
+		if *c.LastAck >= 10000 {
+			sev = 2
 		}
-		signals = append(signals, model.Signal{Type: model.SignalPeerNoAck, Severity: sev, Value: v})
+		signals = append(signals, model.Signal{Type: model.SignalPeerNoAck, Severity: sev,
+			Value: fmt.Sprintf("%d unacked, no ACK for %s", *c.Unacked, fmtSecs(*c.LastAck))})
 	}
 
 	// CWnd collapse: congestion window dropped sharply between polls. Only

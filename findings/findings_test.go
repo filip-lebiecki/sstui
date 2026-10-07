@@ -86,7 +86,7 @@ func TestZeroWindowNamesLocalReceiver(t *testing.T) {
 	if !hasCommand(f, "top -H -p 200") {
 		t.Errorf("should suggest inspecting the receiver's threads: %+v", f.Actions)
 	}
-	if f.Filter != "signal=ZERO_WIN pid=100 peer=127.0.0.1 dport=5432" {
+	if f.Filter != "signal=ZERO_WIN pid=100 peer==127.0.0.1 dport=5432" {
 		t.Errorf("filter = %q", f.Filter)
 	}
 	// The receiving process gets its own "not reading" finding.
@@ -268,5 +268,38 @@ func TestTrackerSinceAndGrace(t *testing.T) {
 	tr.Update(fs, now)
 	if !fs[0].Since.Equal(now) {
 		t.Errorf("after the grace period the clock should restart, got %v", fs[0].Since)
+	}
+}
+
+// The UDP drop counter only folds into a finding that includes UDP sockets;
+// a TCP-only backlog finding must not swallow the host UDP finding.
+func TestUDPDropsDontFoldIntoTCPBacklog(t *testing.T) {
+	sys, prev := sysPair(map[string]int64{"Udp:RcvbufErrors": 0}, map[string]int64{"Udp:RcvbufErrors": 40})
+	tcp := conn("ESTAB", "10.0.0.1", "80", "10.0.0.2", "5000", sig(model.SignalRecvBufferPressure, 1))
+	r := Analyze(Input{Conns: []*model.Connection{tcp}, Sys: sys, SysPrev: prev, Interval: 2 * time.Second})
+	if byID(r, "udp_rcvbuf_host") == nil {
+		t.Errorf("UDP drops with only a TCP backlog finding should still raise the host UDP finding")
+	}
+	if f := byID(r, "recv_backlog|"); f == nil || hasText(f.Evidence, "RcvbufErrors") {
+		t.Errorf("TCP-only finding shouldn't carry the UDP counter: %+v", f)
+	}
+
+	udp := conn("UDP_ESTAB", "10.0.0.1", "53", "10.0.0.3", "5353", sig(model.SignalSocketDrops, 2))
+	udp.Protocol = "udp"
+	r = Analyze(Input{Conns: []*model.Connection{udp}, Sys: sys, SysPrev: prev, Interval: 2 * time.Second})
+	if byID(r, "udp_rcvbuf_host") != nil {
+		t.Errorf("visible UDP drops should fold the counter into their finding")
+	}
+}
+
+// One lossy peer doesn't explain a high retransmit rate across the host.
+func TestRetransHostNotHiddenByOnePeer(t *testing.T) {
+	sys, prev := sysPair(
+		map[string]int64{"Tcp:OutSegs": 0, "Tcp:RetransSegs": 0},
+		map[string]int64{"Tcp:OutSegs": 20000, "Tcp:RetransSegs": 2400})
+	c := conn("ESTAB", "10.0.0.1", "1", "203.0.113.9", "443", sig(model.SignalRTOFiring, 2))
+	r := Analyze(Input{Conns: []*model.Connection{c}, Sys: sys, SysPrev: prev, Interval: 2 * time.Second})
+	if byID(r, "loss|") == nil || byID(r, "retrans_host") == nil {
+		t.Errorf("want both the per-peer loss and the host-wide 12%% finding: %+v", r.Findings)
 	}
 }

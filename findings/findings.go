@@ -107,11 +107,26 @@ func Analyze(in Input) Report {
 			rep.Estab++
 		}
 	}
-	if out, ok := a.rate("Tcp:OutSegs"); ok && out > 0 {
-		re, _ := a.rate("Tcp:RetransSegs")
-		rep.RetransPct = re / out * 100
+	if pct, ok := a.retransPct(); ok {
+		rep.RetransPct = pct
 	}
 	return rep
+}
+
+// minRetransSegs is the least outgoing traffic (segments per poll) for which
+// a host-wide retransmit percentage means anything; below it, a single
+// retransmitted keepalive reads as "33%".
+const minRetransSegs = 1000
+
+// retransPct returns the host-wide TCP retransmit rate over the last poll,
+// when there was enough traffic for it to be meaningful.
+func (a *analysis) retransPct() (float64, bool) {
+	out, ok := a.delta("Tcp:OutSegs")
+	if !ok || out < minRetransSegs {
+		return 0, false
+	}
+	re, _ := a.delta("Tcp:RetransSegs")
+	return float64(re) / float64(out) * 100, true
 }
 
 // analysis is the shared state rules read from and append to.
@@ -121,10 +136,13 @@ type analysis struct {
 	// byTuple indexes sockets by local+peer endpoint so a rule can find the
 	// other end of a connection when both ends live on this host.
 	byTuple map[string]*model.Connection
+	// udpBacklog marks recv_backlog findings that include UDP sockets, so
+	// the host UDP-drop counter only folds into findings it can explain.
+	udpBacklog map[string]bool
 }
 
 func newAnalysis(in Input) *analysis {
-	a := &analysis{in: in, byTuple: make(map[string]*model.Connection, len(in.Conns))}
+	a := &analysis{in: in, byTuple: make(map[string]*model.Connection, len(in.Conns)), udpBacklog: map[string]bool{}}
 	for _, c := range in.Conns {
 		if c.Protocol == "tcp" {
 			a.byTuple[endpoint(c.LocalAddr, c.LocalPort)+"|"+endpoint(c.PeerAddr, c.PeerPort)] = c

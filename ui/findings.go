@@ -25,8 +25,15 @@ var (
 // problems with the selected one expanded into what it means, the evidence,
 // and what to do. sel is the selected index. The selected finding is kept in
 // view by scrolling the list body; the summary line stays pinned.
-func RenderFindings(rep findings.Report, sel, width, height int, now time.Time) string {
+//
+// stale, when non-empty, warns that the report is out of date (polling is
+// failing) and is shown under the summary.
+func RenderFindings(rep findings.Report, sel, width, height int, now time.Time, stale string) string {
 	head := renderFindingsSummary(rep) + "\n"
+	if stale != "" {
+		head += styleFindWarn.Render("  ⚠ "+stale) + "\n"
+		height--
+	}
 
 	if len(rep.Findings) == 0 {
 		return head + "\n" + renderNoFindings(rep, width)

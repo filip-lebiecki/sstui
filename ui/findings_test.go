@@ -70,7 +70,7 @@ func TestRenderFindingsKeepsSelectionVisible(t *testing.T) {
 		fs = append(fs, findings.Finding{ID: strconv.Itoa(n), Severity: 1, Title: "finding " + strconv.Itoa(n),
 			Detail: "detail", Evidence: []string{"e"}, Actions: []findings.Action{{Text: "do", Command: "cmd"}}})
 	}
-	out := RenderFindings(findings.Report{Findings: fs}, 25, 100, 15, time.Now())
+	out := RenderFindings(findings.Report{Findings: fs}, 25, 100, 15, time.Now(), "")
 	if !strings.Contains(out, "finding 25") {
 		t.Errorf("selected finding should be scrolled into view:\n%s", out)
 	}

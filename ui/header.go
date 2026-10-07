@@ -180,8 +180,9 @@ func fmtBytesPerSec(b float64) string {
 // wide enough, tighter padding when it isn't (9 tabs don't fit 80 columns
 // with the roomy style), and truncates as a last resort so the bar never
 // wraps onto a second line.
-func RenderTabs(current int, width int) string {
-	tabs := []string{"Findings", "Live", "Detail", "Socket", "Overview", "Top", "Perf", "Events", "System"}
+//
+// tabs are the labels in order; current is the selected index (-1 for none).
+func RenderTabs(tabs []string, current int, width int) string {
 	render := func(pad int) string {
 		var parts []string
 		for i, t := range tabs {

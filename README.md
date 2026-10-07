@@ -381,6 +381,7 @@ Press `/`, type one or more terms, hit `Enter`:
 |---------------------|------------------------------------------------------|
 | `local=<substr>`    | Substring match on local address                     |
 | `peer=<substr>`     | Substring match on peer address                      |
+| `peer==<addr>`      | Exact peer address (also `local==<addr>`)            |
 | `sport=<port>`      | Exact source (local) port                            |
 | `dport=<port>`      | Exact destination (peer) port                        |
 | `state=<state>`     | Exact TCP state (`ESTAB`, `LISTEN`, `TIME-WAIT`, ...)|

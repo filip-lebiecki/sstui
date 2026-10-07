@@ -68,6 +68,20 @@ func TestFilterExpressions(t *testing.T) {
 	}
 }
 
+func TestFilterExactAddress(t *testing.T) {
+	near := &model.Connection{State: "ESTAB", PeerAddr: "10.0.0.50"}
+	exact := &model.Connection{State: "ESTAB", PeerAddr: "10.0.0.5"}
+	f := &Filter{}
+	f.SetQuery("peer==10.0.0.5")
+	if !f.Matches(exact) || f.Matches(near) {
+		t.Errorf("peer== should match only the exact address")
+	}
+	f.SetQuery("peer=10.0.0.5")
+	if !f.Matches(exact) || !f.Matches(near) {
+		t.Errorf("peer= stays a substring match")
+	}
+}
+
 func TestFilterHideListen(t *testing.T) {
 	c := conn("0.0.0.0", "80", "0.0.0.0", "*", "LISTEN", nil, nil)
 	f := &Filter{HideListen: true}

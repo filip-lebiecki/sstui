@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"strconv"
 	"strings"
 	"testing"
@@ -280,5 +281,33 @@ func TestFindingsHomeFlow(t *testing.T) {
 	m = feed(m, tea.KeyMsg{Type: tea.KeyEnter})
 	if m.tab != ViewLive || m.table.GetFilteredCount() != 1 || m.table.GetSelected().LocalPort != "50001" {
 		t.Errorf("Enter should open Live filtered to the stalled socket (tab=%v, rows=%d)", m.tab, m.table.GetFilteredCount())
+	}
+}
+
+// TestHelpBlocksHiddenNavigation: with help covering the table, j must not
+// move the (invisible) selection.
+func TestHelpBlocksHiddenNavigation(t *testing.T) {
+	m := newLiveApp()
+	m = feed(m, tea.WindowSizeMsg{Width: 160, Height: 40})
+	m = feed(m, pollResultMsg{conns: manyConns(10, func(int) int { return 0 })})
+	before := m.table.GetSelected().LocalPort
+	m = feed(m, key("?"))
+	m = feed(m, key("j"))
+	m = feed(m, key("?"))
+	if got := m.table.GetSelected().LocalPort; got != before {
+		t.Errorf("j under the help panel moved the selection %s → %s", before, got)
+	}
+}
+
+// TestFindingsStaleWhenPollingFails: once polls start failing, the Findings
+// tab says its analysis is old instead of silently showing it as current.
+func TestFindingsStaleWhenPollingFails(t *testing.T) {
+	m := NewApp()
+	m = feed(m, tea.WindowSizeMsg{Width: 160, Height: 40})
+	m = feed(m, pollResultMsg{conns: snapWithAddr("10.0.0.1")})
+	m.reportAt = time.Now().Add(-time.Minute) // pretend the last good poll was a while ago
+	m = feed(m, pollResultMsg{err: errors.New("ss: exit status 1")})
+	if v := m.View(); !strings.Contains(v, "polling is failing") {
+		t.Errorf("Findings should warn that its analysis is stale:\n%s", v)
 	}
 }

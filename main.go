@@ -63,8 +63,43 @@ const (
 	ViewFilter
 )
 
-// tabOrder is the cycle order for tab/shift-tab.
-var tabOrder = []ViewMode{ViewFindings, ViewLive, ViewDetail, ViewSocket, ViewOverview, ViewTop, ViewPerf, ViewEvents, ViewSystem}
+// tabs lists the tab bar in order (also the 1–9 keys and tab/shift-tab
+// cycle). It is the single source for both the views and their labels.
+var tabs = []struct {
+	mode ViewMode
+	name string
+}{
+	{ViewFindings, "Findings"}, {ViewLive, "Live"}, {ViewDetail, "Detail"},
+	{ViewSocket, "Socket"}, {ViewOverview, "Overview"}, {ViewTop, "Top"},
+	{ViewPerf, "Perf"}, {ViewEvents, "Events"}, {ViewSystem, "System"},
+}
+
+var tabOrder, tabNames = func() ([]ViewMode, []string) {
+	var modes []ViewMode
+	var names []string
+	for _, t := range tabs {
+		modes = append(modes, t.mode)
+		names = append(names, t.name)
+	}
+	return modes, names
+}()
+
+// tabIndex returns the tab-bar position of a view, or -1 (filter prompt).
+func tabIndex(v ViewMode) int {
+	for i, m := range tabOrder {
+		if m == v {
+			return i
+		}
+	}
+	return -1
+}
+
+// helpBlockedKeys are ignored while the help panel covers the tab content.
+var helpBlockedKeys = map[string]bool{
+	"j": true, "k": true, "down": true, "up": true, "g": true, "G": true,
+	"pgup": true, "pgdown": true, "enter": true, "h": true, "c": true,
+	" ": true, "[": true, "]": true, "{": true, "}": true,
+}
 
 func nextTab(cur ViewMode, delta int) ViewMode {
 	idx := 0
@@ -120,6 +155,7 @@ type AppModel struct {
 	tracker      findings.Tracker
 	findingSel   int
 	findingSelID string
+	reportAt     time.Time // when the report was last refreshed
 
 	// tableSnap is the snapshot whose connections the table currently holds,
 	// so syncTable can skip redundant reloads.
@@ -195,6 +231,11 @@ func (m *AppModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		if m.filterMode {
 			return m.handleFilterInput(msg)
+		}
+		// The help panel hides the tab content, so keys that move or act on
+		// what's underneath would change state the user can't see.
+		if m.showHelp && helpBlockedKeys[msg.String()] {
+			return m, nil
 		}
 
 		switch msg.String() {
@@ -478,7 +519,7 @@ func (m *AppModel) View() string {
 	b.WriteString(ui.RenderHeader(m.buf, m.filter, m.lastDrops, ui.FindingsPill(m.report.Crit(), m.report.Warn()), m.width) + "\n")
 
 	// Tabs (fixed)
-	b.WriteString(ui.RenderTabs(int(m.tab), m.width) + "\n")
+	b.WriteString(ui.RenderTabs(tabNames, tabIndex(m.tab), m.width) + "\n")
 
 	// Filter bar (fixed)
 	if m.filter.IsActive() {
@@ -504,7 +545,7 @@ func (m *AppModel) View() string {
 
 	switch m.tab {
 	case ViewFindings:
-		content = ui.RenderFindings(m.report, m.findingSel, m.width, ch, time.Now())
+		content = ui.RenderFindings(m.report, m.findingSel, m.width, ch, time.Now(), m.findingsStaleNote())
 
 	case ViewLive:
 		content = m.table.RenderBody()
@@ -542,7 +583,7 @@ func (m *AppModel) View() string {
 		content = "\n  Filter connections:\n\n"
 		content += "  " + renderFilterInput(m.filterBuf, m.filterCursor) + "\n\n"
 		content += lipgloss.NewStyle().Foreground(lipgloss.Color("#888")).Render(
-			"  Syntax: local=<addr> peer=<addr> sport=<port> dport=<port>\n" +
+			"  Syntax: local=<addr> peer=<addr> (peer==<addr> exact) sport=<port> dport=<port>\n" +
 				"          state=<state> proc=<name> pid=<pid> signal=<label> proto=tcp|udp\n" +
 				"  Operators: and  or  not  ( )   (space = and)\n" +
 				"  Examples: state=ESTAB local=192.168 dport=443\n" +
@@ -730,6 +771,7 @@ func (m *AppModel) refreshFindings() {
 	})
 	m.tracker.Update(rep.Findings, time.Now())
 	m.report = rep
+	m.reportAt = time.Now()
 	// Keep the selection on the same finding even if the ranking shifted.
 	sel := m.findingSel
 	for i, f := range rep.Findings {
@@ -739,6 +781,15 @@ func (m *AppModel) refreshFindings() {
 		}
 	}
 	m.selectFinding(sel)
+}
+
+// findingsStaleNote explains when the Findings report is out of date because
+// polling is failing (the report is only refreshed on a successful poll).
+func (m *AppModel) findingsStaleNote() string {
+	if m.lastError == nil || m.reportAt.IsZero() || time.Since(m.reportAt) < 2*poller.PollInterval {
+		return ""
+	}
+	return fmt.Sprintf("analysis is from %s — polling is failing: %v", m.reportAt.Format("15:04:05"), m.lastError)
 }
 
 // selectFinding moves the Findings selection, clamped to the list.
@@ -797,9 +848,17 @@ func (m *AppModel) copyFindingCommand() {
 	case strings.HasPrefix(os.Getenv("TERM"), "screen"):
 		seq = seq.Screen()
 	}
-	// stderr, not stdout: bubbletea owns stdout for frames. OSC 52 is
+	// Write to the controlling terminal directly: bubbletea owns stdout for
+	// frames, and stderr may be redirected to a file (which would just
+	// collect an escape sequence while we claimed success). OSC 52 is
 	// invisible, so it doesn't disturb the screen.
-	if _, err := seq.WriteTo(os.Stderr); err != nil {
+	tty, err := os.OpenFile("/dev/tty", os.O_WRONLY, 0)
+	if err != nil {
+		m.setStatus("copy failed: no terminal to send the clipboard sequence to", 4*time.Second)
+		return
+	}
+	defer tty.Close()
+	if _, err := seq.WriteTo(tty); err != nil {
 		m.setStatus("copy failed: "+err.Error(), 4*time.Second)
 		return
 	}

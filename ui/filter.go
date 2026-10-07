@@ -82,9 +82,9 @@ func matchPred(key, value string, c *model.Connection) bool {
 	case "proto":
 		return strings.EqualFold(c.Protocol, value)
 	case "local":
-		return strings.Contains(c.LocalAddr, value)
+		return matchAddr(c.LocalAddr, value)
 	case "peer":
-		return strings.Contains(c.PeerAddr, value)
+		return matchAddr(c.PeerAddr, value)
 	case "sport":
 		return c.LocalPort == value
 	case "dport":
@@ -108,6 +108,16 @@ func matchPred(key, value string, c *model.Connection) bool {
 		return matchBareword(value, c)
 	}
 	return false
+}
+
+// matchAddr is a substring match ("peer=10.0" selects a range), or an exact
+// match with a doubled "=" ("peer==10.0.0.5" excludes 10.0.0.50). The token
+// "peer==x" parses as key "peer", value "=x".
+func matchAddr(addr, value string) bool {
+	if exact, ok := strings.CutPrefix(value, "="); ok {
+		return addr == exact
+	}
+	return strings.Contains(addr, value)
 }
 
 // matchBareword matches a token with no "key=": a known state name filters by

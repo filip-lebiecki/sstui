@@ -57,7 +57,7 @@ func RenderHelp() string {
 
 	b.WriteString("\n")
 	b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#666")).
-		Render("  Filter syntax: local=<addr> peer=<addr> sport=<port> dport=<port>\n" +
+		Render("  Filter syntax: local=<addr> peer=<addr> (== exact) sport=<port> dport=<port>\n" +
 			"                 state=<state> proc=<name> pid=<pid> signal=<label> proto=tcp|udp\n" +
 			"  Operators: and  or  not  ( )   (space = and)\n" +
 			"  In filter mode: type to edit, Enter to apply, Escape to cancel"))

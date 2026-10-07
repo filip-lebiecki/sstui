@@ -261,7 +261,10 @@ func TestClassifyPeerNoAck(t *testing.T) {
 	// Bulk upload: outstanding on both polls but the peer is ACKing.
 	bulk := &model.Connection{Protocol: "tcp", State: "ESTAB",
 		Unacked: ip(40), PrevUnacked: ip(40), DeltaBytesAcked: ip(5_000_000), LastAck: ip(2)}
-	for name, c := range map[string]*model.Connection{"just sent": justSent, "bulk upload": bulk} {
+	// Short --interval on a slow path: two polls inside one round trip.
+	slowRTT := &model.Connection{Protocol: "tcp", State: "ESTAB", RTO: fl(350),
+		Unacked: ip(3), PrevUnacked: ip(3), DeltaBytesAcked: ip(0), LastAck: ip(150)}
+	for name, c := range map[string]*model.Connection{"just sent": justSent, "bulk upload": bulk, "within one RTT": slowRTT} {
 		if _, ok := sigByType(Classify(c), model.SignalPeerNoAck); ok {
 			t.Errorf("%s should not raise NO_ACK", name)
 		}

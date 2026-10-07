@@ -254,12 +254,16 @@ func bbrProbeRTT(c *model.Connection) bool {
 // (ACKs echoing congestion marks). It returns "" when the poll shows neither:
 // the kernel then shrank a window the connection wasn't using, either on
 // restart after idle (tcp_slow_start_after_idle) or while app-limited (cwnd
-// validation), which says nothing about the path. Kernels without
-// bytes_retrans (before 4.19) also get "": no evidence, no claim.
+// validation), which says nothing about the path. Without bytes_retrans
+// (kernels before 4.19) only packets marked lost count: no evidence, no claim.
 //
-// Only this poll is checked: one loss or CE event cuts cwnd by at most half
-// (cubic 0.7x, DCTCP ≥ 0.5x) and an RTO's cut is instantaneous, so a >50%
-// drop between two polls always includes an event inside the later one.
+// Only this poll is checked. Once an event's reduction settles it is at
+// most half (cubic 0.7x, Reno and DCTCP no lower than 0.5x; BBR restores its
+// previous cwnd when recovery ends), so a deeper settled drop between two
+// polls needs a further event in the later one. Deeper transient cuts (an
+// RTO's reset to 1, BBR holding cwnd to packets in flight during recovery,
+// PRR under heavy loss) start with a retransmission, which the first poll to
+// see the lower cwnd also counts.
 func cwndCutCause(c *model.Connection) string {
 	switch {
 	case c.DeltaBytesRetrans != nil && *c.DeltaBytesRetrans > 0, c.Lost != nil && *c.Lost > 0:

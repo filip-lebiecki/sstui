@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Checks to run before committing: formatting, go.mod tidiness, vet,
-# staticcheck, and the tests with the race detector. Stops at the first
+# staticcheck, and the tests with the race detector. The scenario lab
+# (scripts/lab.sh, needs root) is vetted here but not run. Stops at the first
 # failure. Needs only the Go toolchain; staticcheck is fetched at the pinned
 # version on first use (network once, cached afterwards).
 #
@@ -28,9 +29,11 @@ fi
 
 step "go vet"
 go vet ./...
+go vet -tags lab ./lab/ # the scenario lab only builds with its tag
 
 step staticcheck
 go run "$STATICCHECK" ./...
+go run "$STATICCHECK" -tags lab ./lab/
 
 step "go test -race"
 # The race detector needs cgo (and a C compiler), even where releases are

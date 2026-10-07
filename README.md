@@ -1116,6 +1116,28 @@ files cut off mid-write), the check/report output, and the app's key flows
 end to end, including replaying a recording. A few parser tests exercise
 the real `ss` binary and skip when it isn't installed.
 
+### Scenario lab
+
+`scripts/lab.sh` recreates real failures and checks sstui diagnoses them:
+each scenario builds a client and a server network namespace joined
+through a router namespace, shapes the router's links with `tc netem`,
+runs a small workload (a reader that stops reading, a server that never
+accepts, packet loss, ...), records the client or server with
+`sstui record`, and asserts on `sstui check --json`. Healthy controls
+(bulk transfer, bursty request/response) must come out clean, so a noisy
+rule fails the lab as surely as a missed diagnosis.
+
+```bash
+scripts/lab.sh                        # every scenario (about a minute)
+scripts/lab.sh -run ZeroWindow        # one of them
+SSTUI_LAB_KEEP=out scripts/lab.sh     # keep each recording in out/
+```
+
+It builds as you and runs the scenarios with sudo; it needs iproute2
+(`ip`, `ss`) and `tc` with the netem qdisc. The scenarios live in
+`lab/scenarios_test.go`; each one logs the findings and per-signal poll
+counts it saw, so a failure shows its evidence.
+
 Release binaries are built static with the version stamped in:
 
 ```bash

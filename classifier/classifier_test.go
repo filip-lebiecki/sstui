@@ -285,10 +285,11 @@ func TestClassifyReorderingUsesReordSeen(t *testing.T) {
 	}
 }
 
-// TestClassifyCWndCollapse: a sharp cwnd cut fires only with loss or ECN
-// marks in the same poll; a cut without them (restart after idle, cwnd
-// validation) and BBR's ProbeRTT drop to 4 packets (cwnd_gain 1) are by
-// design. Without bytes_retrans (old kernel) only packets marked lost count.
+// TestClassifyCWndCollapse: a cwnd cut deeper than one halving (rounded
+// down, as Reno rounds) fires only with loss or ECN marks in the same poll;
+// a cut without them (restart after idle, cwnd validation) and BBR's
+// ProbeRTT drop to 4 packets (cwnd_gain 1) are by design. Without
+// bytes_retrans (old kernel) only packets marked lost count.
 func TestClassifyCWndCollapse(t *testing.T) {
 	collapse := func(prev, cur int) *model.Connection {
 		return &model.Connection{Protocol: "tcp", State: "ESTAB", PrevCWnd: ip(prev), CWnd: ip(cur),
@@ -304,6 +305,11 @@ func TestClassifyCWndCollapse(t *testing.T) {
 		{"loss: bytes retransmitted", func() *model.Connection { c := collapse(100, 40); c.DeltaBytesRetrans = ip(7240); return c }(), 1, "100→40 after loss"},
 		{"loss: packets marked lost", func() *model.Connection { c := collapse(100, 20); c.Lost = ip(3); return c }(), 2, "100→20 after loss"},
 		{"ECN marks", func() *model.Connection { c := collapse(100, 40); c.DeltaDeliveredCE = ip(12); return c }(), 1, "100→40 after ECN marks"},
+		{"Reno halving of an odd cwnd", func() *model.Connection { c := collapse(41, 20); c.DeltaBytesRetrans = ip(1448); return c }(), 0, ""},
+		{"exact halving", func() *model.Connection { c := collapse(40, 20); c.DeltaBytesRetrans = ip(1448); return c }(), 0, ""},
+		{"deeper than one halving", func() *model.Connection { c := collapse(41, 19); c.DeltaBytesRetrans = ip(1448); return c }(), 1, "41→19 after loss"},
+		{"two Reno halvings", func() *model.Connection { c := collapse(41, 10); c.DeltaBytesRetrans = ip(1448); return c }(), 1, "41→10 after loss"},
+		{"deeper than two halvings", func() *model.Connection { c := collapse(41, 9); c.DeltaBytesRetrans = ip(1448); return c }(), 2, "41→9 after loss"},
 		{"old kernel, no evidence", &model.Connection{Protocol: "tcp", State: "ESTAB", PrevCWnd: ip(100), CWnd: ip(40)}, 0, ""},
 		{"old kernel, packets marked lost", &model.Connection{Protocol: "tcp", State: "ESTAB", PrevCWnd: ip(100), CWnd: ip(40), Lost: ip(3)}, 1, "100→40 after loss"},
 		{"BBR ProbeRTT on a lossy path", func() *model.Connection {

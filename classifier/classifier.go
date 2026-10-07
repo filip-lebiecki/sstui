@@ -258,14 +258,13 @@ func bbrProbeRTT(c *model.Connection) bool {
 // (kernels before 4.19) only packets marked lost count: no evidence, no claim.
 //
 // Only this poll is checked. Once an event's reduction settles it is at
-// most half (cubic 0.7x, Reno 0.5x, DCTCP 0.5x-1x; BBR restores its previous
-// cwnd when recovery ends), so a deeper settled drop between two polls needs
-// a further event in the later one. Reno's halving rounds down, so an odd
-// cwnd settles just under half (41→20); if that straddles a poll it goes
-// unflagged, which is right: one halving isn't a collapse. Deeper transient
-// cuts (an RTO's reset to 1, BBR holding cwnd to packets in flight during
-// recovery, PRR under heavy loss) start with a retransmission, which the
-// first poll to see the lower cwnd also counts.
+// most half (cubic 0.7x, Reno 0.5x rounded down, DCTCP 0.5x-1x; BBR restores
+// its previous cwnd when recovery ends). A settled drop past CWND_DROP's
+// threshold (below the rounded-down half) therefore needs a further event
+// in the later poll. Deeper transient cuts (an RTO's reset to 1, BBR
+// holding cwnd to packets in flight during recovery, PRR under heavy loss)
+// start with a retransmission, which the first poll to see the lower cwnd
+// also counts.
 func cwndCutCause(c *model.Connection) string {
 	switch {
 	case c.DeltaBytesRetrans != nil && *c.DeltaBytesRetrans > 0, c.Lost != nil && *c.Lost > 0:
@@ -503,11 +502,14 @@ func Classify(c *model.Connection) []model.Signal {
 	// fluctuate naturally during slow start. BBR's ProbeRTT phase is skipped:
 	// every ~10s it deliberately cuts cwnd to 4 packets for ~200ms to re-measure
 	// min RTT, so on a lossy path a poll landing there would look like a collapse.
+	//
+	// "Sharply" means deeper than one halving: below half the previous window
+	// (crit below a quarter), with half and quarter rounded down the way Reno
+	// rounds its halving, so a single 41→20 cut never fires.
 	if c.PrevCWnd != nil && c.CWnd != nil && *c.PrevCWnd >= 20 && !bbrProbeRTT(c) {
-		ratio := float64(*c.CWnd) / float64(*c.PrevCWnd)
-		if cause := cwndCutCause(c); cause != "" && ratio < 0.5 {
+		if cause := cwndCutCause(c); cause != "" && *c.CWnd < *c.PrevCWnd/2 {
 			sev := 1
-			if ratio < 0.25 {
+			if *c.CWnd < *c.PrevCWnd/4 {
 				sev = 2
 			}
 			signals = append(signals, model.Signal{Type: model.SignalCWndCollapse, Severity: sev,

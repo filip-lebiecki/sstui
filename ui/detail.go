@@ -481,32 +481,24 @@ func computeSparklines(conn *model.Connection, buf *poller.Buffer, width int) st
 	var rttVals, cwndVals, txVals, rxVals []float64
 	var sqVals, rqVals, unackedVals, retransVals []float64
 
-	pickF := func(p *float64) float64 {
-		if p == nil {
-			return 0
-		}
-		return *p
-	}
-	pickI := func(p *int) float64 {
-		if p == nil {
-			return 0
-		}
-		return float64(*p)
-	}
+	// Absent values plot as 0, matching how the bars read ("nothing there").
+	f := func(v float64, _ bool) float64 { return v }
+	i := func(v int, _ bool) float64 { return float64(v) }
+	i64 := func(v int64, _ bool) float64 { return float64(v) }
 
 	for _, snap := range snapshots {
-		c := snap.Lookup(key)
-		if c == nil {
+		s := snap.LookupSample(key)
+		if s == nil {
 			continue
 		}
-		rttVals = append(rttVals, pickF(c.RTT))
-		cwndVals = append(cwndVals, pickI(c.CWnd))
-		txVals = append(txVals, pickI(c.DeltaBytesSent))
-		rxVals = append(rxVals, pickI(c.DeltaBytesReceived))
-		sqVals = append(sqVals, pickI(c.SendQ))
-		rqVals = append(rqVals, pickI(c.RecvQ))
-		unackedVals = append(unackedVals, pickI(c.Unacked))
-		retransVals = append(retransVals, pickI(c.Retrans))
+		rttVals = append(rttVals, f(s.RTT()))
+		cwndVals = append(cwndVals, i(s.CWnd()))
+		txVals = append(txVals, i64(s.DeltaBytesSent()))
+		rxVals = append(rxVals, i64(s.DeltaBytesReceived()))
+		sqVals = append(sqVals, i(s.SendQ()))
+		rqVals = append(rqVals, i(s.RecvQ()))
+		unackedVals = append(unackedVals, i(s.Unacked()))
+		retransVals = append(retransVals, i(s.Retrans()))
 	}
 
 	var b strings.Builder

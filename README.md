@@ -39,7 +39,7 @@ key press.
 
 ## What it does
 
-`sstui` runs `ss -atnpeimOH` (TCP) and `ss -aunpeimOH` (UDP) every 2 seconds,
+`sstui` runs `ss -atunpeimOH` (TCP and UDP in one call) every 2 seconds,
 parses the output, computes per-poll deltas, runs a classifier over each
 connection, and keeps the last **1500 snapshots** (≈50 min) in a ring buffer.
 Everything you see on screen — the table, the bars, the events log, the
@@ -524,7 +524,7 @@ badge color and in the Live-tab indicator glyph.
 
 ## Metrics reference
 
-Everything `ss -atnpeimOH` produces, organized by what it tells you. `Δ` is
+Everything `ss -atunpeimOH` produces, organized by what it tells you. `Δ` is
 the per-poll delta (computed in the poller), `cum.` means cumulative since
 socket creation.
 
@@ -651,8 +651,8 @@ ss reports `skmem:(r,rb,t,tb,f,w,o,bl,d)`:
 
 ```
                 ┌─────────┐
-ss -atnpeimOH ─►│ parser  │──► []*model.Connection
-ss -aunpeimOH ─►│         │
+ss -atunpeimOH ►│ parser  │──► []*model.Connection
+                │         │
                 └─────────┘
                      │
                      ▼
@@ -664,7 +664,7 @@ ss -aunpeimOH ─►│         │
                      │                  ▼
                      │            c.Signals
                      ▼
-               1500 Snapshots, byKey index, stateCounts
+     1500 Snapshots: compact Samples (+ full Conns for the newest)
                      │
                      ▼
                 ┌─────────┐
@@ -672,18 +672,22 @@ ss -aunpeimOH ─►│         │
                 └─────────┘
 ```
 
-- **`parser/`** — runs `ss` as a subprocess, regex-parses each line plus
-  any whitespace-prefixed continuation lines, returns
-  `[]*model.Connection`. ~50 regexes; one pass per line.
+- **`parser/`** — runs one `ss` subprocess for TCP+UDP and tokenizes
+  each record in a single left-to-right pass (`key:value` tokens
+  dispatched on the key; no regexes), returning `[]*model.Connection`.
+  Counters `ss` omits while zero are filled with 0 when the kernel is
+  known to report them.
 - **`poller/`** — `Buffer` is a ring of 1500 snapshots. `AddSnapshot` is
   three-phase: (1) read-lock to copy `prevMap` pointers, (2) compute
   deltas + classify **outside the lock**, (3) write-lock briefly to
-  publish. Each snapshot carries `byKey` for O(1) lookup and
-  `stateCounts` for O(1) state-distribution queries.
+  publish. Each snapshot stores compact `Sample`s (~100 B: interned
+  identity, inline numbers) sorted by key for binary-search lookup, plus
+  `stateCounts`. Only the newest snapshot keeps full-detail
+  `Connection`s; older ones materialize slim connections on demand.
 - **`classifier/`** — 20 pure rules, run once per connection per poll.
   Severity is encoded as `0` (info) / `1` (warn) / `2` (crit). New
-  signals are roughly one struct field, one regex, and a 10-line rule
-  here.
+  signals are roughly one struct field, one parser case, and a 10-line
+  rule here.
 - **`ui/`** — pure bubbletea + lipgloss. One file per tab. Reads only
   from `poller.Buffer`; never mutates state.
 
@@ -708,12 +712,14 @@ denominator automatically.
 
 On a host with ~500 sockets:
 
-- `ss -atnpeimOH` takes ~5–15 ms wall clock; UDP one is similar.
-- Parsing + delta computation + classification: a few ms per snapshot.
-- Memory: ~1500 snapshots × ~500 conns × ~800 B per Connection struct
-  ≈ **500 MB worst-case** if every socket persists for the full 50
-  minutes and every field is populated. Real hosts churn through
-  short-lived TIME-WAITs, so steady-state RSS is typically 50–200 MB.
+- `ss -atunpeimOH` takes ~5–15 ms wall clock (dominated by `-p`
+  walking `/proc/*/fd`).
+- Parsing: ~2–3 µs per socket; delta computation + classification add
+  well under a millisecond per snapshot.
+- Memory: history costs ~110 B per socket per snapshot, so ~500
+  long-lived sockets for the full 50 minutes ≈ **80 MB** (1000 ≈ 160
+  MB). Real hosts churn through short-lived TIME-WAITs, so steady-state
+  usage is usually lower.
 - CPU at idle (no input, only ticks): single-digit % on one core.
 
 If memory is a concern, drop `BufferSize` in `poller/poller.go`. Each
@@ -771,7 +777,7 @@ replay mode is straightforward (the classifier is deterministic).
 1. Add the constant + label to `model/signal.go`.
 2. Add a color to `signalColors` in `ui/header.go`.
 3. Add a classifier rule in `classifier/classifier.go`.
-4. (Optional) Add a regex / field to `parser/parser.go` and
+4. (Optional) Add a parser case / field to `parser/parser.go` and
    `model/connection.go` if you need new data, and a delta entry in
    `poller/poller.go` if it's a counter.
 
@@ -811,7 +817,7 @@ Layout:
 ```
 classifier/   one-rule-per-block signal classifier
 model/        Connection + Signal data types
-parser/       ss(8) regex parser and subprocess driver
+parser/       ss(8) tokenizer and subprocess driver
 poller/       ring buffer, delta computation, export (JSON/CSV)
 ui/           bubbletea views, one file per tab
 main.go       AppModel: keybinds, scroll state, render dispatch
@@ -847,8 +853,8 @@ Contributions especially welcome for:
 - macOS / BSD parsers (different `netstat`/`ss`-likes).
 - Numeric-range filters in `ui/filter.go`.
 - Scrolling in Detail / Socket / Overview / Top / Perf.
-- Tests for the parser regexes (golden-file based against captured ss
-  output).
+- More golden-file parser tests against captured ss output from
+  different iproute2 / kernel versions.
 - A replay mode that takes the exported JSON and feeds it through the
   classifier.
 

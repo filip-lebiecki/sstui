@@ -129,7 +129,15 @@ type Connection struct {
 	// Signals are populated by poller.AddSnapshot after deltas, so the
 	// classifier runs once per poll rather than once per render frame.
 	Signals []Signal
+
+	// key caches ConnKey(). Set via SetKey before the connection is published
+	// to readers; never written afterwards.
+	key string
 }
+
+// SetKey caches the connection's key so ConnKey() doesn't rebuild the string
+// on every call. Only call it before the connection is shared.
+func (c *Connection) SetKey(k string) { c.key = k }
 
 // ConnKey returns a stable identifier for this connection across polls.
 //
@@ -140,6 +148,9 @@ type Connection struct {
 // key stays consistent across snapshots. Inode "0" is the kernel's no-inode
 // sentinel (TIME-WAIT/orphans) and is treated as absent.
 func (c *Connection) ConnKey() string {
+	if c.key != "" {
+		return c.key
+	}
 	key := c.Protocol + "|" + c.LocalAddr + ":" + c.LocalPort + "|" + c.PeerAddr + ":" + c.PeerPort
 	if c.Inode != nil && *c.Inode != "" && *c.Inode != "0" {
 		key += "|" + *c.Inode

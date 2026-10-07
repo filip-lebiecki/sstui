@@ -57,43 +57,62 @@ type Event struct {
 
 // CollectEvents walks the entire ring buffer and returns signal onsets in
 // chronological order (oldest first). Info-level signals are filtered out.
-// Drops keys absent from a snapshot so 4-tuple reuse doesn't suppress
-// legitimate new signals on the reused tuple.
+// A connection absent from the previous snapshot starts with no signals, so
+// 4-tuple reuse doesn't suppress legitimate new signals on the reused tuple.
+//
+// Each snapshot's samples are sorted by key, so consecutive snapshots are
+// paired with a two-pointer merge rather than per-connection maps: the scan
+// allocates only for the events it emits.
 func CollectEvents(buf *poller.Buffer) []Event {
 	snapshots := buf.GetAll()
 	if len(snapshots) == 0 {
 		return nil
 	}
 
-	prev := make(map[string]map[model.SignalType]bool)
 	var events []Event
-
+	var prev []poller.Sample
 	for _, snap := range snapshots {
-		seen := make(map[string]map[model.SignalType]bool, len(snap.Conns))
-		for _, c := range snap.Conns {
-			key := c.ConnKey()
-			before := prev[key]
-			cur := make(map[model.SignalType]bool, len(c.Signals))
-			for _, s := range c.Signals {
-				cur[s.Type] = true
-				if s.Severity == 0 {
+		cur := snap.Samples()
+		j := 0
+		for i := range cur {
+			s := &cur[i]
+			key := s.Key()
+			for j < len(prev) && prev[j].Key() < key {
+				j++
+			}
+			var before []model.Signal
+			if j < len(prev) && prev[j].Key() == key {
+				before = prev[j].Signals()
+			}
+			var conn *model.Connection // materialized once, only if an event fires
+			for _, sig := range s.Signals() {
+				if sig.Severity == 0 || hasSignal(before, sig.Type) {
 					continue
 				}
-				if !before[s.Type] {
-					events = append(events, Event{
-						Timestamp: snap.Timestamp,
-						Conn:      c,
-						SigType:   s.Type,
-						Severity:  s.Severity,
-						Value:     s.Value,
-					})
+				if conn == nil {
+					conn = s.Conn(snap.Timestamp)
 				}
+				events = append(events, Event{
+					Timestamp: snap.Timestamp,
+					Conn:      conn,
+					SigType:   sig.Type,
+					Severity:  sig.Severity,
+					Value:     sig.Value,
+				})
 			}
-			seen[key] = cur
 		}
-		prev = seen
+		prev = cur
 	}
 	return events
+}
+
+func hasSignal(sigs []model.Signal, t model.SignalType) bool {
+	for _, s := range sigs {
+		if s.Type == t {
+			return true
+		}
+	}
+	return false
 }
 
 // RenderEvents renders the Events tab. `scroll` is the number of events to

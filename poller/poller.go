@@ -1,6 +1,8 @@
 package poller
 
 import (
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -38,21 +40,99 @@ func SetInterval(d time.Duration) {
 }
 
 // Snapshot is a point-in-time capture of all connections.
+//
+// Every snapshot carries compact Samples (sorted by key) for the historical
+// views. Only the newest snapshot also keeps the full-detail Conns, for the
+// Live/Detail/Socket/Top/Perf views; when a snapshot is demoted from "latest"
+// its Conns are dropped and only the Samples remain.
 type Snapshot struct {
 	Timestamp time.Time
-	Conns     []*model.Connection
-	byKey     map[string]*model.Connection
+	// Conns are the full-detail connections, sorted by key. Nil once the
+	// snapshot is no longer the latest — use Connections() or Samples() to
+	// read any snapshot regardless of age.
+	Conns   []*model.Connection
+	samples []Sample // sorted by key; samples[i] describes Conns[i] while full
 	// stateCounts is precomputed at snapshot creation so render-time code
-	// doesn't have to walk Conns for every snapshot it visits.
+	// doesn't have to walk the connections for every snapshot it visits.
 	stateCounts map[string]int
 }
 
+// Len returns the number of connections in the snapshot.
+func (s *Snapshot) Len() int {
+	if s == nil {
+		return 0
+	}
+	return len(s.samples)
+}
+
+// Samples returns the compact per-connection records, sorted by key. The
+// slice is shared and must not be modified.
+func (s *Snapshot) Samples() []Sample {
+	if s == nil {
+		return nil
+	}
+	return s.samples
+}
+
+// Full reports whether the snapshot still holds full-detail connections.
+func (s *Snapshot) Full() bool { return s != nil && s.Conns != nil }
+
+// find returns the index of key in samples, or -1. Binary search over the
+// key-sorted samples, so history needs no per-snapshot index map.
+func (s *Snapshot) find(key string) int {
+	i, ok := slices.BinarySearchFunc(s.samples, key, func(sm Sample, k string) int {
+		return strings.Compare(sm.key.Value(), k)
+	})
+	if !ok {
+		return -1
+	}
+	return i
+}
+
+// LookupSample returns the sample with the given key, or nil.
+func (s *Snapshot) LookupSample(key string) *Sample {
+	if s == nil {
+		return nil
+	}
+	if i := s.find(key); i >= 0 {
+		return &s.samples[i]
+	}
+	return nil
+}
+
 // Lookup returns the connection in this snapshot with the given key, or nil.
+// For a demoted snapshot the connection is materialized from its sample, so
+// only the history fields are populated.
 func (s *Snapshot) Lookup(key string) *model.Connection {
 	if s == nil {
 		return nil
 	}
-	return s.byKey[key]
+	i := s.find(key)
+	if i < 0 {
+		return nil
+	}
+	if s.Conns != nil {
+		return s.Conns[i]
+	}
+	return s.samples[i].Conn(s.Timestamp)
+}
+
+// Connections returns the snapshot's connections: the full-detail ones while
+// it is the latest, otherwise slim connections materialized from the samples
+// (which allocates — meant for rendering one snapshot, not for scanning all
+// of history).
+func (s *Snapshot) Connections() []*model.Connection {
+	if s == nil {
+		return nil
+	}
+	if s.Conns != nil {
+		return s.Conns
+	}
+	conns := make([]*model.Connection, len(s.samples))
+	for i := range s.samples {
+		conns[i] = s.samples[i].Conn(s.Timestamp)
+	}
+	return conns
 }
 
 // StateCount returns the number of connections in this snapshot with the
@@ -65,61 +145,14 @@ func (s *Snapshot) StateCount(state string) int {
 	return s.stateCounts[state]
 }
 
-// compact returns a slimmed copy of the snapshot, keeping only the fields that
-// historical views actually read (overview/perf aggregates, the per-signal
-// sparklines, the detail sparklines, and the events list). Each ~60-field
-// Connection — most of whose fields are heap-allocated pointers — is replaced
-// with a lean copy, which lets the GC reclaim the rest once the original
-// snapshot is no longer referenced.
-//
-// It returns a *new* Snapshot rather than mutating the receiver: published
-// snapshots must stay immutable so the lockless readers (Snapshot.Lookup, and
-// the unlocked field reads in AddSnapshot's delta phase) never race. The
-// caller swaps the ring slot pointer under the buffer write lock. stateCounts
-// is immutable post-publication, so it is shared rather than copied.
-//
-// The current latest snapshot is never compacted, so the full-detail
-// Socket/Detail views still have everything they need; only snapshots that
-// have aged out of "latest" are slimmed.
-func (s *Snapshot) compact() *Snapshot {
-	conns := make([]*model.Connection, 0, len(s.Conns))
-	byKey := make(map[string]*model.Connection, len(s.Conns))
-	for _, c := range s.Conns {
-		if c == nil {
-			continue
-		}
-		slim := &model.Connection{
-			Timestamp: c.Timestamp,
-			Protocol:  c.Protocol,
-			State:     c.State,
-			LocalAddr: c.LocalAddr,
-			LocalPort: c.LocalPort,
-			PeerAddr:  c.PeerAddr,
-			PeerPort:  c.PeerPort,
-			Process:   c.Process,
-			PID:       c.PID,
-			Inode:     c.Inode, // kept: ConnKey/Lookup depend on it
-			// Fields read by historical charts/lists and the pause/scrub view
-			// of the Live table (which renders the same columns from history):
-			RecvQ:              c.RecvQ,
-			SendQ:              c.SendQ,
-			RTT:                c.RTT,
-			CWnd:               c.CWnd,
-			Unacked:            c.Unacked,
-			Retrans:            c.Retrans,
-			TimerType:          c.TimerType, // kept: KA column in scrub view
-			TimerDur:           c.TimerDur,  // kept: KA column in scrub view
-			DeltaBytesSent:     c.DeltaBytesSent,
-			DeltaBytesReceived: c.DeltaBytesReceived,
-			Signals:            c.Signals,
-		}
-		conns = append(conns, slim)
-		byKey[slim.ConnKey()] = slim
-	}
+// demote returns a copy of the snapshot without the full-detail connections.
+// It returns a new Snapshot rather than mutating the receiver: published
+// snapshots stay immutable so readers holding the old pointer never race. The
+// samples and state counts are immutable too, so they're shared.
+func (s *Snapshot) demote() *Snapshot {
 	return &Snapshot{
 		Timestamp:   s.Timestamp,
-		Conns:       conns,
-		byKey:       byKey,
+		samples:     s.samples,
 		stateCounts: s.stateCounts,
 	}
 }
@@ -132,6 +165,7 @@ type Buffer struct {
 	count      int
 	prevMap    map[string]*model.Connection
 	lastUpdate time.Time
+	signals    signalInterner // only touched by AddSnapshot
 }
 
 func NewBuffer() *Buffer {
@@ -147,6 +181,12 @@ func NewBuffer() *Buffer {
 // only take the lock briefly when reading prev pointers and again to
 // publish the new snapshot.
 func (b *Buffer) AddSnapshot(conns []*model.Connection) {
+	// Compute each connection's key once; ConnKey() then returns the cache.
+	// The conns are still private to this goroutine, so writing is safe.
+	for _, c := range conns {
+		c.SetKey(c.ConnKey())
+	}
+
 	// Phase 1: snapshot the prev pointers we need under a read lock. The
 	// Connection structs they point to are immutable after publication, so
 	// reading their fields outside the lock is safe.
@@ -172,42 +212,40 @@ func (b *Buffer) AddSnapshot(conns []*model.Connection) {
 	// affected connections.
 	classifier.ClassifyAggregate(conns)
 
-	// Phase 3: build indexes and publish under the write lock.
-	byKey := make(map[string]*model.Connection, len(conns))
+	// Phase 3: build the compact history records and publish under the write
+	// lock. Conns are sorted by key so samples[i] matches Conns[i] and both
+	// can be binary-searched.
+	slices.SortFunc(conns, func(x, y *model.Connection) int {
+		return strings.Compare(x.ConnKey(), y.ConnKey())
+	})
+	samples := make([]Sample, len(conns))
 	stateCounts := make(map[string]int)
-	currentKeys := make(map[string]bool, len(conns))
-	for _, c := range conns {
-		key := c.ConnKey()
-		currentKeys[key] = true
-		byKey[key] = c
+	for i, c := range conns {
+		c.Signals = b.signals.intern(c.Signals)
+		samples[i] = newSample(c, c.Signals)
 		stateCounts[c.State]++
 	}
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
+	clear(b.prevMap)
 	for _, c := range conns {
 		b.prevMap[c.ConnKey()] = c
-	}
-	for k := range b.prevMap {
-		if !currentKeys[k] {
-			delete(b.prevMap, k)
-		}
 	}
 
 	snap := &Snapshot{
 		Timestamp:   time.Now(),
 		Conns:       conns,
-		byKey:       byKey,
+		samples:     samples,
 		stateCounts: stateCounts,
 	}
-	// Slim the snapshot being demoted from "latest" before publishing the new
-	// one, so at most a single full-detail snapshot is retained at a time.
-	// Replace the slot with a fresh compacted snapshot (rather than mutating
-	// in place) so any reader still holding the old pointer keeps seeing an
-	// immutable, fully-formed snapshot.
+	// Demote the outgoing latest snapshot before publishing the new one, so at
+	// most a single full-detail snapshot is retained at a time. The slot gets
+	// a fresh demoted snapshot (rather than being mutated in place) so any
+	// reader still holding the old pointer keeps an immutable, whole snapshot.
 	if demotedIdx := (b.head - 1 + BufferSize) % BufferSize; b.snapshots[demotedIdx] != nil {
-		b.snapshots[demotedIdx] = b.snapshots[demotedIdx].compact()
+		b.snapshots[demotedIdx] = b.snapshots[demotedIdx].demote()
 	}
 	b.snapshots[b.head] = snap
 	b.head = (b.head + 1) % BufferSize

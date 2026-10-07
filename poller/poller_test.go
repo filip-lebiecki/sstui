@@ -61,14 +61,21 @@ func TestBufferCompactsDemotedSnapshots(t *testing.T) {
 	}
 	demoted, latest := all[0], all[1]
 
-	if demoted.Conns[0].BytesSent != nil {
+	if demoted.Full() {
+		t.Errorf("demoted snapshot should have dropped its full-detail Conns")
+	}
+	dc := demoted.Connections()[0]
+	if dc.BytesSent != nil {
 		t.Errorf("demoted snapshot should have dropped BytesSent")
 	}
-	if v := demoted.Conns[0].RTT; v == nil || *v != 7.5 {
+	if v := dc.RTT; v == nil || *v != 7.5 {
 		t.Errorf("demoted snapshot should keep RTT, got %v", v)
 	}
-	if demoted.Lookup(demoted.Conns[0].ConnKey()) == nil {
-		t.Errorf("Lookup must still resolve after compaction")
+	if dc.Inode == nil || *dc.Inode != "999" || dc.ConnKey() != latest.Conns[0].ConnKey() {
+		t.Errorf("materialized connection should keep its identity, got key %q", dc.ConnKey())
+	}
+	if demoted.Lookup(dc.ConnKey()) == nil || demoted.LookupSample(dc.ConnKey()) == nil {
+		t.Errorf("Lookup must still resolve after demotion")
 	}
 	if latest.Conns[0].BytesSent == nil {
 		t.Errorf("latest snapshot must remain full (BytesSent present)")
@@ -127,10 +134,10 @@ func TestSnapshotFromEnd(t *testing.T) {
 	buf.AddSnapshot(mk("2.2.2.2"))
 	buf.AddSnapshot(mk("3.3.3.3")) // newest
 
-	if s := buf.SnapshotFromEnd(0); s == nil || s.Conns[0].LocalAddr != "3.3.3.3" {
+	if s := buf.SnapshotFromEnd(0); s == nil || s.Connections()[0].LocalAddr != "3.3.3.3" {
 		t.Errorf("offset 0 should be newest (3.3.3.3), got %v", s)
 	}
-	if s := buf.SnapshotFromEnd(2); s == nil || s.Conns[0].LocalAddr != "1.1.1.1" {
+	if s := buf.SnapshotFromEnd(2); s == nil || s.Connections()[0].LocalAddr != "1.1.1.1" {
 		t.Errorf("offset 2 should be oldest (1.1.1.1), got %v", s)
 	}
 	if s := buf.SnapshotFromEnd(3); s != nil {
@@ -140,7 +147,6 @@ func TestSnapshotFromEnd(t *testing.T) {
 		t.Errorf("negative offset should be nil, got %v", s)
 	}
 }
-
 
 // TestFirstLossBurstProducesDelta: a clean connection's previous sample has
 // bytes_retrans zero-filled by the parser, so its first loss burst yields a

@@ -586,7 +586,7 @@ func (m *AppModel) viewSnapshot() *poller.Snapshot {
 func (m *AppModel) syncTable() {
 	m.resizeTable()
 	if snap := m.viewSnapshot(); snap != nil {
-		m.table.SetConnections(snap.Conns)
+		m.table.SetConnections(snap.Connections())
 	}
 }
 
@@ -749,7 +749,7 @@ func (m *AppModel) renderFooter() string {
 	snap := m.buf.GetLatest()
 	total := 0
 	if snap != nil {
-		total = len(snap.Conns)
+		total = snap.Len()
 	}
 	filtered := m.table.GetFilteredCount()
 

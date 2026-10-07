@@ -31,36 +31,39 @@ const (
 	SignalTimeWaitStorm      SignalType = "time_wait_storm"
 )
 
-// SignalColor returns a display string for the signal.
+// signalLabels maps each signal type to its short display label. Built once;
+// Label() is called in hot render and filter paths.
+var signalLabels = map[SignalType]string{
+	SignalRetransInFlight:    "RETRANS",
+	SignalAppLimited:         "APP_LIM",
+	SignalIdle:               "IDLE",
+	SignalZeroWindow:         "ZERO_WIN",
+	SignalCongestionLoss:     "LOSS",
+	SignalPMTUMismatch:       "PMTU",
+	SignalRTTSpike:           "RTT_SPIKE",
+	SignalSendBufferPressure: "SEND_Q",
+	SignalRecvBufferPressure: "RCV_Q",
+	SignalHighRetransRate:    "HI_RETRANS",
+	SignalDeliveryDrop:       "DEL_DROP",
+	SignalUnackedBuildup:     "UNACKED",
+	SignalListenQueueFull:    "LISTEN_Q",
+	SignalRTOFiring:          "RTO",
+	SignalSynStall:           "SYN_STALL",
+	SignalOneWayStall:        "ONE_WAY",
+	SignalCWndCollapse:       "CWND_DROP",
+	SignalDSACKSpurious:      "DSACK",
+	SignalBBRUnderutil:       "BBR_LOW",
+	SignalReordering:         "REORDER",
+	SignalSocketDrops:        "DROPS",
+	SignalRwndLimited:        "RWND_LIM",
+	SignalSndbufLimited:      "SNDBUF_LIM",
+	SignalCloseWaitLeak:      "CW_LEAK",
+	SignalTimeWaitStorm:      "TW_STORM",
+}
+
+// Label returns the short display label for the signal.
 func (s SignalType) Label() string {
-	labels := map[SignalType]string{
-		SignalRetransInFlight:    "RETRANS",
-		SignalAppLimited:         "APP_LIM",
-		SignalIdle:               "IDLE",
-		SignalZeroWindow:         "ZERO_WIN",
-		SignalCongestionLoss:     "LOSS",
-		SignalPMTUMismatch:       "PMTU",
-		SignalRTTSpike:           "RTT_SPIKE",
-		SignalSendBufferPressure: "SEND_Q",
-		SignalRecvBufferPressure: "RCV_Q",
-		SignalHighRetransRate:    "HI_RETRANS",
-		SignalDeliveryDrop:       "DEL_DROP",
-		SignalUnackedBuildup:     "UNACKED",
-		SignalListenQueueFull:    "LISTEN_Q",
-		SignalRTOFiring:          "RTO",
-		SignalSynStall:           "SYN_STALL",
-		SignalOneWayStall:        "ONE_WAY",
-		SignalCWndCollapse:       "CWND_DROP",
-		SignalDSACKSpurious:      "DSACK",
-		SignalBBRUnderutil:       "BBR_LOW",
-		SignalReordering:         "REORDER",
-		SignalSocketDrops:        "DROPS",
-		SignalRwndLimited:        "RWND_LIM",
-		SignalSndbufLimited:      "SNDBUF_LIM",
-		SignalCloseWaitLeak:      "CW_LEAK",
-		SignalTimeWaitStorm:      "TW_STORM",
-	}
-	if l, ok := labels[s]; ok {
+	if l, ok := signalLabels[s]; ok {
 		return l
 	}
 	return string(s)

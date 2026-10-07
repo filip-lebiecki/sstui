@@ -1,6 +1,7 @@
 package poller
 
 import (
+	"bufio"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
@@ -12,28 +13,51 @@ import (
 	"sstui/model"
 )
 
-// ExportJSON writes the full ring buffer as a single JSON document.
-// Returns the number of snapshots written and the absolute path.
-func (b *Buffer) ExportJSON(path string) (int, error) {
+// ExportJSON writes the full ring buffer as a single JSON document:
+//
+//	{"exported_at": …, "poll_interval": …, "snapshots": [{"Timestamp": …, "Conns": […]}, …]}
+//
+// Snapshots are encoded one at a time so only one snapshot's materialized
+// connections exist at once; historical snapshots carry the history fields
+// only (see Sample). Returns the number of snapshots written.
+func (b *Buffer) ExportJSON(path string) (n int, err error) {
 	snaps := b.GetAll()
-	payload := struct {
-		ExportedAt time.Time     `json:"exported_at"`
-		PollEvery  time.Duration `json:"poll_interval"`
-		Snapshots  []*Snapshot   `json:"snapshots"`
-	}{
-		ExportedAt: time.Now(),
-		PollEvery:  PollInterval,
-		Snapshots:  snaps,
-	}
 
 	f, err := os.Create(path)
 	if err != nil {
 		return 0, err
 	}
-	defer f.Close()
-	enc := json.NewEncoder(f)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(payload); err != nil {
+	defer func() {
+		if cerr := f.Close(); err == nil {
+			err = cerr
+		}
+	}()
+	w := bufio.NewWriter(f)
+	enc := json.NewEncoder(w)
+
+	head, err := json.Marshal(struct {
+		ExportedAt time.Time     `json:"exported_at"`
+		PollEvery  time.Duration `json:"poll_interval"`
+	}{time.Now(), PollInterval})
+	if err != nil {
+		return 0, err
+	}
+	// Splice the "snapshots" array into the header object.
+	w.Write(head[:len(head)-1])
+	w.WriteString(`,"snapshots":[`)
+	for i, snap := range snaps {
+		if i > 0 {
+			w.WriteByte(',')
+		}
+		if err := enc.Encode(struct {
+			Timestamp time.Time
+			Conns     []*model.Connection
+		}{snap.Timestamp, snap.Connections()}); err != nil {
+			return 0, err
+		}
+	}
+	w.WriteString("]}\n")
+	if err := w.Flush(); err != nil {
 		return 0, err
 	}
 	return len(snaps), nil

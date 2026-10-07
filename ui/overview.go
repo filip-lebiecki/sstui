@@ -37,7 +37,7 @@ func RenderOverview(buf *poller.Buffer, width, height int) string {
 	{
 		var counts []float64
 		for _, snap := range snapshots {
-			counts = append(counts, float64(len(snap.Conns)))
+			counts = append(counts, float64(snap.Len()))
 		}
 		stats := fmt.Sprintf("  (min: %.0f, max: %.0f)", getMin(counts), getMax(counts))
 		b.WriteString(styleSectionTitle.Render(" Connections Over Time") + stats + "\n")
@@ -53,9 +53,10 @@ func RenderOverview(buf *poller.Buffer, width, height int) string {
 		seen := false       // suppress leading snapshots that have no RTT yet
 		for _, snap := range snapshots {
 			var sum, cnt float64
-			for _, c := range snap.Conns {
-				if c.RTT != nil {
-					sum += *c.RTT
+			samples := snap.Samples()
+			for i := range samples {
+				if rtt, ok := samples[i].RTT(); ok {
+					sum += rtt
 					cnt++
 				}
 			}
@@ -84,12 +85,13 @@ func RenderOverview(buf *poller.Buffer, width, height int) string {
 		var txVals, rxVals []float64
 		for _, snap := range snapshots {
 			var tx, rx float64
-			for _, c := range snap.Conns {
-				if c.DeltaBytesSent != nil {
-					tx += float64(*c.DeltaBytesSent)
+			samples := snap.Samples()
+			for i := range samples {
+				if v, ok := samples[i].DeltaBytesSent(); ok {
+					tx += float64(v)
 				}
-				if c.DeltaBytesReceived != nil {
-					rx += float64(*c.DeltaBytesReceived)
+				if v, ok := samples[i].DeltaBytesReceived(); ok {
+					rx += float64(v)
 				}
 			}
 			txVals = append(txVals, tx)

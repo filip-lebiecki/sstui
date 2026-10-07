@@ -4,67 +4,13 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"io"
 	"os/exec"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"sstui/model"
-)
-
-var (
-	reProcess       = regexp.MustCompile(`users:\(\("([^"]+)"`)
-	rePID           = regexp.MustCompile(`pid=(\d+)`)
-	reUID           = regexp.MustCompile(`uid:(\d+)`)
-	reInode         = regexp.MustCompile(`ino:(\d+)`)
-	reCgroup        = regexp.MustCompile(`cgroup:(\S+)`)
-	reSkmem         = regexp.MustCompile(`skmem:\(r(\d+),rb(\d+),t(\d+),tb(\d+),f(\d+),w(\d+),o(\d+),bl(\d+),d(\d+)\)`)
-	reTimer         = regexp.MustCompile(`timer:\(([\w-]+),([^,)]+),(\d+)\)`)
-	reWscale        = regexp.MustCompile(`wscale:(\d+),(\d+)`)
-	reDelivered     = regexp.MustCompile(`\bdelivered:(\d+)`)
-	reSendBPS       = regexp.MustCompile(`\bsend (\d+)bps`)
-	reRTO           = regexp.MustCompile(`rto:(\d+\.?\d*)`)
-	reRTT           = regexp.MustCompile(`\brtt:(\d+\.?\d*)/(\d+\.?\d*)`)
-	reATO           = regexp.MustCompile(`\bato:(\d+\.?\d*)`)
-	reMSS           = regexp.MustCompile(`\bmss:(\d+)`)
-	reCWnd          = regexp.MustCompile(`\bcwnd:(\d+)`)
-	reBytesSent     = regexp.MustCompile(`bytes_sent:(\d+)`)
-	reBytesRecv     = regexp.MustCompile(`bytes_received:(\d+)`)
-	reBytesAcked    = regexp.MustCompile(`bytes_acked:(\d+)`)
-	reSegsOut       = regexp.MustCompile(`\bsegs_out:(\d+)`)
-	reSegsIn        = regexp.MustCompile(`\bsegs_in:(\d+)`)
-	reMinRTT        = regexp.MustCompile(`minrtt:(\d+\.?\d*)`)
-	rePacingRate    = regexp.MustCompile(`pacing_rate\s+(\d+)bps`)
-	reDeliveryRate  = regexp.MustCompile(`delivery_rate\s+(\d+)bps`)
-	reRetrans       = regexp.MustCompile(`\bretrans:(\d+)/(\d+)`)
-	reSndWnd        = regexp.MustCompile(`snd_wnd:(\d+)`)
-	reSSThresh      = regexp.MustCompile(`\bssthresh:(\d+)`)
-	reRcvSpace      = regexp.MustCompile(`rcv_space:(\d+)`)
-	reRcvSSThresh   = regexp.MustCompile(`rcv_ssthresh:(\d+)`)
-	reBusy          = regexp.MustCompile(`busy:(\d+\.?\d*)ms`)
-	reRwndLimited   = regexp.MustCompile(`rwnd_limited:(\d+\.?\d*)ms`)
-	reSndbufLimited = regexp.MustCompile(`sndbuf_limited:(\d+\.?\d*)ms`)
-	reLost          = regexp.MustCompile(`\blost:(\d+)`)
-	reUnacked       = regexp.MustCompile(`\bunacked:(\d+)`)
-	reDataSegsOut   = regexp.MustCompile(`\bdata_segs_out:(\d+)`)
-	reDataSegsIn    = regexp.MustCompile(`\bdata_segs_in:(\d+)`)
-	reBytesRetrans  = regexp.MustCompile(`bytes_retrans:(\d+)`)
-	rePMTU          = regexp.MustCompile(`\bpmtu:(\d+)`)
-	reAdvMSS        = regexp.MustCompile(`\badvmss:(\d+)`)
-	reRcvMSS        = regexp.MustCompile(`\brcvmss:(\d+)`)
-	reLastSnd       = regexp.MustCompile(`\blastsnd:(\d+)`)
-	reLastRcv       = regexp.MustCompile(`\blastrcv:(\d+)`)
-	reLastAck       = regexp.MustCompile(`\blastack:(\d+)`)
-	reDSACKDups     = regexp.MustCompile(`\bdsack_dups:(\d+)`)
-	reBBR           = regexp.MustCompile(`bbr:\(bw:(\d+)bps,mrtt:(\d+\.?\d*),pacing_gain:(\d+\.?\d*),cwnd_gain:(\d+\.?\d*)\)`)
-	reIPv6Bracket   = regexp.MustCompile(`\[(.+)\]:(\S+)`)
-	reAppLimited    = regexp.MustCompile(`\bapp_limited\b`)
-	reRcvRTT        = regexp.MustCompile(`\brcv_rtt:(\d+\.?\d*)`)
-	reRcvWnd        = regexp.MustCompile(`\brcv_wnd:(\d+)`)
-	reReordering    = regexp.MustCompile(`\breordering:(\d+)`)
-	reReordSeen     = regexp.MustCompile(`\breord_seen:(\d+)`)
-	reRcvOOOPack    = regexp.MustCompile(`\brcv_ooopack:(\d+)`)
 )
 
 // congAlgos are the congestion-control names ss prints as a bare token in the
@@ -76,329 +22,450 @@ var congAlgos = map[string]bool{
 	"yeah": true, "bic": true,
 }
 
-// tcpInfoSection returns the part of an ss record that holds kernel-reported
-// socket metrics. Everything before skmem:( is identity — users:((...)) with
-// free-form process names and the cgroup path — which must not be searched for
-// bare-word tokens like congestion-control names: a process named "reno" or a
-// cgroup like "/cups-lp.service" would otherwise be mistaken for one.
-func tcpInfoSection(rest string) string {
-	if i := strings.Index(rest, "skmem:("); i >= 0 {
-		return rest[i:]
-	}
-	// No skmem (ss run without -m): skip past the identity fields instead.
-	if i := strings.LastIndex(rest, "))"); i >= 0 && strings.HasPrefix(rest, "users:") {
-		rest = rest[i+2:]
-	}
-	if i := strings.Index(rest, "cgroup:"); i >= 0 {
-		if j := strings.IndexByte(rest[i:], ' '); j >= 0 {
-			return rest[i+j:]
-		}
-		return ""
-	}
-	return rest
-}
-
-// findCongAlgo returns the congestion-control token in the tcp_info section.
-func findCongAlgo(info string) *string {
-	for _, tok := range strings.Fields(info) {
-		if congAlgos[tok] {
-			return &tok
-		}
-	}
-	return nil
-}
-
-func mustInt(s string) *int {
-	v, err := strconv.Atoi(s)
-	if err != nil {
-		return nil
-	}
-	return &v
-}
-
-func mustFloat(s string) *float64 {
-	v, err := strconv.ParseFloat(s, 64)
-	if err != nil {
-		return nil
-	}
-	return &v
-}
-
 func parseAddrPort(raw string) (addr, port string) {
 	if raw == "*" {
 		return "*", "*"
 	}
 	if strings.HasPrefix(raw, "[") {
-		matched := reIPv6Bracket.FindStringSubmatch(raw)
-		if len(matched) == 3 {
-			return matched[1], matched[2]
+		if end := strings.LastIndex(raw, "]:"); end > 0 && end+2 < len(raw) {
+			return raw[1:end], raw[end+2:]
 		}
 	}
-	parts := strings.Split(raw, ":")
-	if len(parts) >= 2 {
-		return strings.Join(parts[:len(parts)-1], ":"), parts[len(parts)-1]
+	if i := strings.LastIndexByte(raw, ':'); i >= 0 {
+		return raw[:i], raw[i+1:]
 	}
 	return raw, "*"
 }
 
-// ParseLine parses a single line of ss output into a Connection.
+// slab backs the numeric pointer fields of one Connection. The model uses
+// pointers so "absent" (nil) is distinct from 0; allocating each value
+// separately cost ~90 allocations per socket. Handing out pointers into one
+// per-connection array makes it a single allocation, and since every pointer
+// lives exactly as long as its Connection, nothing is retained longer.
+type slab struct {
+	ints   [56]int
+	floats [16]float64
+	ni, nf int
+}
+
+func (s *slab) int(v int) *int {
+	if s.ni == len(s.ints) {
+		p := new(int) // not &v: that would heap-allocate v on every call
+		*p = v
+		return p
+	}
+	p := &s.ints[s.ni]
+	s.ni++
+	*p = v
+	return p
+}
+
+func (s *slab) float(v float64) *float64 {
+	if s.nf == len(s.floats) {
+		p := new(float64)
+		*p = v
+		return p
+	}
+	p := &s.floats[s.nf]
+	s.nf++
+	*p = v
+	return p
+}
+
+// atoi parses a non-negative decimal integer without allocating.
+func (s *slab) atoi(v string) *int {
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return nil
+	}
+	return s.int(n)
+}
+
+func (s *slab) atof(v string) *float64 {
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return nil
+	}
+	return s.float(f)
+}
+
+// parseBPS parses an ss rate like "43415650bps" (also tolerating the
+// human-readable "43.4Mbps" form ss prints without -n, and "123bps/456bps"
+// where only the first value is the current rate).
+func (s *slab) parseBPS(v string) *int {
+	if i := strings.IndexByte(v, '/'); i >= 0 {
+		v = v[:i]
+	}
+	v, ok := strings.CutSuffix(v, "bps")
+	if !ok || v == "" {
+		return nil
+	}
+	mult := 1.0
+	switch v[len(v)-1] {
+	case 'K', 'k':
+		mult, v = 1e3, v[:len(v)-1]
+	case 'M':
+		mult, v = 1e6, v[:len(v)-1]
+	case 'G':
+		mult, v = 1e9, v[:len(v)-1]
+	}
+	if mult == 1 {
+		return s.atoi(v)
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return nil
+	}
+	return s.int(int(f * mult))
+}
+
+// parseMS parses "500ms" or "1800ms(45.0%)" into milliseconds.
+func (s *slab) parseMS(v string) *float64 {
+	if i := strings.IndexByte(v, 'm'); i >= 0 && strings.HasPrefix(v[i:], "ms") {
+		return s.atof(v[:i])
+	}
+	return nil
+}
+
+// strPtr returns a pointer to a copy of s. Taking &v of a loop or case-local
+// variable directly makes the compiler heap-allocate it on every iteration,
+// even on paths that never take its address.
+func strPtr(s string) *string { return &s }
+
+// splitPair splits "a/b" or "a,b".
+func splitPair(v string, sep byte) (string, string, bool) {
+	i := strings.IndexByte(v, sep)
+	if i < 0 {
+		return "", "", false
+	}
+	return v[:i], v[i+1:], true
+}
+
+// nextField returns the next whitespace-delimited field of s starting at i, and
+// the index just past it. tok is "" at end of input.
+func nextField(s string, i int) (tok string, next int) {
+	for i < len(s) && (s[i] == ' ' || s[i] == '\t') {
+		i++
+	}
+	j := i
+	for j < len(s) && s[j] != ' ' && s[j] != '\t' {
+		j++
+	}
+	return s[i:j], j
+}
+
+// usersEnd returns the index just past the users:((...)) block starting at i.
+// Process names are quoted and may contain spaces or parentheses, so the
+// closing "))" is searched for outside quotes.
+func usersEnd(s string, i int) int {
+	inQuote := false
+	for j := i; j < len(s); j++ {
+		switch s[j] {
+		case '"':
+			inQuote = !inQuote
+		case ')':
+			if !inQuote && j+1 < len(s) && s[j+1] == ')' {
+				return j + 2
+			}
+		}
+	}
+	return len(s)
+}
+
+// parseUsers extracts the first process name and pid from a users:((...))
+// block, e.g. users:(("nginx",pid=12,fd=6),("nginx",pid=13,fd=6)).
+func parseUsers(c *model.Connection, sl *slab, block string) {
+	if i := strings.IndexByte(block, '"'); i >= 0 {
+		if j := strings.IndexByte(block[i+1:], '"'); j >= 0 {
+			c.Process = strPtr(block[i+1 : i+1+j])
+			block = block[i+2+j:]
+		}
+	}
+	if i := strings.Index(block, "pid="); i >= 0 {
+		v := block[i+4:]
+		j := 0
+		for j < len(v) && v[j] >= '0' && v[j] <= '9' {
+			j++
+		}
+		c.PID = sl.atoi(v[:j])
+	}
+}
+
+// parseSkmem parses skmem:(r0,rb131072,t0,tb87040,f0,w0,o0,bl0,d0).
+func parseSkmem(c *model.Connection, sl *slab, v string) {
+	v = strings.TrimSuffix(strings.TrimPrefix(v, "("), ")")
+	for len(v) > 0 {
+		var item string
+		item, v, _ = strings.Cut(v, ",")
+		j := 0
+		for j < len(item) && (item[j] < '0' || item[j] > '9') {
+			j++
+		}
+		n := sl.atoi(item[j:])
+		switch item[:j] {
+		case "r":
+			c.SkmemR = n
+		case "rb":
+			c.SkmemRB = n
+		case "t":
+			c.SkmemT = n
+		case "tb":
+			c.SkmemTB = n
+		case "f":
+			c.SkmemF = n
+		case "w":
+			c.SkmemW = n
+		case "o":
+			c.SkmemO = n
+		case "bl":
+			c.SkmemBL = n
+		case "d":
+			c.SkmemD = n
+		}
+	}
+}
+
+// parseBBR parses bbr:(bw:123bps,mrtt:1.2,pacing_gain:2.88,cwnd_gain:2.88).
+func parseBBR(c *model.Connection, sl *slab, v string) {
+	v = strings.TrimSuffix(strings.TrimPrefix(v, "("), ")")
+	for len(v) > 0 {
+		var item string
+		item, v, _ = strings.Cut(v, ",")
+		k, val, _ := strings.Cut(item, ":")
+		switch k {
+		case "bw":
+			c.BBRBW = sl.parseBPS(val)
+		case "mrtt":
+			c.BBRMRTT = sl.atof(val)
+		case "pacing_gain":
+			c.BBRPacingGain = sl.atof(val)
+		case "cwnd_gain":
+			c.BBRCWndGain = sl.atof(val)
+		}
+	}
+}
+
+// ParseLine parses a single ss record (without the Netid column) into a
+// Connection. It is a single left-to-right pass over the fields: identity
+// columns first, then "key:value" tokens dispatched on the key. A few metrics
+// are printed as two tokens ("send 123bps", "pacing_rate 123bps"); for those
+// the key is remembered and applied to the next token.
 func ParseLine(line string) (*model.Connection, error) {
-	line = strings.TrimSpace(line)
-	if line == "" {
-		return nil, nil
+	return parseRecord(line, time.Now())
+}
+
+func parseRecord(line string, ts time.Time) (*model.Connection, error) {
+	var cols [5]string
+	i := 0
+	for n := range cols {
+		cols[n], i = nextField(line, i)
+		if cols[n] == "" {
+			return nil, nil
+		}
 	}
 
-	parts := strings.Fields(line)
-	if len(parts) < 5 {
-		return nil, nil
-	}
-
+	sl := new(slab)
 	c := &model.Connection{
-		Timestamp: time.Now(),
-		State:     parts[0],
-		RecvQ:     mustInt(parts[1]),
-		SendQ:     mustInt(parts[2]),
+		Timestamp: ts,
+		State:     cols[0],
+		RecvQ:     sl.atoi(cols[1]),
+		SendQ:     sl.atoi(cols[2]),
 	}
-	c.LocalAddr, c.LocalPort = parseAddrPort(parts[3])
-	c.PeerAddr, c.PeerPort = parseAddrPort(parts[4])
+	c.LocalAddr, c.LocalPort = parseAddrPort(cols[3])
+	c.PeerAddr, c.PeerPort = parseAddrPort(cols[4])
 
-	rest := strings.Join(parts[5:], " ")
+	pending := "" // two-token metric awaiting its value
+	for {
+		for i < len(line) && (line[i] == ' ' || line[i] == '\t') {
+			i++
+		}
+		if i >= len(line) {
+			break
+		}
+		if strings.HasPrefix(line[i:], "users:(") {
+			end := usersEnd(line, i)
+			parseUsers(c, sl, line[i:end])
+			i = end
+			continue
+		}
+		var tok string
+		tok, i = nextField(line, i)
 
-	if m := reProcess.FindStringSubmatch(rest); len(m) == 2 {
-		c.Process = &m[1]
-	}
-	if m := rePID.FindStringSubmatch(rest); len(m) == 2 {
-		c.PID = mustInt(m[1])
-	}
-	if m := reUID.FindStringSubmatch(rest); len(m) == 2 {
-		c.UID = mustInt(m[1])
-	}
-	if m := reInode.FindStringSubmatch(rest); len(m) == 2 {
-		c.Inode = &m[1]
-	}
-	if m := reCgroup.FindStringSubmatch(rest); len(m) == 2 {
-		c.Cgroup = &m[1]
-	}
+		if pending != "" {
+			switch pending {
+			case "send":
+				c.SendBPS = sl.parseBPS(tok)
+			case "pacing_rate":
+				c.PacingRate = sl.parseBPS(tok)
+			case "delivery_rate":
+				c.DeliveryRate = sl.parseBPS(tok)
+			}
+			pending = ""
+			continue
+		}
 
-	if m := reSkmem.FindStringSubmatch(rest); len(m) == 10 {
-		c.SkmemR = mustInt(m[1])
-		c.SkmemRB = mustInt(m[2])
-		c.SkmemT = mustInt(m[3])
-		c.SkmemTB = mustInt(m[4])
-		c.SkmemF = mustInt(m[5])
-		c.SkmemW = mustInt(m[6])
-		c.SkmemO = mustInt(m[7])
-		c.SkmemBL = mustInt(m[8])
-		c.SkmemD = mustInt(m[9])
-	}
+		key, val, hasVal := strings.Cut(tok, ":")
+		if !hasVal {
+			switch {
+			case tok == "send" || tok == "pacing_rate" || tok == "delivery_rate":
+				pending = tok
+			case tok == "app_limited":
+				c.AppLimited = 1
+			case congAlgos[tok]:
+				c.CongAlgo = strPtr(tok)
+			}
+			continue
+		}
 
-	if m := reTimer.FindStringSubmatch(rest); len(m) == 4 {
-		c.TimerType = &m[1]
-		c.TimerDur = &m[2]
-		c.TimerRetrans = mustInt(m[3])
+		switch key {
+		case "uid":
+			c.UID = sl.atoi(val)
+		case "ino":
+			c.Inode = strPtr(val)
+		case "cgroup":
+			c.Cgroup = strPtr(val)
+		case "skmem":
+			parseSkmem(c, sl, val)
+		case "timer":
+			// timer:(keepalive,50sec,0)
+			inner := strings.TrimSuffix(strings.TrimPrefix(val, "("), ")")
+			if typ, rest, ok := strings.Cut(inner, ","); ok {
+				if dur, n, ok := strings.Cut(rest, ","); ok {
+					c.TimerType = strPtr(typ)
+					c.TimerDur = strPtr(dur)
+					c.TimerRetrans = sl.atoi(n)
+				}
+			}
+		case "wscale":
+			if a, b, ok := splitPair(val, ','); ok {
+				c.WscaleSnd, c.WscaleRcv = sl.atoi(a), sl.atoi(b)
+			}
+		case "rto":
+			c.RTO = sl.atof(val)
+		case "rtt":
+			if a, b, ok := splitPair(val, '/'); ok {
+				c.RTT, c.RTTVar = sl.atof(a), sl.atof(b)
+			}
+		case "ato":
+			c.ATO = sl.atof(val)
+		case "mss":
+			c.MSS = sl.atoi(val)
+		case "pmtu":
+			c.PMTU = sl.atoi(val)
+		case "rcvmss":
+			c.RcvMSS = sl.atoi(val)
+		case "advmss":
+			c.AdvMSS = sl.atoi(val)
+		case "cwnd":
+			c.CWnd = sl.atoi(val)
+		case "ssthresh":
+			c.SSThresh = sl.atoi(val)
+		case "bytes_sent":
+			c.BytesSent = sl.atoi(val)
+		case "bytes_retrans":
+			c.BytesRetrans = sl.atoi(val)
+		case "bytes_acked":
+			c.BytesAcked = sl.atoi(val)
+		case "bytes_received":
+			c.BytesReceived = sl.atoi(val)
+		case "segs_out":
+			c.SegsOut = sl.atoi(val)
+		case "segs_in":
+			c.SegsIn = sl.atoi(val)
+		case "data_segs_out":
+			c.DataSegsOut = sl.atoi(val)
+		case "data_segs_in":
+			c.DataSegsIn = sl.atoi(val)
+		case "bbr":
+			parseBBR(c, sl, val)
+		case "lastsnd":
+			c.LastSnd = sl.atoi(val)
+		case "lastrcv":
+			c.LastRcv = sl.atoi(val)
+		case "lastack":
+			c.LastAck = sl.atoi(val)
+		case "delivered":
+			c.Delivered = sl.atoi(val)
+		case "busy":
+			c.BusyMS = sl.parseMS(val)
+		case "rwnd_limited":
+			c.RwndLimitedMS = sl.parseMS(val)
+		case "sndbuf_limited":
+			c.SndbufLimitedMS = sl.parseMS(val)
+		case "unacked":
+			c.Unacked = sl.atoi(val)
+		case "retrans":
+			if a, b, ok := splitPair(val, '/'); ok {
+				c.RetransNow, c.Retrans = sl.atoi(a), sl.atoi(b)
+			}
+		case "lost":
+			c.Lost = sl.atoi(val)
+		case "reordering":
+			c.Reordering = sl.atoi(val)
+		case "reord_seen":
+			c.ReordSeen = sl.atoi(val)
+		case "dsack_dups":
+			c.DSACKDups = sl.atoi(val)
+		case "rcv_rtt":
+			c.RcvRTT = sl.atof(val)
+		case "rcv_space":
+			c.RcvSpace = sl.atoi(val)
+		case "rcv_ssthresh":
+			c.RcvSSThresh = sl.atoi(val)
+		case "minrtt":
+			c.MinRTT = sl.atof(val)
+		case "rcv_ooopack":
+			c.RcvOOOPack = sl.atoi(val)
+		case "snd_wnd":
+			c.SndWnd = sl.atoi(val)
+		case "rcv_wnd":
+			c.RcvWnd = sl.atoi(val)
+		}
 	}
-
-	if m := reWscale.FindStringSubmatch(rest); len(m) == 3 {
-		c.WscaleSnd = mustInt(m[1])
-		c.WscaleRcv = mustInt(m[2])
-	}
-
-	if m := reDelivered.FindStringSubmatch(rest); len(m) == 2 {
-		c.Delivered = mustInt(m[1])
-	}
-
-	info := tcpInfoSection(rest)
-
-	if reAppLimited.MatchString(info) {
-		c.AppLimited = 1
-	}
-
-	if m := reSendBPS.FindStringSubmatch(rest); len(m) == 2 {
-		c.SendBPS = mustInt(m[1])
-	}
-
-	if m := reRTO.FindStringSubmatch(rest); len(m) == 2 {
-		c.RTO = mustFloat(m[1])
-	}
-
-	if m := reRTT.FindStringSubmatch(rest); len(m) == 3 {
-		c.RTT = mustFloat(m[1])
-		c.RTTVar = mustFloat(m[2])
-	}
-
-	if m := reATO.FindStringSubmatch(rest); len(m) == 2 {
-		c.ATO = mustFloat(m[1])
-	}
-
-	if m := reMSS.FindStringSubmatch(rest); len(m) == 2 {
-		c.MSS = mustInt(m[1])
-	}
-
-	if m := reCWnd.FindStringSubmatch(rest); len(m) == 2 {
-		c.CWnd = mustInt(m[1])
-	}
-
-	if m := reBytesSent.FindStringSubmatch(rest); len(m) == 2 {
-		c.BytesSent = mustInt(m[1])
-	}
-	if m := reBytesRecv.FindStringSubmatch(rest); len(m) == 2 {
-		c.BytesReceived = mustInt(m[1])
-	}
-	if m := reBytesAcked.FindStringSubmatch(rest); len(m) == 2 {
-		c.BytesAcked = mustInt(m[1])
-	}
-
-	if m := reSegsOut.FindStringSubmatch(rest); len(m) == 2 {
-		c.SegsOut = mustInt(m[1])
-	}
-	if m := reSegsIn.FindStringSubmatch(rest); len(m) == 2 {
-		c.SegsIn = mustInt(m[1])
-	}
-
-	if m := reMinRTT.FindStringSubmatch(rest); len(m) == 2 {
-		c.MinRTT = mustFloat(m[1])
-	}
-
-	if m := rePacingRate.FindStringSubmatch(rest); len(m) == 2 {
-		c.PacingRate = mustInt(m[1])
-	}
-	if m := reDeliveryRate.FindStringSubmatch(rest); len(m) == 2 {
-		c.DeliveryRate = mustInt(m[1])
-	}
-
-	if m := reRetrans.FindStringSubmatch(rest); len(m) == 3 {
-		c.RetransNow = mustInt(m[1])
-		c.Retrans = mustInt(m[2])
-	}
-
-	if m := reSndWnd.FindStringSubmatch(rest); len(m) == 2 {
-		c.SndWnd = mustInt(m[1])
-	}
-	if m := reSSThresh.FindStringSubmatch(rest); len(m) == 2 {
-		c.SSThresh = mustInt(m[1])
-	}
-	if m := reRcvSpace.FindStringSubmatch(rest); len(m) == 2 {
-		c.RcvSpace = mustInt(m[1])
-	}
-	if m := reRcvSSThresh.FindStringSubmatch(rest); len(m) == 2 {
-		c.RcvSSThresh = mustInt(m[1])
-	}
-
-	if m := reBusy.FindStringSubmatch(rest); len(m) == 2 {
-		c.BusyMS = mustFloat(m[1])
-	}
-	if m := reRwndLimited.FindStringSubmatch(rest); len(m) == 2 {
-		c.RwndLimitedMS = mustFloat(m[1])
-	}
-	if m := reSndbufLimited.FindStringSubmatch(rest); len(m) == 2 {
-		c.SndbufLimitedMS = mustFloat(m[1])
-	}
-	if m := reLost.FindStringSubmatch(rest); len(m) == 2 {
-		c.Lost = mustInt(m[1])
-	}
-	if m := reUnacked.FindStringSubmatch(rest); len(m) == 2 {
-		c.Unacked = mustInt(m[1])
-	}
-
-	if m := reDataSegsOut.FindStringSubmatch(rest); len(m) == 2 {
-		c.DataSegsOut = mustInt(m[1])
-	}
-	if m := reDataSegsIn.FindStringSubmatch(rest); len(m) == 2 {
-		c.DataSegsIn = mustInt(m[1])
-	}
-
-	if m := reBytesRetrans.FindStringSubmatch(rest); len(m) == 2 {
-		c.BytesRetrans = mustInt(m[1])
-	}
-
-	if m := rePMTU.FindStringSubmatch(rest); len(m) == 2 {
-		c.PMTU = mustInt(m[1])
-	}
-	if m := reAdvMSS.FindStringSubmatch(rest); len(m) == 2 {
-		c.AdvMSS = mustInt(m[1])
-	}
-	if m := reRcvMSS.FindStringSubmatch(rest); len(m) == 2 {
-		c.RcvMSS = mustInt(m[1])
-	}
-
-	if m := reLastSnd.FindStringSubmatch(rest); len(m) == 2 {
-		c.LastSnd = mustInt(m[1])
-	}
-	if m := reLastRcv.FindStringSubmatch(rest); len(m) == 2 {
-		c.LastRcv = mustInt(m[1])
-	}
-	if m := reLastAck.FindStringSubmatch(rest); len(m) == 2 {
-		c.LastAck = mustInt(m[1])
-	}
-
-	if m := reDSACKDups.FindStringSubmatch(rest); len(m) == 2 {
-		c.DSACKDups = mustInt(m[1])
-	}
-
-	if m := reBBR.FindStringSubmatch(rest); len(m) == 5 {
-		c.BBRBW = mustInt(m[1])
-		c.BBRMRTT = mustFloat(m[2])
-		c.BBRPacingGain = mustFloat(m[3])
-		c.BBRCWndGain = mustFloat(m[4])
-	}
-
-	if m := reRcvRTT.FindStringSubmatch(rest); len(m) == 2 {
-		c.RcvRTT = mustFloat(m[1])
-	}
-	if m := reRcvWnd.FindStringSubmatch(rest); len(m) == 2 {
-		c.RcvWnd = mustInt(m[1])
-	}
-	c.CongAlgo = findCongAlgo(info)
-	if m := reReordering.FindStringSubmatch(rest); len(m) == 2 {
-		c.Reordering = mustInt(m[1])
-	}
-	if m := reReordSeen.FindStringSubmatch(rest); len(m) == 2 {
-		c.ReordSeen = mustInt(m[1])
-	}
-	if m := reRcvOOOPack.FindStringSubmatch(rest); len(m) == 2 {
-		c.RcvOOOPack = mustInt(m[1])
-	}
-
 	return c, nil
 }
 
-// RunSS runs ss for both TCP and UDP and returns merged connections plus the
-// number of record lines that could not be parsed (so the UI can surface a
-// silent parse failure rather than dropping sockets invisibly).
+// ssFlags queries TCP and UDP in one ss invocation. With both -t and -u, ss
+// prefixes each record with a Netid column ("tcp"/"udp"). One call instead of
+// two halves the cost of -p, which makes ss walk every /proc/<pid>/fd.
+const ssFlags = "-atunpeimOH"
+
+// RunSS runs ss for TCP and UDP and returns the connections plus the number of
+// record lines that could not be parsed (so the UI can surface a silent parse
+// failure rather than dropping sockets invisibly).
 func RunSS() ([]*model.Connection, int, error) {
-	tcpConns, tcpDrops, tcpErr := runSS("-atnpeimOH", "tcp")
-	udpConns, udpDrops, udpErr := runSS("-aunpeimOH", "udp")
-	conns, err := mergeResults(tcpConns, tcpErr, udpConns, udpErr)
-	return conns, tcpDrops + udpDrops, err
+	conns, drops, err := runSS(ssFlags)
+	if err != nil {
+		return nil, 0, err
+	}
+	postProcess(conns)
+	return conns, drops, nil
 }
 
-// mergeResults combines the per-protocol ss results into a single list and a
-// single error. Split out from RunSS so the success / partial / total-failure
-// branches are testable without invoking the real ss binary.
-//
-// When both queries fail it returns a nil slice and an error (the caller keeps
-// the last good snapshot). When only one fails it returns the protocol that
-// succeeded together with a non-nil error describing the partial result, so
-// the caller can ingest what it got while still flagging the failure rather
-// than silently dropping a whole protocol.
-func mergeResults(tcpConns []*model.Connection, tcpErr error, udpConns []*model.Connection, udpErr error) ([]*model.Connection, error) {
-	if tcpErr != nil && udpErr != nil {
-		return nil, fmt.Errorf("tcp: %v; udp: %v", tcpErr, udpErr)
-	}
-	conns := append(tcpConns, udpConns...)
+// postProcess applies the cross-record fixups: synthetic UDP states and
+// zero-filling counters ss omits while they are 0.
+func postProcess(conns []*model.Connection) {
 	for _, c := range conns {
 		if c.Protocol == "udp" {
 			applyUDPState(c)
 		}
 	}
 	fillOmittedZeros(conns)
-	switch {
-	case tcpErr != nil:
-		return conns, fmt.Errorf("tcp query failed (showing UDP only): %v", tcpErr)
-	case udpErr != nil:
-		return conns, fmt.Errorf("udp query failed (showing TCP only): %v", udpErr)
+}
+
+// parseNetidRecord splits off the leading Netid column and parses the rest.
+// skip is true for protocols sstui doesn't track (nothing to count as a drop).
+func parseNetidRecord(line string, ts time.Time) (c *model.Connection, skip bool) {
+	netid, i := nextField(line, 0)
+	if netid != "tcp" && netid != "udp" {
+		return nil, true
 	}
-	return conns, nil
+	c, err := parseRecord(line[i:], ts)
+	if err != nil || c == nil {
+		return nil, false
+	}
+	c.Protocol = netid
+	return c, false
 }
 
 // omittedGroup is a set of tcp_info counters that ss prints only when they're
@@ -500,7 +567,7 @@ func applyUDPState(c *model.Connection) {
 	}
 }
 
-func runSS(flags, protocol string) ([]*model.Connection, int, error) {
+func runSS(flags string) ([]*model.Connection, int, error) {
 	cmd := exec.Command("ss", flags)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -513,9 +580,22 @@ func runSS(flags, protocol string) ([]*model.Connection, int, error) {
 		return nil, 0, fmt.Errorf("ss: %w", err)
 	}
 
+	conns, drops, scanErr := scanRecords(stdout, time.Now())
+	if err := cmd.Wait(); err != nil {
+		return nil, 0, fmt.Errorf("ss: %w", err)
+	}
+	if scanErr != nil {
+		return nil, 0, fmt.Errorf("ss scan: %w", scanErr)
+	}
+	return conns, drops, nil
+}
+
+// scanRecords reads Netid-prefixed ss records from r. Split out from runSS so
+// it can be fed captured ss output in tests.
+func scanRecords(r io.Reader, ts time.Time) ([]*model.Connection, int, error) {
 	var conns []*model.Connection
 	var drops int // record lines that looked like sockets but didn't parse
-	scanner := bufio.NewScanner(stdout)
+	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	var pending string
 	flush := func() {
@@ -523,12 +603,11 @@ func runSS(flags, protocol string) ([]*model.Connection, int, error) {
 			return
 		}
 		// ss is run with -H, so every non-continuation line is a socket record.
-		// A nil/error result means a record we couldn't parse — count it rather
-		// than discarding it silently.
-		if c, err := ParseLine(pending); err == nil && c != nil {
-			c.Protocol = protocol
+		// A nil result means a record we couldn't parse — count it rather than
+		// discarding it silently.
+		if c, skip := parseNetidRecord(pending, ts); c != nil {
 			conns = append(conns, c)
-		} else {
+		} else if !skip {
 			drops++
 		}
 		pending = ""
@@ -538,8 +617,9 @@ func runSS(flags, protocol string) ([]*model.Connection, int, error) {
 		if line == "" {
 			continue
 		}
-		// ss prints TCP info on a continuation line that starts with whitespace.
-		// Append it to the previous record so all fields land in one ParseLine call.
+		// Without -O (or on old ss), TCP info is printed on a continuation line
+		// that starts with whitespace. Append it to the previous record so all
+		// fields land in one parse.
 		if line[0] == ' ' || line[0] == '\t' {
 			if pending != "" {
 				pending += " " + strings.TrimSpace(line)
@@ -550,12 +630,5 @@ func runSS(flags, protocol string) ([]*model.Connection, int, error) {
 		pending = line
 	}
 	flush()
-	scanErr := scanner.Err()
-	if err := cmd.Wait(); err != nil {
-		return nil, 0, fmt.Errorf("ss: %w", err)
-	}
-	if scanErr != nil {
-		return nil, 0, fmt.Errorf("ss scan: %w", scanErr)
-	}
-	return conns, drops, nil
+	return conns, drops, scanner.Err()
 }

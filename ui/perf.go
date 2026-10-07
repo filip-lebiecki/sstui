@@ -113,8 +113,9 @@ func renderPerfSummary(buf *poller.Buffer, snap *poller.Snapshot, width int) str
 		var vals []float64
 		for _, sn := range snapshots {
 			var n int
-			for _, c := range sn.Conns {
-				for _, s := range c.Signals {
+			samples := sn.Samples()
+			for i := range samples {
+				for _, s := range samples[i].Signals() {
 					if s.Severity >= 1 {
 						n++
 					}

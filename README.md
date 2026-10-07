@@ -1104,7 +1104,7 @@ the real `ss` binary and skip when it isn't installed.
 Release binaries are built static with the version stamped in:
 
 ```bash
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w -X main.version=v1.2.1" -o dist/sstui-linux-amd64 .
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w -X main.version=v1.3.0" -o dist/sstui-linux-amd64 .
 ```
 
 Coding conventions:

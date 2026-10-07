@@ -193,7 +193,8 @@ type group struct {
 
 // groupBySignal buckets the sockets carrying any of the given signal types by
 // keyFn, in a deterministic (key-sorted) order. A group's severity is the
-// worst severity among its sockets' matching signals.
+// worst severity among its sockets' matching signals. keyFn returning ""
+// leaves the socket out (a rule's way to exclude sockets another rule owns).
 func (a *analysis) groupBySignal(keyFn func(*model.Connection) string, types ...model.SignalType) []*group {
 	byKey := map[string]*group{}
 	for _, c := range a.in.Conns {
@@ -207,6 +208,9 @@ func (a *analysis) groupBySignal(keyFn func(*model.Connection) string, types ...
 			continue
 		}
 		k := keyFn(c)
+		if k == "" {
+			continue
+		}
 		g := byKey[k]
 		if g == nil {
 			g = &group{key: k}

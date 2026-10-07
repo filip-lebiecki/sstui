@@ -9,7 +9,7 @@ Built for triage: tab through running connections, see signals like
 automatically, and drill into the underlying kernel metrics on a single
 key press.
 
-![tabs](https://img.shields.io/badge/tabs-9-blue) ![signals](https://img.shields.io/badge/signals-25-orange) ![ring%20buffer](https://img.shields.io/badge/history-50%20min-green)
+![tabs](https://img.shields.io/badge/tabs-9-blue) ![signals](https://img.shields.io/badge/signals-26-orange) ![ring%20buffer](https://img.shields.io/badge/history-50%20min-green)
 
 ---
 
@@ -60,7 +60,7 @@ What you get out of the box:
   `Enter` jumps to exactly the affected sockets; `c` copies the command.
 - **Live table** of every TCP/UDP socket on the host with sortable columns,
   state-coloured fields, and an at-a-glance signal indicator per row.
-- **Automatic problem detection** through 25 named signals — retransmits,
+- **Automatic problem detection** through 26 named signals — retransmits,
   RTO storms, zero-window stalls, listen-queue overflow, ephemeral port
   exhaustion, packet reordering, CWnd collapse, BBR underutilization, and
   more. Each is tunable in one place (`classifier/classifier.go`).
@@ -114,7 +114,7 @@ human-paced triage:
 | Per-connection RTT, CWnd, retrans, BBR        | ✓ with `-i`      | ✓ parsed and labelled         |
 | Refreshes automatically                       | `watch ss`       | Built-in, 2 s ticks            |
 | **Per-poll deltas** (TX/RX rates, retrans rate, OOO growth) | ✗   | ✓ computed in poller          |
-| **Anomaly classification** (named signals)    | ✗                | ✓ 25 rules                    |
+| **Anomaly classification** (named signals)    | ✗                | ✓ 26 rules                    |
 | **History** for "when did this start?"        | ✗                | ✓ 50 min ring                 |
 | **Time-series view** per connection           | ✗                | ✓ bar-graph sparklines        |
 | **Event log** of signal onsets                | ✗                | ✓ Events tab                  |
@@ -244,6 +244,7 @@ the count visible from every tab.
 | Accept queue full | `LISTEN_Q` + `ListenOverflows` | tells apart a `somaxconn` cap from the app's own backlog |
 | Can't connect | `SYN_STALL`, per destination | `nc -vz`, `ip route get`, firewalls |
 | Packet loss (per peer / host-wide) | `RTO`, `NO_ACK`, `LOSS`, `HI_RETRANS`, `RETRANS` | `mtr` for one peer; NIC/CPU checks when many peers lose at once |
+| Inbound loss (per peer / host-wide) | `RX_LOSS` | path back toward the peer (loss is often asymmetric); RX drops / ring size when many peers are affected |
 | Reordering, path MTU, latency inflation | `REORDER`, `PMTU`, `RTT_SPIKE` | ECMP/LACP hashing; ICMP/MSS clamping; qdisc / BBR |
 | Window- or buffer-limited throughput | `RWND_LIM`, `SNDBUF_LIM` | BDP estimate vs `tcp_rmem`/`tcp_wmem`, window scaling |
 | Socket leak | `CW_LEAK` | fd count vs limit; the code path missing `close()` |
@@ -533,7 +534,7 @@ A green status line at the bottom confirms the path and row/snapshot count.
 
 ## Signals reference
 
-There are **25 signal types**, each at one of three severities: `info`
+There are **26 signal types**, each at one of three severities: `info`
 (grey), `warn` (yellow/orange), `crit` (red). Severity is reflected in the
 badge color and in the Live-tab indicator glyph.
 
@@ -564,6 +565,7 @@ badge color and in the Live-tab indicator glyph.
 | `SNDBUF_LIM`| `sndbuf_limited`    | sending & `Δsndbuf_limited ≥ 25%` of poll (crit ≥75%) — blocked on send buffer | `sndbuf_limited:` delta ✓          | 1–2      | yellow |
 | `CW_LEAK`  | `close_wait_leak`    | one process holds ≥20 CLOSE-WAIT sockets (crit ≥50) — fd leak              | per-process CLOSE-WAIT count ✓          | 1–2      | red    |
 | `TW_STORM` | `time_wait_storm`    | ≥200 TIME-WAIT toward one peer endpoint (crit ≥2000) — port exhaustion risk | per-peer TIME-WAIT count ✓            | 1–2      | orange |
+| `RX_LOSS`  | `inbound_loss`       | `Δrcv_ooopack / Δdata_segs_in ≥ 2%` (crit ≥10%), with ≥100 data segments this poll — inbound loss seen at the receiver | `rcv_ooopack:` `data_segs_in:` deltas ✓ | 1–2 | red |
 
 ### Connection-state signals
 
@@ -586,6 +588,7 @@ badge color and in the Live-tab indicator glyph.
 | `DSACK`       | `dsack_dups` grew this poll                                            | warn / crit (>5)        | Spurious retransmits — RTO too aggressive                  |
 | `REORDER`     | `reord_seen` grew this poll (sender detected reordering)               | warn / crit (>50)       | Path is reordering packets (often ECMP / LACP / multi-queue hashing). `rcv_ooopack` isn't used: it also grows after plain loss |
 | `DROPS`       | `skmem` drop counter (`d`) grew this poll                             | warn / crit (>10)       | Kernel discarded data at the socket — buffer overran, receiver too slow|
+| `RX_LOSS`     | ≥2% of data segments received this poll arrived after a gap (crit ≥10%; needs ≥100 segments) | warn / crit | **Inbound** loss (or reordering) on the peer → here path. The only loss signal available on the receiving side — the retransmit counters live on the sender. One lost segment makes everything behind it arrive out of order, so the ratio overstates the loss rate; the thresholds account for that |
 
 ### Congestion & flow control
 
@@ -687,7 +690,7 @@ socket creation.
 | Reordering     | `reordering:`       | Kernel's reordering-distance estimate                              |
 | Reord Seen     | `reord_seen:`       | cum. reorder events observed                                       |
 | Rcv OOO        | `rcv_ooopack:`      | cum. out-of-order segments **received**: each one arrived after a gap, i.e. a segment from the peer was lost (or reordered) on its way here. When sstui runs on the receiving host this is the only visible trace of inbound loss — the sender's retransmit counters live on the other machine |
-| OOO / data in  | (computed)          | `rcv_ooopack / data_segs_in`, per poll and over the connection's life (Detail → Inbound). A few % is heavy inbound loss |
+| OOO / data in  | (computed)          | `rcv_ooopack / data_segs_in`, per poll and over the connection's life (Detail → Inbound). Drives the `RX_LOSS` signal |
 | Δ Reord Seen   | (computed)          | Drives the `REORDER` signal                                        |
 
 ### Last-activity timestamps

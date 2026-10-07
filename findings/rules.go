@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"sstui/classifier"
 	"sstui/model"
 )
 
@@ -18,6 +19,7 @@ var rules = []func(*analysis){
 	ruleListenQueue,
 	ruleSynStall,
 	rulePathLoss,
+	ruleInboundLoss,
 	ruleReordering,
 	rulePMTU,
 	ruleRTTInflation,
@@ -75,7 +77,16 @@ func ruleZeroWindow(a *analysis) {
 // ruleRecvBacklog: a local process not keeping up with its sockets — full
 // receive queues (RCV_Q) and kernel drops (DROPS), grouped by process.
 func ruleRecvBacklog(a *analysis) {
-	for _, g := range a.groupBySignal(procKey, model.SignalRecvBufferPressure, model.SignalSocketDrops) {
+	// Drops that come with inbound loss and an unpressured receive queue are
+	// out-of-order data discarded during recovery, not a slow reader;
+	// ruleInboundLoss reports those.
+	key := func(c *model.Connection) string {
+		if classifier.DropsExplainedByInboundLoss(c.Signals) {
+			return ""
+		}
+		return procKey(c)
+	}
+	for _, g := range a.groupBySignal(key, model.SignalRecvBufferPressure, model.SignalSocketDrops) {
 		c0 := g.conns[0]
 		var queued, drops, udp int
 		listen := false // a listener with drops: Live must show LISTEN sockets
@@ -88,12 +99,14 @@ func ruleRecvBacklog(a *analysis) {
 			listen = listen || c.State == "LISTEN"
 		}
 		f := Finding{
-			ID:         "recv_backlog|" + g.key,
-			Severity:   g.sev,
-			Title:      fmt.Sprintf("%s isn't reading fast enough: %s backed up", procLabel(c0), plural(len(g.conns), "socket")),
-			Detail:     "Data arrives faster than the application reads it; once a socket's receive buffer fills, the kernel drops (UDP) or throttles (TCP) the sender.",
-			Evidence:   []string{fmt.Sprintf("%s waiting in Recv-Q", humanBytes(float64(queued)))},
-			Filter:     filterJoin(procFilter(c0), sigFilter(model.SignalRecvBufferPressure, model.SignalSocketDrops)),
+			ID:       "recv_backlog|" + g.key,
+			Severity: g.sev,
+			Title:    fmt.Sprintf("%s isn't reading fast enough: %s backed up", procLabel(c0), plural(len(g.conns), "socket")),
+			Detail:   "Data arrives faster than the application reads it; once a socket's receive buffer fills, the kernel drops (UDP) or throttles (TCP) the sender.",
+			Evidence: []string{fmt.Sprintf("%s waiting in Recv-Q", humanBytes(float64(queued)))},
+			// Same exclusion as the grouping: DROPS counts here unless it
+			// comes with RX_LOSS (and no RCV_Q, which the first term covers).
+			Filter:     filterJoin(procFilter(c0), "(signal=RCV_Q or (signal=DROPS not signal=RX_LOSS))"),
 			ShowListen: listen,
 			Count:      len(g.conns),
 		}
@@ -224,13 +237,7 @@ func rulePathLoss(a *analysis) {
 	if len(groups) == 0 {
 		return
 	}
-	peers := map[string]bool{}
-	for _, c := range a.in.Conns {
-		if c.State == "ESTAB" {
-			peers[c.PeerAddr] = true
-		}
-	}
-	if len(groups) >= 5 && len(groups)*3 >= len(peers) {
+	if a.manyPeers(len(groups)) {
 		var conns []*model.Connection
 		sev := 0
 		for _, g := range groups {
@@ -265,6 +272,19 @@ func rulePathLoss(a *analysis) {
 			Count:  len(g.conns),
 		})
 	}
+}
+
+// manyPeers reports whether a problem seen toward n distinct peers is
+// widespread enough to blame this host rather than each peer's path: at least
+// five peers, and at least a third of all established peers.
+func (a *analysis) manyPeers(n int) bool {
+	peers := map[string]bool{}
+	for _, c := range a.in.Conns {
+		if c.State == "ESTAB" {
+			peers[c.PeerAddr] = true
+		}
+	}
+	return n >= 5 && n*3 >= len(peers)
 }
 
 // lossEvidence summarizes which loss signals fired and the aggregate
@@ -305,14 +325,122 @@ func localLossActions() []Action {
 	}
 }
 
+// ruleInboundLoss: segments from peers arriving after gaps (RX_LOSS) — loss
+// on the inbound path, seen from the receiving side. Like outbound loss, one
+// peer points at that peer's path; many peers at once point at this host's
+// receive path (NIC drops, ring buffer overruns, softirq starvation).
+func ruleInboundLoss(a *analysis) {
+	groups := a.groupBySignal(func(c *model.Connection) string { return c.PeerAddr }, model.SignalInboundLoss)
+	if len(groups) == 0 {
+		return
+	}
+	// ratio returns the aggregate evidence line (none when no data-segment
+	// counts are known, rather than an empty bullet).
+	ratio := func(conns []*model.Connection) []string {
+		var ooo, in int
+		for _, c := range conns {
+			ooo += deref(c.DeltaRcvOOOPack)
+			in += deref(c.DeltaDataSegsIn)
+		}
+		if in == 0 {
+			return nil
+		}
+		return []string{fmt.Sprintf("%.1f%% of %d data segments received this poll arrived after a gap", float64(ooo)/float64(in)*100, in)}
+	}
+	rxActions := []Action{
+		{Text: "Check this host's receive path for drops and overruns", Command: "ip -s link"},
+		{Text: "NIC-level RX drops / missed packets (replace the interface name)", Command: "ethtool -S eth0 | grep -iE 'rx.*(drop|miss|err)'"},
+		{Text: "If the NIC ring overflows, a larger RX ring can help (compare current vs max)", Command: "ethtool -g eth0"},
+	}
+	if a.manyPeers(len(groups)) {
+		var conns []*model.Connection
+		sev := 0
+		for _, g := range groups {
+			conns = append(conns, g.conns...)
+			sev = max(sev, g.sev)
+		}
+		ev, dsev := discardEvidence(conns)
+		f := Finding{
+			ID:       "rx_loss_local",
+			Severity: max(sev, dsev),
+			Title:    fmt.Sprintf("Inbound packet loss from %d different peers — likely this host's receive path", len(groups)),
+			Detail:   "Data from many unrelated senders arrives with gaps at once, so the common factor is here: NIC or driver drops, a full RX ring, or a CPU too busy to service network interrupts.",
+			Evidence: append(ratio(conns), ev...),
+			Actions:  append(rxActions, Action{Text: "Check for softirq / CPU saturation", Command: "mpstat -P ALL 1 5"}),
+			Filter:   "signal=RX_LOSS",
+			Count:    len(conns),
+		}
+		if r, ok := a.rate("TcpExt:TCPOFOQueue"); ok && r > 0 {
+			f.Evidence = append(f.Evidence, fmt.Sprintf("kernel: TCPOFOQueue +%.0f/s", r))
+		}
+		a.add(f)
+		return
+	}
+	for _, g := range groups {
+		ev, sev := discardEvidence(g.conns)
+		a.add(Finding{
+			ID:       "rx_loss|" + g.key,
+			Severity: max(g.sev, sev),
+			Title:    fmt.Sprintf("Inbound packet loss from %s: %s receiving data with gaps", g.key, plural(len(g.conns), "connection")),
+			Detail:   "Segments sent by this peer go missing (or arrive reordered) on the way here; the sender retransmits, which costs throughput and latency. Its retransmit counters are on the other machine — this is the receiving side's view.",
+			Evidence: append(ratio(g.conns), ev...),
+			Actions: append([]Action{
+				{Text: "Trace the path back toward the peer (ideally run mtr from the peer's side too, since loss is often asymmetric)", Command: "mtr -rwzbc 100 " + g.key},
+			}, rxActions[0]),
+			Filter: filterJoin("peer=="+g.key, "signal=RX_LOSS"),
+			Count:  len(g.conns),
+		})
+	}
+}
+
+// discardEvidence describes kernel drops that inbound loss explains (see
+// classifier.DropsExplainedByInboundLoss) and returns the severity they add:
+// discarded out-of-order data forces extra retransmits, so it can raise the
+// inbound-loss finding to the DROPS signal's severity.
+func discardEvidence(conns []*model.Connection) ([]string, int) {
+	drops, sev := 0, 0
+	for _, c := range conns {
+		if !classifier.DropsExplainedByInboundLoss(c.Signals) {
+			continue
+		}
+		drops += deref(c.DeltaSkmemD)
+		if s, ok := signalOf(c, model.SignalSocketDrops); ok {
+			sev = max(sev, s.Severity)
+		}
+	}
+	if drops == 0 {
+		return nil, 0
+	}
+	return []string{fmt.Sprintf("the kernel also discarded %s (receive memory full during loss recovery) — not a slow reader: the receive queue is empty", plural(drops, "out-of-order segment"))}, sev
+}
+
 // ruleReordering: sender-detected reordering, grouped by peer.
 func ruleReordering(a *analysis) {
 	for _, g := range a.groupBySignal(func(c *model.Connection) string { return c.PeerAddr }, model.SignalReordering) {
+		events, lossy := 0, 0
+		for _, c := range g.conns {
+			events += deref(c.DeltaReordSeen)
+			for _, s := range c.Signals {
+				if slices.Contains(lossSignals, s.Type) {
+					lossy++
+					break
+				}
+			}
+		}
+		ev := []string{fmt.Sprintf("the sender detected %d reordering events in the last poll", events)}
+		if lossy > 0 {
+			// reord_seen also grows when ACKs are lost or retransmits turn
+			// out spurious, so alongside loss it isn't proof of reordering.
+			ev = append(ev, fmt.Sprintf("caution: %d of these connections also show packet loss — loss can inflate this counter, so treat the loss finding as primary", lossy))
+		}
 		a.add(Finding{
 			ID:       "reorder|" + g.key,
 			Severity: g.sev,
-			Title:    fmt.Sprintf("Packets arrive out of order from %s (%s)", g.key, plural(len(g.conns), "connection")),
+			// reord_seen is counted by the sender: it's our packets that are
+			// reordered on the way to the peer.
+			Title:    fmt.Sprintf("Packets to %s are being reordered (%s)", g.key, plural(len(g.conns), "connection")),
 			Detail:   "Packets of one flow take different paths and overtake each other — typically ECMP or link-aggregation hashing, or multi-queue paths. It can trigger spurious retransmits.",
+			Evidence: ev,
 			Actions: []Action{
 				{Text: "Linux tolerates moderate reordering; if throughput suffers, check LACP / ECMP hashing on the path (hash on the full 5-tuple)"},
 				{Text: "See which hops are involved", Command: "tracepath -n " + g.key},

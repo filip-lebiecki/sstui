@@ -61,6 +61,7 @@ var (
 		model.SignalSndbufLimited:      lipgloss.Color("#ffd43b"),
 		model.SignalCloseWaitLeak:      lipgloss.Color("#ff6b6b"),
 		model.SignalTimeWaitStorm:      lipgloss.Color("#ffa94d"),
+		model.SignalInboundLoss:        lipgloss.Color("#ff6b6b"),
 	}
 )
 

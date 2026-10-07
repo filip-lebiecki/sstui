@@ -50,3 +50,15 @@ func TestDiagnosePrefersRootCause(t *testing.T) {
 		t.Errorf("expected zero-window root cause, got %q", d.Headline)
 	}
 }
+
+// Drops during inbound loss with an empty queue are not a slow reader.
+func TestDiagnoseLossDrops(t *testing.T) {
+	c := withSignals(
+		model.Signal{Type: model.SignalSocketDrops, Severity: 2},
+		model.Signal{Type: model.SignalInboundLoss, Severity: 1},
+	)
+	d := diagnose(c)
+	if !strings.Contains(d.Headline, "Inbound packet loss") || d.Severity != 2 || !strings.Contains(d.Hint, "discarding out-of-order data") {
+		t.Errorf("want inbound-loss verdict raised to crit by the drops, got %+v", d)
+	}
+}

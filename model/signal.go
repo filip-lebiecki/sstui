@@ -29,6 +29,7 @@ const (
 	SignalSndbufLimited      SignalType = "sndbuf_limited"
 	SignalCloseWaitLeak      SignalType = "close_wait_leak"
 	SignalTimeWaitStorm      SignalType = "time_wait_storm"
+	SignalInboundLoss        SignalType = "inbound_loss"
 )
 
 // signalLabels maps each signal type to its short display label. Built once;
@@ -59,6 +60,7 @@ var signalLabels = map[SignalType]string{
 	SignalSndbufLimited:      "SNDBUF_LIM",
 	SignalCloseWaitLeak:      "CW_LEAK",
 	SignalTimeWaitStorm:      "TW_STORM",
+	SignalInboundLoss:        "RX_LOSS",
 }
 
 // Label returns the short display label for the signal.

@@ -94,7 +94,7 @@ func renderNoFindings(rep findings.Report, width int) string {
 	b.WriteString("  " + styleFindOK.Render("✓ No problems detected") + "\n\n")
 	b.WriteString(styleFindText.Width(max(width-4, 30)).PaddingLeft(2).Render(
 		"Every poll checks for: peers that stopped reading (zero window), apps not draining "+
-			"their sockets, full accept queues, failing handshakes, packet loss (per peer and host-wide), "+
+			"their sockets, full accept queues, failing handshakes, packet loss in both directions (per peer and host-wide), "+
 			"reordering, path-MTU trouble, latency inflation, window- and buffer-limited throughput, "+
 			"socket leaks (CLOSE-WAIT), TIME-WAIT churn, ephemeral-port exhaustion, SYN floods, "+
 			"UDP buffer overflows and kernel memory pressure.") + "\n\n")

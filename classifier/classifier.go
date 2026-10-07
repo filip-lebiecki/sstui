@@ -64,6 +64,48 @@ func ClassifyAggregate(conns []*model.Connection) {
 	}
 }
 
+// DropsExplainedByInboundLoss reports whether a socket's kernel drops (DROPS)
+// are most likely out-of-order data discarded during inbound loss recovery
+// rather than a slow reader: the drops coincide with RX_LOSS and the receive
+// queue is not under sustained pressure (no RCV_Q). Under inbound loss the
+// out-of-order queue holds everything behind each gap; when that exceeds the
+// socket's receive memory the kernel drops segments even though the
+// application has read everything. Blaming the app there points the
+// operator at the wrong end. Call it on a fully classified signal list.
+func DropsExplainedByInboundLoss(sigs []model.Signal) bool {
+	var drops, rxLoss, rcvQ bool
+	for _, s := range sigs {
+		switch s.Type {
+		case model.SignalSocketDrops:
+			drops = true
+		case model.SignalInboundLoss:
+			rxLoss = true
+		case model.SignalRecvBufferPressure:
+			rcvQ = true
+		}
+	}
+	return drops && rxLoss && !rcvQ
+}
+
+// Inbound-loss thresholds: share of received data segments that arrived out
+// of order in one poll, and the minimum data segments for a verdict.
+const (
+	inboundLossWarn    = 0.02
+	inboundLossCrit    = 0.10
+	inboundLossMinSegs = 100
+)
+
+// tierSeverityF is tierSeverity for ratios.
+func tierSeverityF(v, warn, crit float64) int {
+	switch {
+	case v >= crit:
+		return 2
+	case v >= warn:
+		return 1
+	}
+	return 0
+}
+
 // tierSeverity returns 2 at/above crit, 1 at/above warn, else 0.
 func tierSeverity(n, warn, crit int) int {
 	switch {
@@ -453,6 +495,23 @@ func Classify(c *model.Connection) []model.Signal {
 			sev = 2
 		}
 		signals = append(signals, model.Signal{Type: model.SignalDSACKSpurious, Severity: sev, Value: *c.DeltaDSACKDups})
+	}
+
+	// Inbound loss: data segments from the peer arriving after a gap
+	// (rcv_ooopack) as a share of data segments received this poll. On the
+	// receiving host this is the only visible trace of loss on the
+	// peer → here path — the retransmit counters belong to the sender. One
+	// lost segment makes everything behind it arrive out of order until the
+	// retransmission fills the hole (≈ a window's worth), so the ratio
+	// overstates the loss rate and the thresholds sit well above typical
+	// loss percentages. A minimum of data received keeps a stray packet on a
+	// quiet connection from tripping it. Reordering on the path also counts.
+	if c.DeltaRcvOOOPack != nil && c.DeltaDataSegsIn != nil && *c.DeltaDataSegsIn >= inboundLossMinSegs {
+		ratio := float64(*c.DeltaRcvOOOPack) / float64(*c.DeltaDataSegsIn)
+		if sev := tierSeverityF(ratio, inboundLossWarn, inboundLossCrit); sev > 0 {
+			signals = append(signals, model.Signal{Type: model.SignalInboundLoss, Severity: sev,
+				Value: fmt.Sprintf("%.1f%% of %d segments arrived after a gap", ratio*100, *c.DeltaDataSegsIn)})
+		}
 	}
 
 	// Reordering: the sender detected reordering this poll (reord_seen —

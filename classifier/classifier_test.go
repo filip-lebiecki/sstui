@@ -293,3 +293,45 @@ func TestClassifyCwndLimitedIsInfo(t *testing.T) {
 		t.Errorf("want info-level CWND_LIM, got %+v (present=%v)", s, ok)
 	}
 }
+
+// TestClassifyInboundLoss: segments arriving after a gap as a share of data
+// received, with a minimum of traffic before judging.
+func TestClassifyInboundLoss(t *testing.T) {
+	cases := []struct {
+		name    string
+		ooo, in int
+		want    int // severity, 0 = no signal
+	}{
+		{"clean", 0, 1000, 0},
+		{"below warn", 10, 1000, 0},
+		{"warn", 30, 1000, 1},
+		{"crit", 150, 1000, 2},
+		{"too little data to judge", 20, 50, 0},
+	}
+	for _, tc := range cases {
+		c := &model.Connection{Protocol: "tcp", State: "ESTAB", DeltaRcvOOOPack: ip(tc.ooo), DeltaDataSegsIn: ip(tc.in)}
+		s, ok := sigByType(Classify(c), model.SignalInboundLoss)
+		if got := map[bool]int{true: s.Severity}[ok]; got != tc.want {
+			t.Errorf("%s: severity %d, want %d (%+v)", tc.name, got, tc.want, s)
+		}
+	}
+}
+
+func TestDropsExplainedByInboundLoss(t *testing.T) {
+	drops := model.Signal{Type: model.SignalSocketDrops, Severity: 1}
+	rx := model.Signal{Type: model.SignalInboundLoss, Severity: 1}
+	rcvq := model.Signal{Type: model.SignalRecvBufferPressure, Severity: 1}
+	for name, tc := range map[string]struct {
+		sigs []model.Signal
+		want bool
+	}{
+		"drops under inbound loss, empty queue": {[]model.Signal{drops, rx}, true},
+		"drops with a full receive queue":       {[]model.Signal{drops, rx, rcvq}, false},
+		"drops without loss":                    {[]model.Signal{drops}, false},
+		"loss without drops":                    {[]model.Signal{rx}, false},
+	} {
+		if got := DropsExplainedByInboundLoss(tc.sigs); got != tc.want {
+			t.Errorf("%s: got %v, want %v", name, got, tc.want)
+		}
+	}
+}

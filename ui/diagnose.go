@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"sstui/classifier"
 	"sstui/model"
 
 	"github.com/charmbracelet/lipgloss"
@@ -65,6 +66,8 @@ func diagnose(c *model.Connection) Diagnosis {
 			"the path is saturated or lossy"},
 		{model.SignalHighRetransRate, "High retransmit rate this poll",
 			"a meaningful fraction of sent bytes are being resent"},
+		{model.SignalInboundLoss, "Inbound packet loss — data from the peer arrives with gaps",
+			"segments are lost (or reordered) between the peer and this host; check this host's RX drops, then the path from the peer"},
 		{model.SignalReordering, "Packet reordering on the path",
 			"the sender detected out-of-order delivery — often ECMP/LACP or multi-queue hashing, not congestion"},
 		{model.SignalRecvBufferPressure, "Receive buffer filling up",
@@ -77,8 +80,21 @@ func diagnose(c *model.Connection) Diagnosis {
 			"a loss event just cut the sending rate sharply"},
 	}
 
+	lossDrops := classifier.DropsExplainedByInboundLoss(c.Signals)
 	for _, r := range rules {
+		if r.sig == model.SignalSocketDrops && lossDrops {
+			continue // out-of-order data discarded under inbound loss: let RX_LOSS explain it
+		}
 		if s, ok := has(r.sig); ok {
+			if r.sig == model.SignalInboundLoss && lossDrops {
+				// The drops are part of this story and make it worse.
+				if d, ok := has(model.SignalSocketDrops); ok {
+					s.Severity = max(s.Severity, d.Severity)
+				}
+				return Diagnosis{Headline: r.headline,
+					Hint:     "segments are lost (or reordered) between the peer and this host, and the kernel is also discarding out-of-order data — check this host's RX drops, then the path from the peer",
+					Severity: s.Severity}
+			}
 			return Diagnosis{Headline: r.headline, Hint: r.hint, Severity: s.Severity}
 		}
 	}

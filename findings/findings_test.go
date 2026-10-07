@@ -303,3 +303,78 @@ func TestRetransHostNotHiddenByOnePeer(t *testing.T) {
 		t.Errorf("want both the per-peer loss and the host-wide 12%% finding: %+v", r.Findings)
 	}
 }
+
+// Inbound loss from one peer is that path's problem; from many peers at
+// once it's this host's receive path.
+func TestInboundLossLocalVsRemote(t *testing.T) {
+	rx := func(peer string) *model.Connection {
+		c := conn("ESTAB", "10.0.0.1", "443", peer, "51000", sig(model.SignalInboundLoss, 1))
+		c.DeltaRcvOOOPack, c.DeltaDataSegsIn = ip(50), ip(1000)
+		return c
+	}
+	r := Analyze(Input{Conns: []*model.Connection{rx("198.51.100.7"), conn("ESTAB", "10.0.0.1", "443", "198.51.100.8", "1")}})
+	f := byID(r, "rx_loss|198.51.100.7")
+	if f == nil || !hasText(f.Evidence, "5.0% of 1000 data segments") || f.Filter != "peer==198.51.100.7 signal=RX_LOSS" {
+		t.Errorf("want a per-peer inbound-loss finding: %+v", r.Findings)
+	}
+
+	var many []*model.Connection
+	for i := 1; i <= 6; i++ {
+		many = append(many, rx("198.51.100."+strconv.Itoa(i)))
+	}
+	// One of them also has loss-recovery drops: the host-wide finding must
+	// carry them and take the DROPS severity.
+	many[0].Signals = append(many[0].Signals, model.Signal{Type: model.SignalSocketDrops, Severity: 2})
+	many[0].DeltaSkmemD = ip(1)
+	r = Analyze(Input{Conns: many})
+	f = byID(r, "rx_loss_local")
+	if f == nil || f.Count != 6 || !hasCommand(f, "ethtool -g") {
+		t.Fatalf("inbound loss from many peers should be one local finding: %+v", r.Findings)
+	}
+	if f.Severity != 2 || !hasText(f.Evidence, "discarded 1 out-of-order segment ") {
+		t.Errorf("local finding should carry the discard and its severity: sev %d, %q", f.Severity, f.Evidence)
+	}
+	if byID(r, "rx_loss|") != nil {
+		t.Errorf("per-peer inbound findings should be replaced by the local one")
+	}
+}
+
+// The live netem run: a receiver under 3% inbound loss with an empty receive
+// queue showed kernel drops. Those are discarded out-of-order data, so they
+// belong to the inbound-loss finding, not "isn't reading fast enough".
+func TestLossDropsAttributedToInboundLoss(t *testing.T) {
+	c := conn("ESTAB", "127.0.0.1", "47200", "127.0.0.1", "48618",
+		model.Signal{Type: model.SignalSocketDrops, Severity: 1, Value: 2},
+		model.Signal{Type: model.SignalInboundLoss, Severity: 1})
+	c.Process, c.PID = sp("python3"), ip(42)
+	c.RecvQ, c.DeltaSkmemD, c.DeltaRcvOOOPack, c.DeltaDataSegsIn = ip(0), ip(2), ip(32), ip(643)
+	r := Analyze(Input{Conns: []*model.Connection{c}})
+	if f := byID(r, "recv_backlog|"); f != nil {
+		t.Errorf("loss-recovery drops must not blame the reader: %+v", f)
+	}
+	f := byID(r, "rx_loss|127.0.0.1")
+	if f == nil || !hasText(f.Evidence, "discarded 2 out-of-order segments") {
+		t.Fatalf("inbound-loss finding should carry the discards: %+v", f)
+	}
+
+	// With a genuinely full receive queue the reader is slow after all.
+	c.Signals = append(c.Signals, model.Signal{Type: model.SignalRecvBufferPressure, Severity: 1})
+	c.RecvQ = ip(200_000)
+	if byID(Analyze(Input{Conns: []*model.Connection{c}}), "recv_backlog|pid:42") == nil {
+		t.Errorf("drops with a full receive queue should still be a reader problem")
+	}
+}
+
+// Reordering is reported from the sender's view (packets *to* the peer) and
+// flagged as unreliable when the same connections are losing packets.
+func TestReorderingDirectionAndLossCaveat(t *testing.T) {
+	c := conn("ESTAB", "10.0.0.1", "1", "203.0.113.5", "443", sig(model.SignalReordering, 1), sig(model.SignalRTOFiring, 2))
+	c.DeltaReordSeen = ip(4)
+	f := byID(Analyze(Input{Conns: []*model.Connection{c}}), "reorder|")
+	if f == nil || !strings.HasPrefix(f.Title, "Packets to 203.0.113.5") {
+		t.Fatalf("title should describe packets to the peer: %+v", f)
+	}
+	if !hasText(f.Evidence, "4 reordering events") || !hasText(f.Evidence, "caution: 1 of these connections also show packet loss") {
+		t.Errorf("evidence = %q", f.Evidence)
+	}
+}

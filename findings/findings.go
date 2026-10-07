@@ -58,8 +58,12 @@ func (f *Finding) Command() string {
 type Input struct {
 	Conns        []*model.Connection // latest full-detail snapshot
 	Sys, SysPrev *poller.SysStat     // host counters, current and previous poll
-	Sysctl       poller.Sysctls
-	Interval     time.Duration // poll interval, to turn counter deltas into rates
+	// SysWindow is the host counters from about poller.LossWindow ago, for
+	// rates that shouldn't swing with one poll; nil until that much history
+	// exists.
+	SysWindow *poller.SysStat
+	Sysctl    poller.Sysctls
+	Interval  time.Duration // poll interval, to turn counter deltas into rates
 	// SSFilter is the ss filter expression in effect ("" for none). When
 	// set, Conns is only the matching subset, so socket-count checks
 	// (ephemeral ports, TIME-WAIT storms, CLOSE-WAIT leaks) see a partial
@@ -138,11 +142,23 @@ const minRetransSegs = 1000
 // retransPct returns the host-wide TCP retransmit rate over the last poll,
 // when there was enough traffic for it to be meaningful.
 func (a *analysis) retransPct() (float64, bool) {
-	out, ok := a.delta("Tcp:OutSegs")
+	return retransPct(a.in.Sys, a.in.SysPrev)
+}
+
+// windowRetransPct is retransPct over Input.SysWindow rather than one poll.
+func (a *analysis) windowRetransPct() (float64, bool) {
+	return retransPct(a.in.Sys, a.in.SysWindow)
+}
+
+func retransPct(cur, since *poller.SysStat) (float64, bool) {
+	if cur == nil || since == nil {
+		return 0, false
+	}
+	out, ok := cur.Delta(since, "Tcp:OutSegs")
 	if !ok || out < minRetransSegs {
 		return 0, false
 	}
-	re, _ := a.delta("Tcp:RetransSegs")
+	re, _ := cur.Delta(since, "Tcp:RetransSegs")
 	return float64(re) / float64(out) * 100, true
 }
 

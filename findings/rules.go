@@ -5,9 +5,11 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"sstui/classifier"
 	"sstui/model"
+	"sstui/poller"
 )
 
 // rules run in order; host-counter rules come after the per-socket ones so
@@ -225,12 +227,14 @@ func ruleSynStall(a *analysis) {
 	}
 }
 
-var lossSignals = []model.SignalType{
-	model.SignalRTOFiring, model.SignalPeerNoAck, model.SignalCongestionLoss,
-	model.SignalHighRetransRate, model.SignalRetransInFlight,
-}
+// lossSignals mean the path to a peer is losing packets: steady loss that a
+// full queue doesn't explain (PATH_LOSS), or connections stalled on lost
+// packets (RTO, NO_ACK). The per-poll retransmit signals (RETRANS, LOSS,
+// HI_RETRANS) don't count: TCP loses packets in bursts while it fills a link,
+// and the scenario lab showed them firing on healthy traffic.
+var lossSignals = []model.SignalType{model.SignalPathLoss, model.SignalRTOFiring, model.SignalPeerNoAck}
 
-// rulePathLoss: retransmission trouble. Loss toward one peer points at that
+// rulePathLoss: packet loss on the path. Loss toward one peer points at that
 // peer or its path; loss toward many peers at once points at this host.
 func rulePathLoss(a *analysis) {
 	groups := a.groupBySignal(func(c *model.Connection) string { return c.PeerAddr }, lossSignals...)
@@ -258,11 +262,15 @@ func rulePathLoss(a *analysis) {
 		return
 	}
 	for _, g := range groups {
+		detail := "Connections to this destination are stalling on lost packets."
+		if anySignal(g.conns, model.SignalPathLoss) {
+			detail = "Data to this destination is retransmitted steadily without a queue building up, so it isn't the loss TCP causes while filling a link: a lossy link or device on the path, or a bottleneck with a very small buffer."
+		}
 		a.add(Finding{
 			ID:       "loss|" + g.key,
 			Severity: g.sev,
-			Title:    fmt.Sprintf("Packet loss toward %s: %s retransmitting", g.key, plural(len(g.conns), "connection")),
-			Detail:   "Only this destination is affected, so the loss is on its side or somewhere along the path to it.",
+			Title:    fmt.Sprintf("Packet loss toward %s: %s affected", g.key, plural(len(g.conns), "connection")),
+			Detail:   detail + " Only this destination is affected, so the loss is on its side or somewhere along the path to it.",
 			Evidence: []string{lossEvidence(g.conns)},
 			Actions: []Action{
 				{Text: "Find the lossy hop", Command: "mtr -rwzbc 100 " + g.key},
@@ -287,25 +295,41 @@ func (a *analysis) manyPeers(n int) bool {
 	return n >= 5 && n*3 >= len(peers)
 }
 
-// lossEvidence summarizes which loss signals fired and the aggregate
-// retransmit rate across conns.
+// lossEvidence summarizes which loss signals fired and the retransmit rate
+// across conns over the window PATH_LOSS judges.
 func lossEvidence(conns []*model.Connection) string {
 	counts := map[string]int{}
 	var sent, retr int
+	var from, to time.Time
 	for _, c := range conns {
 		for _, s := range c.Signals {
 			if slices.Contains(lossSignals, s.Type) {
 				counts[s.Type.Label()]++
 			}
 		}
-		sent += deref(c.DeltaBytesSent)
-		retr += deref(c.DeltaBytesRetrans)
+		for _, s := range c.LossSlots {
+			sent += s.Sent
+			retr += s.Retrans
+			if from.IsZero() || s.Start.Before(from) {
+				from = s.Start
+			}
+			if s.End.After(to) {
+				to = s.End
+			}
+		}
 	}
 	ev := strings.Join(topBy(counts, len(counts)), " · ")
 	if sent > 0 {
-		ev += fmt.Sprintf(" · %.1f%% of bytes retransmitted this poll", float64(retr)/float64(sent)*100)
+		ev += fmt.Sprintf(" · %.2f%% of bytes retransmitted over the last %s", float64(retr)/float64(sent)*100, to.Sub(from).Round(time.Second))
 	}
 	return ev
+}
+
+// anySignal reports whether any of conns carries signal t.
+func anySignal(conns []*model.Connection, t model.SignalType) bool {
+	return slices.ContainsFunc(conns, func(c *model.Connection) bool {
+		return slices.ContainsFunc(c.Signals, func(s model.Signal) bool { return s.Type == t })
+	})
 }
 
 func retransRateEvidence(a *analysis) []string {
@@ -314,7 +338,18 @@ func retransRateEvidence(a *analysis) []string {
 		return nil
 	}
 	re, _ := a.rate("Tcp:RetransSegs")
-	return []string{fmt.Sprintf("host-wide: %.1f%% of TCP segments retransmitted (%.0f/s)", re/out*100, re)}
+	return []string{fmt.Sprintf("host-wide: %.1f%% of TCP segments retransmitted in the last poll (%.0f/s)", re/out*100, re)}
+}
+
+// windowRetransEvidence is the host-wide retransmit count behind
+// ruleRetransHost's verdict, over the same window.
+func windowRetransEvidence(a *analysis) []string {
+	out, ok := a.in.Sys.Delta(a.in.SysWindow, "Tcp:OutSegs")
+	if !ok || out <= 0 {
+		return nil
+	}
+	re, _ := a.in.Sys.Delta(a.in.SysWindow, "Tcp:RetransSegs")
+	return []string{fmt.Sprintf("host-wide: %d of %d TCP segments retransmitted over the last %s", re, out, poller.LossWindow().Round(time.Second))}
 }
 
 func localLossActions() []Action {
@@ -420,11 +455,12 @@ func ruleReordering(a *analysis) {
 		events, lossy := 0, 0
 		for _, c := range g.conns {
 			events += deref(c.DeltaReordSeen)
-			for _, s := range c.Signals {
-				if slices.Contains(lossSignals, s.Type) {
-					lossy++
-					break
-				}
+			// Any loss counts here, not just loss bad enough for a finding:
+			// a retransmit this poll, or a loss signal.
+			if deref(c.DeltaBytesRetrans) > 0 || slices.ContainsFunc(c.Signals, func(s model.Signal) bool {
+				return slices.Contains(lossSignals, s.Type)
+			}) {
+				lossy++
 			}
 		}
 		ev := []string{fmt.Sprintf("the sender detected %d reordering events in the last poll", events)}
@@ -881,13 +917,15 @@ func ruleUDPRcvbufHost(a *analysis) {
 	})
 }
 
-// ruleRetransHost: high host-wide TCP retransmit rate. Skipped only when the
-// host-wide loss finding already covers it — a single lossy peer doesn't
-// explain a high rate across the whole host.
+// ruleRetransHost: high host-wide TCP retransmit rate, over the last
+// poller.LossWindow rather than one poll: a slow-start overshoot or a burst
+// of requests can resend a large share of one poll's segments on a healthy
+// host. Skipped only when the host-wide loss finding already covers it: a
+// single lossy peer doesn't explain a high rate across the whole host.
 func ruleRetransHost(a *analysis) {
-	pct, ok := a.retransPct()
+	pct, ok := a.windowRetransPct()
 	if !ok {
-		return // too little traffic for a meaningful rate
+		return // too little history or traffic for a meaningful rate
 	}
 	sev := 0
 	switch {
@@ -902,9 +940,9 @@ func ruleRetransHost(a *analysis) {
 	a.add(Finding{
 		ID:       "retrans_host",
 		Severity: sev,
-		Title:    fmt.Sprintf("Host-wide TCP retransmit rate is %.1f%%", pct),
+		Title:    fmt.Sprintf("Host-wide TCP retransmit rate is %.1f%% over the last %s", pct, poller.LossWindow().Round(time.Second)),
 		Detail:   "A noticeable share of all outgoing TCP segments are resent. No single connection stands out, so look at the host's link and load.",
-		Evidence: retransRateEvidence(a),
+		Evidence: windowRetransEvidence(a),
 		Actions:  localLossActions(),
 	})
 }

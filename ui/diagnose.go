@@ -62,6 +62,8 @@ func diagnose(c *model.Connection) Diagnosis {
 			"heavy loss or an unresponsive peer — the RTO is backing off"},
 		{model.SignalPeerNoAck, "Peer stopped acknowledging data",
 			"data has been outstanding a full poll with no ACK — peer hung, or the path/a middlebox is black-holing packets"},
+		{model.SignalPathLoss, "Steady packet loss on the path",
+			"data is retransmitted poll after poll without a queue building up — a lossy link or device, or a bottleneck with a very small buffer"},
 		{model.SignalCongestionLoss, "Congestion loss — segments are being dropped on the path",
 			"the path is saturated or lossy"},
 		{model.SignalHighRetransRate, "High retransmit rate this poll",

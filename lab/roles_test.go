@@ -21,7 +21,8 @@ const roleEnv = "SSTUI_LAB_ROLE"
 // (hangup) return once it's in place.
 //
 //	sink ADDR                 accept connections and read everything
-//	send ADDR                 one connection writing as fast as it can
+//	send ADDR [N [CC]]        N connections (default 1) writing as fast as they can,
+//	                          with congestion control CC (default: the system's)
 //	stall ADDR                accept connections and never read (zero window)
 //	backlog ADDR N            listen with an accept queue of N, never accept
 //	hold ADDR N               open N connections and keep them
@@ -47,16 +48,28 @@ func runRole(args []string) error {
 	case "sink":
 		return serve(arg(1), func(c net.Conn) { io.Copy(io.Discard, c) })
 	case "send":
-		c, err := dial(arg(1))
-		if err != nil {
-			return err
+		n := 1
+		if arg(2) != "" {
+			n = num(2)
 		}
-		buf := make([]byte, 64<<10)
-		for {
-			if _, err := c.Write(buf); err != nil {
-				return err
-			}
+		errc := make(chan error, n)
+		for range n {
+			go func() {
+				c, err := dialCC(arg(1), arg(3))
+				if err != nil {
+					errc <- err
+					return
+				}
+				buf := make([]byte, 64<<10)
+				for {
+					if _, err := c.Write(buf); err != nil {
+						errc <- err
+						return
+					}
+				}
+			}()
 		}
+		return <-errc
 	case "stall":
 		return serve(arg(1), keep)
 	case "backlog":
@@ -159,10 +172,25 @@ func serve(addr string, handle func(net.Conn)) error {
 }
 
 // dial connects to addr, retrying while the server's role is still starting.
-func dial(addr string) (net.Conn, error) {
+func dial(addr string) (net.Conn, error) { return dialCC(addr, "") }
+
+// dialCC is dial with congestion control cc ("" for the system default).
+func dialCC(addr, cc string) (net.Conn, error) {
+	d := net.Dialer{}
+	if cc != "" {
+		d.Control = func(_, _ string, rc syscall.RawConn) error {
+			var serr error
+			if err := rc.Control(func(fd uintptr) {
+				serr = syscall.SetsockoptString(int(fd), syscall.IPPROTO_TCP, syscall.TCP_CONGESTION, cc)
+			}); err != nil {
+				return err
+			}
+			return serr
+		}
+	}
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		c, err := net.Dial("tcp", addr)
+		c, err := d.Dial("tcp", addr)
 		if err == nil || time.Now().After(deadline) {
 			return c, err
 		}

@@ -2,7 +2,9 @@ package classifier
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
+	"time"
 
 	"sstui/model"
 )
@@ -94,6 +96,74 @@ const (
 	inboundLossCrit    = 0.10
 	inboundLossMinSegs = 100
 )
+
+// Path-loss thresholds, set from the scenario lab (lab/): healthy congestion
+// retransmits about 0.02-0.07% on fast links and in a minority of slots,
+// while 0.1% path loss already caps a cubic flow at a fraction of the link.
+const (
+	pathLossWarn     = 0.0005 // share of bytes retransmitted
+	pathLossCrit     = 0.01
+	pathLossMinSlots = 4 // complete slots: ~8 s of sending at 2 s slots
+)
+
+// pathLoss judges a connection's recent sending (c.LossSlots, kept by the
+// poller over the last several seconds) for loss on the path rather than the
+// loss TCP causes itself while filling a link. It fires when all three hold:
+//
+//   - steady: at least half of the slots retransmitted. Slow-start overshoot
+//     and request bursts lose in a slot or two, then nothing.
+//   - enough: at least pathLossWarn of the bytes sent were retransmitted
+//     (crit at pathLossCrit).
+//   - no queue: while sending, RTT typically (the median over all its polls)
+//     sat within max(4 ms, 10% of min RTT) of its minimum. Congestion loss
+//     happens because the flow filled the bottleneck queue, so its RTT climbs
+//     while it sends; a lossy link throttles the flow before it can build a
+//     queue. All sending polls count, not just those that retransmitted: a
+//     request burst loses packets right after an idle gap, while the smoothed
+//     RTT still reflects the quiet. The median, not the peak: with only a
+//     segment or two in flight, a delayed ACK alone adds tens of ms to an RTT
+//     sample. BBR is exempt: it keeps a standing queue and doesn't back off
+//     on loss.
+//
+// A bottleneck whose buffer is only a few milliseconds deep drops before the
+// queue shows, so several flows saturating one also look like path loss; the
+// finding names both causes.
+func pathLoss(c *model.Connection) (sev int, value string) {
+	slots := c.LossSlots
+	if n := len(slots); n > 0 && slots[n-1].End.Sub(slots[n-1].Start) < model.LossSlotMin {
+		slots = slots[:n-1] // still filling
+	}
+	if len(slots) < pathLossMinSlots {
+		return 0, ""
+	}
+	var sent, retr, lossy int
+	var queue []float64
+	for _, s := range slots {
+		sent += s.Sent
+		retr += s.Retrans
+		if s.Retrans > 0 {
+			lossy++
+		}
+		queue = append(queue, s.QueueMS...)
+	}
+	rate := float64(retr) / float64(sent)
+	if lossy*2 < len(slots) || rate < pathLossWarn {
+		return 0, ""
+	}
+	bbr := c.CongAlgo != nil && *c.CongAlgo == "bbr"
+	if !bbr {
+		if c.MinRTT == nil || len(queue) == 0 {
+			return 0, ""
+		}
+		slices.Sort(queue)
+		if queue[len(queue)/2] >= max(4, 0.1**c.MinRTT) {
+			return 0, "" // the flow builds a queue: congestion
+		}
+	}
+	span := slots[len(slots)-1].End.Sub(slots[0].Start).Round(time.Second)
+	return tierSeverityF(rate, pathLossWarn, pathLossCrit),
+		fmt.Sprintf("%.2f%% retransmitted over %s, in %d of %d slots", rate*100, span, lossy, len(slots))
+}
 
 // tierSeverityF is tierSeverity for ratios.
 func tierSeverityF(v, warn, crit float64) int {
@@ -421,6 +491,10 @@ func Classify(c *model.Connection) []model.Signal {
 
 	if sev := queuePressure(c.RecvQ, c.PrevRecvQ, c.SkmemRB); sev > 0 {
 		signals = append(signals, model.Signal{Type: model.SignalRecvBufferPressure, Severity: sev, Value: *c.RecvQ})
+	}
+
+	if sev, v := pathLoss(c); sev > 0 {
+		signals = append(signals, model.Signal{Type: model.SignalPathLoss, Severity: sev, Value: v})
 	}
 
 	if c.DeltaBytesRetrans != nil && c.DeltaBytesSent != nil && *c.DeltaBytesSent > 0 {

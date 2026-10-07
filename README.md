@@ -8,11 +8,11 @@ just "what's happening now".
 Built for triage: it opens on a ranked list of host-level problems
 ("postgres → 10.0.0.5:5432: 37 connections stalled — peer not reading"),
 each with its evidence and copy-ready fix commands sized from this host's
-kernel settings. Underneath, 24 per-socket signals like `ZERO_WIN`,
+kernel settings. Underneath, 25 per-socket signals like `ZERO_WIN`,
 `NO_ACK`, `RX_LOSS`, `SYN_STALL` and `LISTEN_Q` light up automatically, and
 every kernel metric is one key press away.
 
-![tabs](https://img.shields.io/badge/tabs-9-blue) ![signals](https://img.shields.io/badge/signals-24-orange) ![ring%20buffer](https://img.shields.io/badge/history-50%20min-green)
+![tabs](https://img.shields.io/badge/tabs-9-blue) ![signals](https://img.shields.io/badge/signals-25-orange) ![ring%20buffer](https://img.shields.io/badge/history-50%20min-green)
 
 ---
 
@@ -66,7 +66,7 @@ What you get out of the box:
   `Enter` jumps to exactly the affected sockets; `c` copies the command.
 - **Live table** of every TCP/UDP socket on the host with sortable columns,
   state-coloured fields, and an at-a-glance signal indicator per row.
-- **Automatic problem detection** through 24 named signals — retransmits,
+- **Automatic problem detection** through 25 named signals — retransmits,
   RTO storms, zero-window stalls, listen-queue overflow, ephemeral port
   exhaustion, packet reordering, CWnd collapse, and
   more. Each is tunable in one place (`classifier/classifier.go`).
@@ -128,7 +128,7 @@ human-paced triage:
 | Per-connection RTT, CWnd, retrans, BBR        | ✓ with `-i`      | ✓ parsed and labelled         |
 | Refreshes automatically                       | `watch ss`       | Built-in, 2 s ticks            |
 | **Per-poll deltas** (TX/RX rates, retrans rate, OOO growth) | ✗   | ✓ computed in poller          |
-| **Anomaly classification** (named signals)    | ✗                | ✓ 24 rules                    |
+| **Anomaly classification** (named signals)    | ✗                | ✓ 25 rules                    |
 | **History** for "when did this start?"        | ✗                | ✓ 50 min ring                 |
 | **Time-series view** per connection           | ✗                | ✓ bar-graph sparklines        |
 | **Event log** of signal onsets                | ✗                | ✓ Events tab                  |
@@ -289,7 +289,7 @@ so you can step back to see what was wrong when.
 | App not reading fast enough | `RCV_Q` / `DROPS`, per process | find the slow reader; buffer sizes for bursts (UDP doesn't autotune) |
 | Accept queue full | `LISTEN_Q` + `ListenOverflows` | tells apart a `somaxconn` cap from the app's own backlog |
 | Can't connect | `SYN_STALL`, per destination | `nc -vz`, `ip route get`, firewalls |
-| Packet loss (per peer / host-wide) | `RTO`, `NO_ACK`, `LOSS`, `HI_RETRANS`, `RETRANS` | `mtr` for one peer; NIC/CPU checks when many peers lose at once |
+| Packet loss (per peer / host-wide) | `PATH_LOSS`, `RTO`, `NO_ACK` | `mtr` for one peer; NIC/CPU checks when many peers lose at once |
 | Inbound loss (per peer / host-wide) | `RX_LOSS` | path back toward the peer (loss is often asymmetric); RX drops / ring size when many peers are affected |
 | Reordering, path MTU, latency inflation | `REORDER`, `PMTU`, `RTT_SPIKE` | ECMP/LACP hashing; ICMP/MSS clamping; qdisc / BBR |
 | Window- or buffer-limited throughput | `RWND_LIM`, `SNDBUF_LIM` | BDP estimate vs `tcp_rmem`/`tcp_wmem`, window scaling |
@@ -597,8 +597,9 @@ the sockets of whatever machine you run it on.
    orange.
 4. Glance at the signal indicator column: a red `●` means a crit signal is
    active. `Enter` on a red row to open **Detail**.
-5. On Detail, scan the Signals row at the bottom: `RETRANS` + `LOSS`
-   means real packet loss; `RTT_SPIKE` alone means bufferbloat or path
+5. On Detail, scan the Signals row at the bottom: `PATH_LOSS` means
+   steady packet loss on the path (`RETRANS`, `LOSS` and `HI_RETRANS`
+   alone are one poll's retransmits, normal while TCP fills a link); `RTT_SPIKE` alone means bufferbloat or path
    change; `ZERO_WIN` means the *peer* isn't reading; `RCV_Q` means
    *we* aren't reading.
 6. `4` to switch to **Socket** — the History bar graph shows whether
@@ -639,7 +640,7 @@ the sockets of whatever machine you run it on.
    design).
 4. A steady connection in PROBE_BW with `BW` well below the link is
    limited elsewhere: check for `RWND_LIM`, `SNDBUF_LIM`, `APP_LIM`, or
-   loss (`LOSS`, `RTO`, `RETRANS`, `HI_RETRANS`). The window signals fire
+   loss (`PATH_LOSS`, `RTO`). The window signals fire
    only from 25% of a poll; Detail's **Rwnd Limited** / **Sndbuf
    Limited** rows show smaller shares that can still cap throughput.
 
@@ -676,7 +677,7 @@ sudo sstui check --json | jq '.findings[] | select(.active) | .title'
 
 ## Signals reference
 
-There are **24 signal types**, each at one of three severities: `info`
+There are **25 signal types**, each at one of three severities: `info`
 (grey), `warn` (yellow/orange), `crit` (red). Severity is reflected in the
 badge color and in the Live-tab indicator glyph.
 
@@ -706,6 +707,7 @@ badge color and in the Live-tab indicator glyph.
 | `CW_LEAK`  | `close_wait_leak`    | one process holds ≥20 CLOSE-WAIT sockets (crit ≥50) — fd leak              | per-process CLOSE-WAIT count ✓          | 1–2      | red    |
 | `TW_STORM` | `time_wait_storm`    | ≥200 TIME-WAIT toward one peer endpoint (crit ≥2000) — port exhaustion risk | per-peer TIME-WAIT count ✓            | 1–2      | orange |
 | `RX_LOSS`  | `inbound_loss`       | `Δrcv_ooopack / Δdata_segs_in ≥ 2%` (crit ≥10%), with ≥100 data segments this poll — inbound loss seen at the receiver | `rcv_ooopack:` `data_segs_in:` deltas ✓ | 1–2 | red |
+| `PATH_LOSS`| `path_loss`          | over the last ~12 s: ≥0.05% of bytes retransmitted (crit ≥1%), in at least half of the 2 s slots, with median RTT while sending near its minimum (BBR exempt) | `bytes_sent:` `bytes_retrans:` deltas, `rtt:` `minrtt:` ✓ | 1–2 | red |
 
 ### Connection-state signals
 
@@ -721,10 +723,11 @@ badge color and in the Live-tab indicator glyph.
 
 | Signal        | Fires when                                                            | Severity                | What it means                                              |
 |---------------|-----------------------------------------------------------------------|-------------------------|------------------------------------------------------------|
+| `PATH_LOSS`   | Over the last ~12 s (or four polls if slower): ≥0.05% of bytes retransmitted, in at least half of the 2 s slots, and the median RTT while sending within max(4 ms, 10% of min RTT) of its minimum. BBR skips the RTT test | warn / crit (≥1%) | **Steady loss on the path**, not the loss TCP causes itself while filling a link: that comes in bursts (slow start, request bursts) or from a flow that fills the bottleneck queue (RTT climbs while it sends). Drives the loss finding. A bottleneck whose buffer is only a few ms deep drops before the queue shows, so several flows saturating one can look the same; the finding names both causes |
 | `RETRANS`     | `retrans:N/M` first field > 3                                          | warn / crit (>10)       | Segments currently being retransmitted in flight           |
 | `RTO`         | ESTAB, `timer:(on,…)` running, `TimerRetrans ≥ 2`                      | warn / crit (≥4)        | RTO timer doubling — single segment stuck retransmitting   |
 | `LOSS`        | `lost:N > 2`                                                           | warn / crit (>10)       | Kernel-detected packet loss                                |
-| `HI_RETRANS`  | `Δbytes_retrans / Δbytes_sent > 5%`                                    | warn / crit (>20%)      | Current-poll retransmit rate is bad                        |
+| `HI_RETRANS`  | `Δbytes_retrans / Δbytes_sent > 5%`                                    | warn / crit (>20%)      | This poll's retransmit rate is high. Context only: a burst like this is normal during slow start, so findings rely on `PATH_LOSS` |
 | `DSACK`       | `dsack_dups` grew this poll                                            | warn / crit (>5)        | Spurious retransmits — the data had arrived (aggressive RTO, or reordering) |
 | `REORDER`     | `reord_seen` grew this poll (sender detected reordering)               | warn / crit (>50)       | Our packets are reordered on the way to the peer (often ECMP / LACP / multi-queue hashing). Loss can inflate this counter too, so the finding warns when the same connections are losing packets |
 | `DROPS`       | `skmem` drop counter (`d`) grew this poll                             | warn / crit (>10)       | Kernel discarded data at the socket — buffer overran, receiver too slow. With `RX_LOSS` and an empty receive queue it's out-of-order data discarded during loss recovery instead, and Findings/Detail say so |
@@ -888,7 +891,7 @@ ss -atunpeimOH ►│ parser  │──► []*model.Connection
                      ▼
                 ┌─────────┐       ┌─────────────┐
                 │ poller  │──┐    │ classifier  │
-                │ (ring   │  └───►│ (24 signals)│
+                │ (ring   │  └───►│ (25 signals)│
                 │  buffer)│       └─────────────┘
                 └────┬────┘             │
                      │                  ▼
@@ -915,7 +918,7 @@ ss -atunpeimOH ►│ parser  │──► []*model.Connection
   identity, inline numbers) sorted by key for binary-search lookup, plus
   `stateCounts`. Only the newest snapshot keeps full-detail
   `Connection`s; older ones materialize slim connections on demand.
-- **`classifier/`** — pure rules producing 24 signal types, run once per
+- **`classifier/`** — pure rules producing 25 signal types, run once per
   connection per poll (plus aggregate rules for CLOSE-WAIT leaks and
   TIME-WAIT storms).
   Severity is encoded as `0` (info) / `1` (warn) / `2` (crit). New

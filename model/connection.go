@@ -2,6 +2,18 @@ package model
 
 import "time"
 
+// LossSlotMin is the shortest span a LossSlot covers once complete.
+const LossSlotMin = 2 * time.Second
+
+// LossSlot summarizes at least LossSlotMin of a connection's sending: the
+// polls in which it sent data, and the queueing delay each of them saw.
+type LossSlot struct {
+	Start, End time.Time
+	Sent       int       // bytes sent
+	Retrans    int       // bytes retransmitted
+	QueueMS    []float64 // rtt - minrtt at each of those polls
+}
+
 // Connection holds all parsed fields from a single ss row.
 type Connection struct {
 	Timestamp time.Time
@@ -132,6 +144,11 @@ type Connection struct {
 	PrevRecvQ *int `json:",omitempty"`
 	// PrevUnacked lets NO_ACK require data to stay outstanding across polls.
 	PrevUnacked *int `json:",omitempty"`
+	// LossSlots summarize the connection's recent sending, oldest first, so
+	// the PATH_LOSS signal can judge loss over several seconds rather than
+	// one poll. The poller carries them from poll to poll; they aren't
+	// recorded or exported (replay rebuilds them).
+	LossSlots []LossSlot `json:"-"`
 
 	// Signals are populated by poller.AddSnapshot after deltas, so the
 	// classifier runs once per poll rather than once per render frame.

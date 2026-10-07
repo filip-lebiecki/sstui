@@ -269,3 +269,51 @@ func TestSampleSizeBudget(t *testing.T) {
 		t.Errorf("Sample is %d bytes; budget is 104 — keep history fields compact", sz)
 	}
 }
+
+// TestAdvanceLossSlots: polls that sent data fill slots of at least 2 s,
+// trickles don't count, slots age out of the window, and the previous
+// snapshot's slots are never modified.
+func TestAdvanceLossSlots(t *testing.T) {
+	i := func(v int) *int { return &v }
+	f := func(v float64) *float64 { return &v }
+	t0 := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	SetInterval(500 * time.Millisecond)
+	defer SetInterval(2 * time.Second)
+
+	prev := &model.Connection{Timestamp: t0}
+	poll := func(n int, sent, retr int) *model.Connection {
+		cur := &model.Connection{Timestamp: t0.Add(time.Duration(n) * 500 * time.Millisecond),
+			DeltaBytesSent: i(sent), DeltaBytesRetrans: i(retr), RTT: f(41), MinRTT: f(40)}
+		cur.LossSlots = advanceLossSlots(cur, prev)
+		prev = cur
+		return cur
+	}
+	early := poll(1, 100_000, 0).LossSlots
+	poll(2, 100_000, 1448)
+	poll(3, 500, 0) // a trickle: not counted
+	c := poll(4, 100_000, 0)
+	if len(c.LossSlots) != 1 {
+		t.Fatalf("2 s of polls should fill one slot, got %d", len(c.LossSlots))
+	}
+	s := c.LossSlots[0]
+	if s.Sent != 300_000 || s.Retrans != 1448 || len(s.QueueMS) != 3 || s.QueueMS[0] != 1 {
+		t.Errorf("slot = %+v", s)
+	}
+	if early[0].Sent != 100_000 || len(early[0].QueueMS) != 1 {
+		t.Errorf("extending a slot changed the earlier snapshot's copy: %+v", early[0])
+	}
+	frozen := c.LossSlots
+	c = poll(5, 100_000, 0)
+	if len(c.LossSlots) != 2 || frozen[0].Sent != 300_000 || len(frozen) != 1 || len(frozen[0].QueueMS) != 3 {
+		t.Errorf("the next poll should open a second slot without touching the previous snapshot's: %+v / %+v", c.LossSlots, frozen)
+	}
+	for n := 6; n <= 40; n++ { // 20 s at 500 ms: the first slots age out of the 12 s window
+		c = poll(n, 100_000, 0)
+	}
+	if first := c.LossSlots[0].Start; c.Timestamp.Sub(first) > LossWindow() {
+		t.Errorf("slot starting %s ago should have aged out of the %s window", c.Timestamp.Sub(first), LossWindow())
+	}
+	if old := (&model.Connection{Timestamp: t0}); advanceLossSlots(old, prev) != nil {
+		t.Errorf("without delta counters there are no slots")
+	}
+}

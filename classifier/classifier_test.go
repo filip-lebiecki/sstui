@@ -2,6 +2,7 @@ package classifier
 
 import (
 	"testing"
+	"time"
 
 	"sstui/model"
 )
@@ -78,6 +79,7 @@ func sigByType(sigs []model.Signal, t model.SignalType) (model.Signal, bool) {
 }
 
 func fl(f float64) *float64 { return &f }
+func sp(s string) *string   { return &s }
 
 func TestLimitedSeverity(t *testing.T) {
 	old := PollIntervalMS
@@ -381,6 +383,72 @@ func TestDropsExplainedByInboundLoss(t *testing.T) {
 	} {
 		if got := DropsExplainedByInboundLoss(tc.sigs); got != tc.want {
 			t.Errorf("%s: got %v, want %v", name, got, tc.want)
+		}
+	}
+}
+
+// TestPathLoss: steady loss with no queue building is path loss; bursty loss,
+// loss with a full queue, too little loss or too little history isn't. BBR
+// skips the queue test. lossy(n, retransmitting, queueMS) builds n complete
+// 2 s slots of 1 MB each whose polls saw a queue of queueMS, the first
+// `retransmitting` of them losing 0.2%.
+func TestPathLoss(t *testing.T) {
+	t0 := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	lossy := func(n, retransmitting int, queueMS float64) *model.Connection {
+		c := &model.Connection{Protocol: "tcp", State: "ESTAB", MinRTT: fl(40)}
+		for i := range n {
+			s := model.LossSlot{Start: t0.Add(time.Duration(2*i) * time.Second), End: t0.Add(time.Duration(2*i+2) * time.Second),
+				Sent: 1_000_000, QueueMS: []float64{queueMS, queueMS}}
+			if i < retransmitting {
+				s.Retrans = 2_000
+			}
+			c.LossSlots = append(c.LossSlots, s)
+		}
+		return c
+	}
+	bbr := func(c *model.Connection) *model.Connection { c.CongAlgo = sp("bbr"); return c }
+	heavy := func(c *model.Connection) *model.Connection {
+		for i := range c.LossSlots {
+			if c.LossSlots[i].Retrans > 0 {
+				c.LossSlots[i].Retrans = 30_000
+			}
+		}
+		return c
+	}
+	partial := func(c *model.Connection) *model.Connection {
+		last := c.LossSlots[len(c.LossSlots)-1].End
+		c.LossSlots = append(c.LossSlots, model.LossSlot{Start: last, End: last.Add(time.Second), Sent: 1_000_000})
+		return c
+	}
+	for _, tt := range []struct {
+		name    string
+		c       *model.Connection
+		wantSev int
+	}{
+		{"steady, no queue", lossy(6, 4, 1), 1},
+		{"steady, 3% retransmitted", heavy(lossy(6, 6, 1)), 2},
+		{"half the slots is still steady", lossy(6, 3, 1), 1},
+		{"bursty: 2 of 6 slots", lossy(6, 2, 1), 0},
+		{"full queue: congestion", lossy(6, 6, 30), 0},
+		{"queue under 10% of min RTT is no queue", lossy(6, 6, 3.9), 1},
+		{"BBR's standing queue isn't congestion", bbr(lossy(6, 6, 30)), 1},
+		{"too little loss", func() *model.Connection {
+			c := lossy(6, 6, 1)
+			for i := range c.LossSlots {
+				c.LossSlots[i].Retrans = 400 // 0.04%
+			}
+			return c
+		}(), 0},
+		{"too little history", lossy(3, 3, 1), 0},
+		{"a filling slot doesn't count", partial(lossy(3, 3, 1)), 0},
+		{"no slots (idle or old kernel)", &model.Connection{Protocol: "tcp", State: "ESTAB"}, 0},
+	} {
+		s, ok := sigByType(Classify(tt.c), model.SignalPathLoss)
+		switch {
+		case tt.wantSev == 0 && ok:
+			t.Errorf("%s: want no PATH_LOSS, got %+v", tt.name, s)
+		case tt.wantSev > 0 && (!ok || s.Severity != tt.wantSev):
+			t.Errorf("%s: want PATH_LOSS sev %d, got %+v (present=%v)", tt.name, tt.wantSev, s, ok)
 		}
 	}
 }

@@ -148,13 +148,33 @@ func (l *lab) sh(args ...string) {
 	}
 }
 
-// path shapes the router with netem: toB for traffic from a to b (a's
-// uploads, requests and ACKs), toA for b to a. For example
-// path(wan+" loss 1%", wan) loses 1% of what a sends.
-func (l *lab) path(toB, toA string) {
+// link describes one direction of the path through the router.
+type link struct {
+	Delay  string // one-way delay, e.g. "20ms"
+	Rate   string // bottleneck rate, e.g. "100mbit"
+	Buffer int    // bottleneck queue in packets: what a router buffers before it drops
+	Netem  string // extra impairments for netem, e.g. "loss 1%"
+}
+
+// with returns the link with extra netem impairments.
+func (k link) with(netem string) link { k.Netem = netem; return k }
+
+// path shapes the router: toB for traffic from a to b (a's uploads, requests
+// and ACKs), toA for b to a. Each direction is netem (delay and impairments,
+// with room for everything in flight so it never drops on its own) feeding a
+// tbf rate limiter whose queue is the bottleneck buffer. netem alone can't
+// model the buffer: its packet limit also counts the packets it is delaying,
+// so a small limit becomes random loss rather than a shallow queue.
+func (l *lab) path(toB, toA link) {
 	l.t.Helper()
-	for _, q := range []struct{ dev, spec string }{{"tob", toB}, {"toa", toA}} {
-		l.sh(append([]string{"tc", "-n", l.r, "qdisc", "replace", "dev", q.dev, "root", "netem"}, strings.Fields(q.spec)...)...)
+	for _, d := range []struct {
+		dev string
+		k   link
+	}{{"tob", toB}, {"toa", toA}} {
+		l.sh(append([]string{"tc", "-n", l.r, "qdisc", "replace", "dev", d.dev, "root", "handle", "1:",
+			"netem", "delay", d.k.Delay, "limit", "100000"}, strings.Fields(d.k.Netem)...)...)
+		l.sh("tc", "-n", l.r, "qdisc", "replace", "dev", d.dev, "parent", "1:1", "handle", "10:",
+			"tbf", "rate", d.k.Rate, "burst", "32kb", "limit", strconv.Itoa(d.k.Buffer*1514))
 	}
 }
 

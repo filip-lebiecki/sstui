@@ -136,7 +136,7 @@ func TestPathLossLocalVsRemote(t *testing.T) {
 
 	var many []*model.Connection
 	for i := 0; i < 6; i++ {
-		many = append(many, conn("ESTAB", "10.0.0.1", "1", "203.0.113."+strconv.Itoa(i+1), "443", sig(model.SignalHighRetransRate, 1)))
+		many = append(many, conn("ESTAB", "10.0.0.1", "1", "203.0.113."+strconv.Itoa(i+1), "443", sig(model.SignalPathLoss, 1)))
 	}
 	r = Analyze(Input{Conns: many})
 	if f := byID(r, "loss_local"); f == nil || f.Count != 6 || !hasCommand(f, "ip -s link") {
@@ -206,14 +206,16 @@ func TestRetransHostNeedsTraffic(t *testing.T) {
 	sys, prev := sysPair(
 		map[string]int64{"Tcp:OutSegs": 0, "Tcp:RetransSegs": 0},
 		map[string]int64{"Tcp:OutSegs": 10000, "Tcp:RetransSegs": 500})
-	r := Analyze(Input{Sys: sys, SysPrev: prev, Interval: 2 * time.Second})
+	r := Analyze(Input{Sys: sys, SysPrev: prev, SysWindow: prev, Interval: 2 * time.Second})
 	if f := byID(r, "retrans_host"); f == nil || f.Severity != 1 || r.RetransPct != 5 {
 		t.Errorf("5%% retransmits over 10k segs should warn: %+v (pct %.1f)", f, r.RetransPct)
+	} else if !hasText(f.Evidence, "500 of 10000 TCP segments retransmitted over the last 12s") {
+		t.Errorf("evidence should cover the same window as the verdict: %q", f.Evidence)
 	}
 	sys, prev = sysPair(
 		map[string]int64{"Tcp:OutSegs": 0, "Tcp:RetransSegs": 0},
 		map[string]int64{"Tcp:OutSegs": 100, "Tcp:RetransSegs": 50})
-	if byID(Analyze(Input{Sys: sys, SysPrev: prev, Interval: 2 * time.Second}), "retrans_host") != nil {
+	if byID(Analyze(Input{Sys: sys, SysPrev: prev, SysWindow: prev, Interval: 2 * time.Second}), "retrans_host") != nil {
 		t.Errorf("100 segments is too little traffic for a host-wide verdict")
 	}
 }
@@ -292,13 +294,32 @@ func TestUDPDropsDontFoldIntoTCPBacklog(t *testing.T) {
 	}
 }
 
+// A single poll's burst (slow-start overshoot, a request burst) isn't a host
+// problem: the rate is judged over the window, and not at all before the
+// window has filled.
+func TestRetransHostJudgedOverWindow(t *testing.T) {
+	window := &poller.SysStat{Counters: map[string]int64{"Tcp:OutSegs": 0, "Tcp:RetransSegs": 0}}
+	prev := &poller.SysStat{Counters: map[string]int64{"Tcp:OutSegs": 95_000, "Tcp:RetransSegs": 100}}
+	sys := &poller.SysStat{Counters: map[string]int64{"Tcp:OutSegs": 100_000, "Tcp:RetransSegs": 1100}}
+	r := Analyze(Input{Sys: sys, SysPrev: prev, SysWindow: window, Interval: 2 * time.Second})
+	if r.RetransPct != 20 {
+		t.Fatalf("last poll's rate = %.1f, want 20", r.RetransPct)
+	}
+	if f := byID(r, "retrans_host"); f != nil {
+		t.Errorf("1.1%% over the window shouldn't warn, despite 20%% in the last poll: %+v", f)
+	}
+	if f := byID(Analyze(Input{Sys: sys, SysPrev: prev, Interval: 2 * time.Second}), "retrans_host"); f != nil {
+		t.Errorf("no finding before the window has filled: %+v", f)
+	}
+}
+
 // One lossy peer doesn't explain a high retransmit rate across the host.
 func TestRetransHostNotHiddenByOnePeer(t *testing.T) {
 	sys, prev := sysPair(
 		map[string]int64{"Tcp:OutSegs": 0, "Tcp:RetransSegs": 0},
 		map[string]int64{"Tcp:OutSegs": 20000, "Tcp:RetransSegs": 2400})
 	c := conn("ESTAB", "10.0.0.1", "1", "203.0.113.9", "443", sig(model.SignalRTOFiring, 2))
-	r := Analyze(Input{Conns: []*model.Connection{c}, Sys: sys, SysPrev: prev, Interval: 2 * time.Second})
+	r := Analyze(Input{Conns: []*model.Connection{c}, Sys: sys, SysPrev: prev, SysWindow: prev, Interval: 2 * time.Second})
 	if byID(r, "loss|") == nil || byID(r, "retrans_host") == nil {
 		t.Errorf("want both the per-peer loss and the host-wide 12%% finding: %+v", r.Findings)
 	}

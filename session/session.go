@@ -43,6 +43,9 @@ type Session struct {
 	// always compare two real consecutive samples.
 	SysCur, SysPrev *poller.SysStat
 	Sysctl          poller.Sysctls
+	// sysHist holds recent host counters, oldest first, back to the first
+	// sample at least poller.LossWindow old (the windowed retransmit rate).
+	sysHist []timedSys
 
 	SSFilter     string // ss filter in effect ("" for none)
 	Unprivileged bool   // not running as root: other users' processes are hidden
@@ -59,6 +62,20 @@ type Session struct {
 	// history holds the report for each snapshot in the buffer, oldest
 	// first, so a view of an older snapshot can show what was wrong then.
 	history []timedReport
+}
+
+type timedSys struct {
+	at  time.Time
+	sys *poller.SysStat
+}
+
+// sysWindow returns the host counters from about poller.LossWindow ago, or nil
+// while the history is shorter than that.
+func (s *Session) sysWindow(now time.Time) *poller.SysStat {
+	if len(s.sysHist) == 0 || now.Sub(s.sysHist[0].at) < poller.LossWindow() {
+		return nil
+	}
+	return s.sysHist[0].sys
 }
 
 type timedReport struct {
@@ -79,6 +96,10 @@ func (s *Session) Ingest(p *Poll) bool {
 	s.LastErr, s.LastDrops = p.Err, p.Drops
 	if p.Sys != nil {
 		s.SysPrev, s.SysCur = s.SysCur, p.Sys
+		s.sysHist = append(s.sysHist, timedSys{p.Time, p.Sys})
+		for len(s.sysHist) > 1 && p.Time.Sub(s.sysHist[1].at) >= poller.LossWindow() {
+			s.sysHist = s.sysHist[1:]
+		}
 	}
 	if p.Sysctl != nil {
 		s.Sysctl = p.Sysctl
@@ -94,6 +115,7 @@ func (s *Session) Ingest(p *Poll) bool {
 		Conns:        s.Buf.GetLatest().Conns,
 		Sys:          s.SysCur,
 		SysPrev:      s.SysPrev,
+		SysWindow:    s.sysWindow(p.Time),
 		Sysctl:       s.Sysctl,
 		Interval:     poller.PollInterval,
 		SSFilter:     s.SSFilter,

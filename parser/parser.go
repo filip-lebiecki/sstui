@@ -65,9 +65,48 @@ var (
 	reReordering    = regexp.MustCompile(`\breordering:(\d+)`)
 	reReordSeen     = regexp.MustCompile(`\breord_seen:(\d+)`)
 	reRcvOOOPack    = regexp.MustCompile(`\brcv_ooopack:(\d+)`)
-	// Standalone congestion-control algorithm tokens emitted by ss.
-	reCongAlgo = regexp.MustCompile(`\b(cubic|bbr|reno|vegas|htcp|cdg|dctcp|lp|nv|hybla|illinois|highspeed|scalable|westwood|yeah|bic)\b`)
 )
+
+// congAlgos are the congestion-control names ss prints as a bare token in the
+// tcp_info section (e.g. "ts sack cubic wscale:7,7").
+var congAlgos = map[string]bool{
+	"cubic": true, "bbr": true, "reno": true, "vegas": true, "htcp": true,
+	"cdg": true, "dctcp": true, "lp": true, "nv": true, "hybla": true,
+	"illinois": true, "highspeed": true, "scalable": true, "westwood": true,
+	"yeah": true, "bic": true,
+}
+
+// tcpInfoSection returns the part of an ss record that holds kernel-reported
+// socket metrics. Everything before skmem:( is identity — users:((...)) with
+// free-form process names and the cgroup path — which must not be searched for
+// bare-word tokens like congestion-control names: a process named "reno" or a
+// cgroup like "/cups-lp.service" would otherwise be mistaken for one.
+func tcpInfoSection(rest string) string {
+	if i := strings.Index(rest, "skmem:("); i >= 0 {
+		return rest[i:]
+	}
+	// No skmem (ss run without -m): skip past the identity fields instead.
+	if i := strings.LastIndex(rest, "))"); i >= 0 && strings.HasPrefix(rest, "users:") {
+		rest = rest[i+2:]
+	}
+	if i := strings.Index(rest, "cgroup:"); i >= 0 {
+		if j := strings.IndexByte(rest[i:], ' '); j >= 0 {
+			return rest[i+j:]
+		}
+		return ""
+	}
+	return rest
+}
+
+// findCongAlgo returns the congestion-control token in the tcp_info section.
+func findCongAlgo(info string) *string {
+	for _, tok := range strings.Fields(info) {
+		if congAlgos[tok] {
+			return &tok
+		}
+	}
+	return nil
+}
 
 func mustInt(s string) *int {
 	v, err := strconv.Atoi(s)
@@ -168,7 +207,9 @@ func ParseLine(line string) (*model.Connection, error) {
 		c.Delivered = mustInt(m[1])
 	}
 
-	if reAppLimited.MatchString(rest) {
+	info := tcpInfoSection(rest)
+
+	if reAppLimited.MatchString(info) {
 		c.AppLimited = 1
 	}
 
@@ -307,10 +348,7 @@ func ParseLine(line string) (*model.Connection, error) {
 	if m := reRcvWnd.FindStringSubmatch(rest); len(m) == 2 {
 		c.RcvWnd = mustInt(m[1])
 	}
-	if m := reCongAlgo.FindStringSubmatch(rest); len(m) == 2 {
-		algo := m[1]
-		c.CongAlgo = &algo
-	}
+	c.CongAlgo = findCongAlgo(info)
 	if m := reReordering.FindStringSubmatch(rest); len(m) == 2 {
 		c.Reordering = mustInt(m[1])
 	}
@@ -353,6 +391,7 @@ func mergeResults(tcpConns []*model.Connection, tcpErr error, udpConns []*model.
 			applyUDPState(c)
 		}
 	}
+	fillOmittedZeros(conns)
 	switch {
 	case tcpErr != nil:
 		return conns, fmt.Errorf("tcp query failed (showing UDP only): %v", tcpErr)
@@ -360,6 +399,92 @@ func mergeResults(tcpConns []*model.Connection, tcpErr error, udpConns []*model.
 		return conns, fmt.Errorf("udp query failed (showing TCP only): %v", udpErr)
 	}
 	return conns, nil
+}
+
+// omittedGroup is a set of tcp_info counters that ss prints only when they're
+// non-zero, all introduced to the kernel's tcp_info together. The sentinel is a
+// member that is almost always non-zero on a live socket, so seeing it on any
+// socket proves the running kernel reports the whole group.
+type omittedGroup struct {
+	sentinel func(*model.Connection) bool
+	fields   func(*model.Connection) []**int
+	floats   func(*model.Connection) []**float64
+}
+
+var omittedGroups = []omittedGroup{
+	{ // Linux 4.1/4.2: bytes_received, segs_out, segs_in
+		sentinel: func(c *model.Connection) bool { return c.SegsOut != nil },
+		fields: func(c *model.Connection) []**int {
+			return []**int{&c.BytesReceived, &c.SegsOut, &c.SegsIn}
+		},
+	},
+	{ // Linux 4.10: busy, rwnd_limited, sndbuf_limited
+		sentinel: func(c *model.Connection) bool { return c.BusyMS != nil },
+		floats: func(c *model.Connection) []**float64 {
+			return []**float64{&c.BusyMS, &c.RwndLimitedMS, &c.SndbufLimitedMS}
+		},
+	},
+	{ // Linux 4.19: bytes_sent, bytes_retrans, dsack_dups, reord_seen
+		sentinel: func(c *model.Connection) bool { return c.BytesSent != nil },
+		fields: func(c *model.Connection) []**int {
+			return []**int{&c.BytesSent, &c.BytesRetrans, &c.DSACKDups, &c.ReordSeen}
+		},
+	},
+	{ // Linux 5.4: snd_wnd (sentinel, ~never 0 unless zero-window), rcv_ooopack
+		sentinel: func(c *model.Connection) bool { return c.SndWnd != nil },
+		fields: func(c *model.Connection) []**int {
+			return []**int{&c.RcvOOOPack}
+		},
+	},
+}
+
+// hasTCPInfo reports whether ss printed a tcp_info block for this socket.
+// cwnd is always non-zero on a socket that has tcp_info, so its presence is a
+// reliable marker; TIME-WAIT and other info-less sockets lack it.
+func hasTCPInfo(c *model.Connection) bool {
+	return c.Protocol == "tcp" && c.CWnd != nil
+}
+
+// fillOmittedZeros sets zero-omitted tcp_info counters to 0 on sockets that
+// have tcp_info but didn't print them. ss skips counters like bytes_retrans
+// and dsack_dups while they're 0, so absent means 0 — not unknown — and
+// leaving them nil makes the first poll in which a counter moves off zero
+// (a clean connection's first loss burst) produce no delta. A group is only
+// filled when some socket in this poll shows its sentinel, so on an older
+// kernel that doesn't report the group at all the fields stay nil ("-")
+// instead of turning into a misleading 0.
+func fillOmittedZeros(conns []*model.Connection) {
+	for _, g := range omittedGroups {
+		supported := false
+		for _, c := range conns {
+			if hasTCPInfo(c) && g.sentinel(c) {
+				supported = true
+				break
+			}
+		}
+		if !supported {
+			continue
+		}
+		for _, c := range conns {
+			if !hasTCPInfo(c) {
+				continue
+			}
+			if g.fields != nil {
+				for _, f := range g.fields(c) {
+					if *f == nil {
+						*f = new(int)
+					}
+				}
+			}
+			if g.floats != nil {
+				for _, f := range g.floats(c) {
+					if *f == nil {
+						*f = new(float64)
+					}
+				}
+			}
+		}
+	}
 }
 
 // applyUDPState maps raw ss UDP state into the app's synthetic states.

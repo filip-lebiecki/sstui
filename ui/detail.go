@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"sstui/classifier"
 	"sstui/model"
 	"sstui/poller"
 
@@ -111,7 +112,12 @@ func RenderDetail(conn *model.Connection, buf *poller.Buffer, width, height int)
 		sb.WriteString(fmtRowColor("PMTU", fmtNumRaw(conn.PMTU)+" B", colDim))
 		sb.WriteString(fmtRowColor("AdvMSS", fmtNumRaw(conn.AdvMSS)+" B", colDim))
 		sb.WriteString(fmtRowColor("RcvMSS", fmtNumRaw(conn.RcvMSS)+" B", colDim))
-		sb.WriteString(fmtRowColor("SndWnd", fmtBytes(conn.SndWnd), wndColor(conn.SndWnd)))
+		if conn.SndWnd == nil && classifier.IsZeroWindow(conn) {
+			// ss omits snd_wnd when it's 0; the persist timer tells us it is.
+			sb.WriteString(fmtRowColor("SndWnd", "0 B (zero window)", colRetrans))
+		} else {
+			sb.WriteString(fmtRowColor("SndWnd", fmtBytes(conn.SndWnd), wndColor(conn.SndWnd)))
+		}
 		sb.WriteString(fmtRowColor("RcvWnd", fmtBytes(conn.RcvWnd), wndColor(conn.RcvWnd)))
 		sb.WriteString(fmtRowColor("RcvSpace", fmtBytes(conn.RcvSpace), colDim))
 		sb.WriteString(fmtRowColor("RcvSSThresh", fmtBytes(conn.RcvSSThresh), colDim))

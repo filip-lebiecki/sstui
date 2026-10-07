@@ -91,3 +91,58 @@ func TestRunSSIntegration(t *testing.T) {
 		}
 	}
 }
+
+// TestParseLineCongAlgoIgnoresIdentity: congestion-control names are bare
+// words, so they must only be matched in the tcp_info section — not in a
+// process name or cgroup path.
+func TestParseLineCongAlgoIgnoresIdentity(t *testing.T) {
+	line := `ESTAB 0 0 10.0.0.1:5000 10.0.0.2:443 users:(("reno",pid=1,fd=3)) ino:1 ` +
+		`cgroup:/system.slice/cups-lp.service <-> skmem:(r0,rb1,t0,tb1,f0,w0,o0,bl0,d0) ts sack bbr wscale:7,7 rtt:1/1 cwnd:10`
+	c, err := ParseLine(line)
+	if err != nil || c == nil {
+		t.Fatalf("ParseLine failed: %v", err)
+	}
+	if c.CongAlgo == nil || *c.CongAlgo != "bbr" {
+		t.Errorf("CongAlgo = %v, want bbr", c.CongAlgo)
+	}
+	if c.Process == nil || *c.Process != "reno" {
+		t.Errorf("Process = %v, want reno", c.Process)
+	}
+}
+
+// TestFillOmittedZeros: ss omits bytes_retrans etc. while they're 0. When the
+// kernel is known to report the group (some socket shows the sentinel), absent
+// counters on tcp_info sockets become 0 so the first loss burst yields a delta.
+// Info-less sockets (TIME-WAIT) are left alone.
+func TestFillOmittedZeros(t *testing.T) {
+	clean, _ := ParseLine("ESTAB 0 0 10.0.0.1:1 10.0.0.2:443 cubic rtt:1/1 cwnd:10 bytes_sent:1000 segs_out:5 busy:3ms")
+	clean.Protocol = "tcp"
+	tw, _ := ParseLine("TIME-WAIT 0 0 10.0.0.1:2 10.0.0.2:443 timer:(timewait,30sec,0) ino:0")
+	tw.Protocol = "tcp"
+	fillOmittedZeros([]*model.Connection{clean, tw})
+
+	if clean.BytesRetrans == nil || *clean.BytesRetrans != 0 {
+		t.Errorf("BytesRetrans = %v, want 0", clean.BytesRetrans)
+	}
+	if clean.DSACKDups == nil || clean.RwndLimitedMS == nil || clean.BytesReceived == nil {
+		t.Errorf("omitted counters should be zero-filled: dsack=%v rwnd=%v rx=%v",
+			clean.DSACKDups, clean.RwndLimitedMS, clean.BytesReceived)
+	}
+	if clean.RcvOOOPack != nil {
+		t.Errorf("no socket showed snd_wnd, so rcv_ooopack support is unknown and must stay nil")
+	}
+	if tw.BytesRetrans != nil || tw.BytesSent != nil {
+		t.Errorf("TIME-WAIT has no tcp_info and must not be zero-filled")
+	}
+}
+
+// TestFillOmittedZerosOldKernel: a kernel that never reports bytes_sent (pre-
+// 4.19) must not get a fake 0 — that would show 0B/s TX and false IDLE.
+func TestFillOmittedZerosOldKernel(t *testing.T) {
+	c, _ := ParseLine("ESTAB 0 0 10.0.0.1:1 10.0.0.2:443 cubic rtt:1/1 cwnd:10 segs_out:5 bytes_received:10")
+	c.Protocol = "tcp"
+	fillOmittedZeros([]*model.Connection{c})
+	if c.BytesSent != nil || c.BytesRetrans != nil {
+		t.Errorf("unsupported group must stay nil, got sent=%v retrans=%v", c.BytesSent, c.BytesRetrans)
+	}
+}

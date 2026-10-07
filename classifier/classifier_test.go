@@ -205,3 +205,43 @@ func TestClassifySocketDrops(t *testing.T) {
 		t.Errorf("50 drops should be crit, got %+v (present=%v)", s, ok)
 	}
 }
+
+// TestClassifyZeroWindowPersistTimer is the regression for ZERO_WIN never
+// firing: ss omits snd_wnd when it is 0, so a stalled sender shows no snd_wnd
+// at all — only the persist (zero-window probe) timer.
+func TestClassifyZeroWindowPersistTimer(t *testing.T) {
+	persist, dur := "persist", "2.456sec"
+	c := &model.Connection{Protocol: "tcp", State: "ESTAB",
+		TimerType: &persist, TimerDur: &dur, SndWnd: nil, DeltaBytesSent: ip(0)}
+	if s, ok := sigByType(Classify(c), model.SignalZeroWindow); !ok || s.Severity != 2 {
+		t.Errorf("persist timer should raise crit ZERO_WIN, got %+v (present=%v)", s, ok)
+	}
+
+	// Persist timer armed for a tiny but non-zero window: ss prints snd_wnd,
+	// and the reported value wins.
+	tiny := &model.Connection{Protocol: "tcp", State: "ESTAB", TimerType: &persist, SndWnd: ip(900)}
+	if _, ok := sigByType(Classify(tiny), model.SignalZeroWindow); ok {
+		t.Errorf("reported snd_wnd:900 should not raise ZERO_WIN even with persist timer")
+	}
+
+	keepalive := "keepalive"
+	healthy := &model.Connection{Protocol: "tcp", State: "ESTAB",
+		TimerType: &keepalive, SndWnd: ip(65536)}
+	if _, ok := sigByType(Classify(healthy), model.SignalZeroWindow); ok {
+		t.Errorf("open window with keepalive timer should not raise ZERO_WIN")
+	}
+}
+
+// TestClassifyRTTSpikeFloor: a large RTT/MinRTT ratio on a sub-millisecond
+// path (loopback, LAN) is jitter, not a spike; the same ratio with a real
+// absolute excess is.
+func TestClassifyRTTSpikeFloor(t *testing.T) {
+	loopback := &model.Connection{Protocol: "tcp", State: "ESTAB", RTT: fl(0.402), MinRTT: fl(0.049)}
+	if _, ok := sigByType(Classify(loopback), model.SignalRTTSpike); ok {
+		t.Errorf("0.402ms vs 0.049ms min (8x, <1ms excess) should not raise RTT_SPIKE")
+	}
+	wan := &model.Connection{Protocol: "tcp", State: "ESTAB", RTT: fl(120), MinRTT: fl(10)}
+	if s, ok := sigByType(Classify(wan), model.SignalRTTSpike); !ok || s.Severity != 1 {
+		t.Errorf("120ms vs 10ms min should warn RTT_SPIKE, got %+v (present=%v)", s, ok)
+	}
+}

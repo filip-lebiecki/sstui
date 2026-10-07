@@ -355,6 +355,11 @@ type TableModel struct {
 	columns      []TableColumn
 	width        int
 	cachedConns  []*model.Connection
+	// selKey is the ConnKey of the highlighted row. The cursor is positional,
+	// but rows re-sort on every poll, so the selection is re-located by key
+	// whenever the data or filter changes; otherwise the highlight would jump
+	// to whatever connection happens to land at the same index.
+	selKey string
 }
 
 func NewTableModel(filter *Filter, pageSize int) *TableModel {
@@ -368,20 +373,73 @@ func NewTableModel(filter *Filter, pageSize int) *TableModel {
 	}
 }
 
-// SetConnections updates the connection list.
+// SetConnections updates the connection list, keeping the selected connection
+// highlighted if it is still present.
 func (t *TableModel) SetConnections(conns []*model.Connection) {
 	t.conns = conns
 	t.cachedConns = nil
+	t.reselect()
 }
 
-// SetSize updates the table dimensions. Column widths are computed per-frame in
-// RenderBody from the visible content, so only the overall budget is stored here.
+// tableChromeLines is the number of lines RenderBody/View spend on things other
+// than data rows: the column header, the separator rule, and the blank line +
+// signal-badge line shown under the table for the selected row.
+const tableChromeLines = 4
+
+// SetSize updates the table dimensions. height is the full content height
+// available to the table; rows per page is that minus the header, separator
+// and signals lines. Column widths are computed per-frame in RenderBody from
+// the visible content, so only the overall budget is stored here. The absolute
+// cursor position is preserved across a page-size change.
 func (t *TableModel) SetSize(width, height int) {
+	pos := t.page*t.pageSize + t.cursor
 	t.width = width
-	t.pageSize = height
+	t.pageSize = height - tableChromeLines
 	if t.pageSize < 1 {
 		t.pageSize = 1
 	}
+	t.page = pos / t.pageSize
+	t.cursor = pos % t.pageSize
+}
+
+// setPos moves the cursor to absolute index pos and records the selection.
+func (t *TableModel) setPos(pos int, filtered []*model.Connection) {
+	t.page = pos / t.pageSize
+	t.cursor = pos % t.pageSize
+	if pos >= 0 && pos < len(filtered) {
+		t.selKey = filtered[pos].ConnKey()
+	}
+}
+
+// syncSelKey records the connection currently under the cursor.
+func (t *TableModel) syncSelKey() {
+	if c := t.GetSelected(); c != nil {
+		t.selKey = c.ConnKey()
+	}
+}
+
+// reselect re-locates the selected connection after the row set changed (new
+// poll, filter edit). If it's gone, the cursor stays at the same absolute
+// position, clamped to the new length, and selects whatever is there.
+func (t *TableModel) reselect() {
+	filtered := t.getFiltered()
+	if len(filtered) == 0 {
+		t.page, t.cursor = 0, 0
+		return
+	}
+	if t.selKey != "" {
+		for i, c := range filtered {
+			if c.ConnKey() == t.selKey {
+				t.setPos(i, filtered)
+				return
+			}
+		}
+	}
+	pos := t.page*t.pageSize + t.cursor
+	if pos >= len(filtered) {
+		pos = len(filtered) - 1
+	}
+	t.setPos(pos, filtered)
 }
 
 // addrPortWidth returns the display width of "addr:port" (IPv6 addresses are
@@ -494,8 +552,7 @@ func (t *TableModel) SetCursor(pos int) {
 	if pos >= len(filtered) {
 		pos = len(filtered) - 1
 	}
-	t.page = pos / t.pageSize
-	t.cursor = pos % t.pageSize
+	t.setPos(pos, filtered)
 }
 
 // Next moves cursor down.
@@ -515,6 +572,7 @@ func (t *TableModel) Next() {
 		t.page++
 		t.cursor = 0
 	}
+	t.syncSelKey()
 }
 
 // Prev moves cursor up.
@@ -525,12 +583,14 @@ func (t *TableModel) Prev() {
 		t.page--
 		t.cursor = t.pageSize - 1
 	}
+	t.syncSelKey()
 }
 
 // First moves to first item.
 func (t *TableModel) First() {
 	t.page = 0
 	t.cursor = 0
+	t.syncSelKey()
 }
 
 // Last moves to last item.
@@ -548,12 +608,14 @@ func (t *TableModel) CycleSort() {
 	t.sortKey = sortCycle[t.sortCycleIdx].key
 	t.sortDir = sortCycle[t.sortCycleIdx].dir
 	t.cachedConns = nil
-	t.First()
+	t.reselect() // keep the selected connection; it just moves to its new rank
 }
 
-// InvalidateCache marks the cached results as stale.
+// InvalidateCache marks the cached results as stale (e.g. after the filter
+// changed) and re-locates the selected connection in the new row set.
 func (t *TableModel) InvalidateCache() {
 	t.cachedConns = nil
+	t.reselect()
 }
 
 func (t *TableModel) getFiltered() []*model.Connection {

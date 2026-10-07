@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -128,5 +129,66 @@ func TestScrubAutoPauses(t *testing.T) {
 	}
 	if m.scrubOffset != 1 {
 		t.Fatalf("scrubOffset should be 1 after one step back, got %d", m.scrubOffset)
+	}
+}
+
+func manyConns(n int, txFor func(i int) int) []*model.Connection {
+	var conns []*model.Connection
+	for i := 0; i < n; i++ {
+		tx := txFor(i)
+		conns = append(conns, &model.Connection{
+			Protocol: "tcp", State: "ESTAB",
+			LocalAddr: "10.0.0.1", LocalPort: strconv.Itoa(40000 + i),
+			PeerAddr: "10.0.0.2", PeerPort: "443",
+			DeltaBytesSent: &tx,
+		})
+	}
+	return conns
+}
+
+// TestTableCursorStaysVisible is the regression for the cursor walking onto
+// rows clipped off the bottom of the page: every selected row must be drawn.
+func TestTableCursorStaysVisible(t *testing.T) {
+	for _, help := range []bool{false, true} {
+		m := NewApp()
+		m = feed(m, tea.WindowSizeMsg{Width: 160, Height: 60})
+		m = feed(m, pollResultMsg{conns: manyConns(200, func(int) int { return 0 })})
+		if help {
+			m = feed(m, key("?"))
+		}
+		for i := 0; i < 120; i++ {
+			sel := m.table.GetSelected()
+			if sel == nil {
+				t.Fatalf("help=%v: no selection after %d presses", help, i)
+			}
+			if !strings.Contains(m.View(), ":"+sel.LocalPort) {
+				t.Fatalf("help=%v: selected row %s not visible after %d presses", help, sel.LocalPort, i)
+			}
+			m = feed(m, key("j"))
+		}
+	}
+}
+
+// TestTableSelectionFollowsConnection: when a poll re-sorts the rows, the
+// highlight must stay on the same connection, not the same row index.
+func TestTableSelectionFollowsConnection(t *testing.T) {
+	m := NewApp()
+	m = feed(m, tea.WindowSizeMsg{Width: 160, Height: 40})
+	// Sort by TX descending.
+	for i := 0; !strings.Contains(m.table.RenderFooter(), "sort: tx↓"); i++ {
+		if i > 50 {
+			t.Fatalf("never reached tx↓ sort; footer: %s", m.table.RenderFooter())
+		}
+		m = feed(m, key("h"))
+	}
+	m = feed(m, pollResultMsg{conns: manyConns(10, func(i int) int { return i * 100 })})
+	m = feed(m, key("j"))
+	m = feed(m, key("j"))
+	want := m.table.GetSelected().LocalPort
+
+	// Next poll reverses the TX ranking, so the row moves.
+	m = feed(m, pollResultMsg{conns: manyConns(10, func(i int) int { return (10 - i) * 100 })})
+	if got := m.table.GetSelected().LocalPort; got != want {
+		t.Errorf("selection jumped from port %s to %s after re-sort", want, got)
 	}
 }

@@ -148,6 +148,38 @@ func limitedSeverity(deltaMS *float64) (int, float64) {
 	return 0, frac
 }
 
+// IsZeroWindow reports whether the peer is advertising a zero receive window.
+// ss omits snd_wnd entirely when it is 0, so the absent field can't be told
+// apart from an old kernel that doesn't report it. A reported snd_wnd wins;
+// otherwise the persist timer is the indicator — the kernel arms it to send
+// zero-window probes. (It can also be armed for a tiny non-zero window, but
+// then ss prints that window and the first branch answers.)
+func IsZeroWindow(c *model.Connection) bool {
+	if c.SndWnd != nil {
+		return *c.SndWnd == 0
+	}
+	return c.TimerType != nil && *c.TimerType == "persist"
+}
+
+// RTTInflationMinExcessMS is the minimum absolute gap between smoothed RTT and
+// min RTT before an RTT/MinRTT ratio counts as inflation. On loopback and LAN
+// paths min RTT is tens of microseconds, so delayed ACKs and scheduling jitter
+// alone produce large ratios (0.4ms / 0.05ms = 8x) that mean nothing.
+const RTTInflationMinExcessMS = 10.0
+
+// RTTInflation returns rtt/minrtt when both are known and the excess over min
+// RTT is large enough to matter (see RTTInflationMinExcessMS). ok is false
+// when the ratio can't be computed or the excess is below the floor.
+func RTTInflation(c *model.Connection) (ratio float64, ok bool) {
+	if c.RTT == nil || c.MinRTT == nil || *c.MinRTT <= 0 {
+		return 0, false
+	}
+	if *c.RTT-*c.MinRTT < RTTInflationMinExcessMS {
+		return 0, false
+	}
+	return *c.RTT / *c.MinRTT, true
+}
+
 // Classify analyzes a connection and returns detected signals.
 func Classify(c *model.Connection) []model.Signal {
 	var signals []model.Signal
@@ -236,14 +268,21 @@ func Classify(c *model.Connection) []model.Signal {
 	// IDLE: ESTAB with no bytes moving this poll. Only fire when we actually
 	// have deltas to compare against — on the very first snapshot of a new
 	// connection both deltas are nil and we can't yet tell idle from active.
-	if c.State == "ESTAB" && c.DeltaBytesSent != nil && c.DeltaBytesReceived != nil {
+	// A socket with data stuck in its send queue isn't idle — it's stalled
+	// (e.g. zero window), so don't label it as if nothing were wrong.
+	sendQueued := c.SendQ != nil && *c.SendQ > 0
+	if c.State == "ESTAB" && !sendQueued && c.DeltaBytesSent != nil && c.DeltaBytesReceived != nil {
 		if *c.DeltaBytesSent == 0 && *c.DeltaBytesReceived == 0 {
 			signals = append(signals, model.Signal{Type: model.SignalIdle, Severity: 0})
 		}
 	}
 
-	if v := c.SndWnd; v != nil && *v == 0 && c.State == "ESTAB" {
-		signals = append(signals, model.Signal{Type: model.SignalZeroWindow, Severity: 2})
+	if c.State == "ESTAB" && IsZeroWindow(c) {
+		var v any
+		if c.TimerDur != nil {
+			v = "probing every " + *c.TimerDur
+		}
+		signals = append(signals, model.Signal{Type: model.SignalZeroWindow, Severity: 2, Value: v})
 	}
 
 	if v := c.Lost; v != nil && *v > 2 {
@@ -263,8 +302,7 @@ func Classify(c *model.Connection) []model.Signal {
 		}
 	}
 
-	if c.RTT != nil && c.MinRTT != nil && *c.MinRTT > 0 {
-		ratio := *c.RTT / *c.MinRTT
+	if ratio, ok := RTTInflation(c); ok {
 		if ratio > 5 {
 			sev := 1
 			if ratio > 15 {

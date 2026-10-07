@@ -140,3 +140,31 @@ func TestSnapshotFromEnd(t *testing.T) {
 		t.Errorf("negative offset should be nil, got %v", s)
 	}
 }
+
+
+// TestFirstLossBurstProducesDelta: a clean connection's previous sample has
+// bytes_retrans zero-filled by the parser, so its first loss burst yields a
+// delta (and therefore can raise HI_RETRANS) instead of being skipped.
+func TestFirstLossBurstProducesDelta(t *testing.T) {
+	i := func(v int) *int { return &v }
+	ino := "7"
+	mk := func(sent, retrans int) []*model.Connection {
+		return []*model.Connection{{Protocol: "tcp", State: "ESTAB", Inode: &ino,
+			LocalAddr: "1.1.1.1", LocalPort: "1", PeerAddr: "2.2.2.2", PeerPort: "2",
+			CWnd: i(10), BytesSent: i(sent), BytesRetrans: i(retrans), BytesReceived: i(0)}}
+	}
+	buf := NewBuffer()
+	buf.AddSnapshot(mk(1000, 0))
+	buf.AddSnapshot(mk(11000, 4000))
+	c := buf.GetLatest().Conns[0]
+	if c.DeltaBytesRetrans == nil || *c.DeltaBytesRetrans != 4000 {
+		t.Fatalf("DeltaBytesRetrans = %v, want 4000", c.DeltaBytesRetrans)
+	}
+	found := false
+	for _, s := range c.Signals {
+		found = found || s.Type == model.SignalHighRetransRate
+	}
+	if !found {
+		t.Errorf("40%% retransmit rate on first loss burst should raise HI_RETRANS")
+	}
+}

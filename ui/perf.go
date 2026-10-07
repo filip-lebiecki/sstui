@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"sstui/classifier"
 	"sstui/model"
 	"sstui/poller"
 
@@ -164,11 +165,8 @@ func renderRTTInflation(snap *poller.Snapshot) string {
 	}
 	var entries []entry
 	for _, c := range snap.Conns {
-		if c.RTT != nil && c.MinRTT != nil && *c.MinRTT > 0 {
-			r := *c.RTT / *c.MinRTT
-			if r > 1.5 {
-				entries = append(entries, entry{c, r, *c.RTT, *c.MinRTT})
-			}
+		if r, ok := classifier.RTTInflation(c); ok && r > 1.5 {
+			entries = append(entries, entry{c, r, *c.RTT, *c.MinRTT})
 		}
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].ratio > entries[j].ratio })
@@ -177,7 +175,7 @@ func renderRTTInflation(snap *poller.Snapshot) string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString(styleSectionTitle.Render(" RTT Inflation (RTT/MinRTT)") + "\n")
+	sb.WriteString(styleSectionTitle.Render(fmt.Sprintf(" RTT Inflation (RTT/MinRTT, ≥%.0fms over min)", classifier.RTTInflationMinExcessMS)) + "\n")
 	sb.WriteString(perfTableHeader(
 		fmt.Sprintf("%-4s", "Proto"),
 		fmt.Sprintf("%-30s", "Peer"),
@@ -415,13 +413,16 @@ func renderQueuePressure(snap *poller.Snapshot) string {
 func renderZeroWindow(snap *poller.Snapshot) string {
 	var entries []*model.Connection
 	for _, c := range snap.Conns {
-		if c.SndWnd != nil && *c.SndWnd == 0 && c.State == "ESTAB" {
-			entries = append(entries, c)
+		for _, s := range c.Signals {
+			if s.Type == model.SignalZeroWindow {
+				entries = append(entries, c)
+				break
+			}
 		}
 	}
 
 	var sb strings.Builder
-	sb.WriteString(styleSectionTitle.Render(" Zero Window (snd_wnd=0)") + "\n")
+	sb.WriteString(styleSectionTitle.Render(" Zero Window (peer not reading)") + "\n")
 	if len(entries) == 0 {
 		sb.WriteString("  None detected\n")
 		return sb.String()

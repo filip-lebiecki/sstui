@@ -125,8 +125,14 @@ func (m *AppModel) Init() tea.Cmd {
 	)
 }
 
-// contentHeight returns the height available for tab content.
+// contentHeight returns the height available for the active tab's content.
 func (m *AppModel) contentHeight() int {
+	return m.contentHeightFor(m.tab)
+}
+
+// contentHeightFor returns the content height a given tab would get with the
+// current header/footer chrome (filter bar, scrub bar, help overlay).
+func (m *AppModel) contentHeightFor(tab ViewMode) int {
 	headerLines := 4
 	if m.filter.IsActive() {
 		headerLines++
@@ -135,7 +141,7 @@ func (m *AppModel) contentHeight() int {
 		headerLines++ // scrub status bar
 	}
 	footerLines := 1
-	if m.tab == ViewLive {
+	if tab == ViewLive {
 		footerLines++
 	}
 	if m.showHelp {
@@ -149,11 +155,25 @@ func (m *AppModel) contentHeight() int {
 }
 
 func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	next, cmd := m.update(msg)
+	// Layout chrome (help overlay, filter bar, scrub bar) can change on almost
+	// any message, so re-fit the table after every update. It's sized for the
+	// Live tab even when another tab is showing, because j/k on Detail/Socket
+	// still navigate it and its page geometry must match what Live will draw.
+	m.resizeTable()
+	return next, cmd
+}
+
+// resizeTable fits the table's page size to the Live tab's content area.
+func (m *AppModel) resizeTable() {
+	m.table.SetSize(m.width, m.contentHeightFor(ViewLive))
+}
+
+func (m *AppModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.table.SetSize(msg.Width, m.contentHeight())
 		return m, nil
 
 	case tea.KeyMsg:
@@ -564,10 +584,10 @@ func (m *AppModel) viewSnapshot() *poller.Snapshot {
 // syncTable points the table at the currently-viewed snapshot (live or frozen)
 // and re-applies the layout size. Called whenever that snapshot changes.
 func (m *AppModel) syncTable() {
+	m.resizeTable()
 	if snap := m.viewSnapshot(); snap != nil {
 		m.table.SetConnections(snap.Conns)
 	}
-	m.table.SetSize(m.width, m.contentHeight())
 }
 
 // clampScrub keeps the scrub offset within the available history.

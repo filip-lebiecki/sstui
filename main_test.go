@@ -12,6 +12,7 @@ import (
 	"sstui/session"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // feed sends a message through Update and returns the model as *AppModel.
@@ -221,6 +222,33 @@ func TestFilterPaste(t *testing.T) {
 	m = feed(m, key("x"))
 	if m.filterBuf != "peer=10.0.0.1  x" {
 		t.Errorf("filterBuf = %q, want %q", m.filterBuf, "peer=10.0.0.1  x")
+	}
+}
+
+// TestFilterRejectsUnknownSignal: Enter on a query naming a removed signal
+// keeps the prompt open with the reason and leaves the active filter alone;
+// the next key clears the message.
+func TestFilterRejectsUnknownSignal(t *testing.T) {
+	m := NewApp(nil)
+	m = feed(m, tea.WindowSizeMsg{Width: 120, Height: 40})
+	if err := m.filter.SetQuery("state=ESTAB"); err != nil {
+		t.Fatal(err)
+	}
+	m = feed(m, key("/"))
+	m = feed(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" signal=BBR_LOW"), Paste: true})
+	m = feed(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if !m.filterMode || m.tab != ViewFilter {
+		t.Fatalf("prompt should stay open after a rejected query")
+	}
+	if m.filter.Query() != "state=ESTAB" {
+		t.Errorf("active filter = %q, want it unchanged", m.filter.Query())
+	}
+	if view := ansi.Strip(m.View()); !strings.Contains(view, "signal BBR_LOW was removed") {
+		t.Errorf("prompt should explain the rejection:\n%s", view)
+	}
+	m = feed(m, tea.KeyMsg{Type: tea.KeyBackspace})
+	if m.filterErr != "" {
+		t.Errorf("editing should clear the error, got %q", m.filterErr)
 	}
 }
 

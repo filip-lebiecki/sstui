@@ -1,6 +1,9 @@
 package ui
 
 import (
+	"os"
+	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -9,6 +12,42 @@ import (
 	"sstui/findings"
 	"sstui/model"
 )
+
+// TestFindingSignalLiteralsResolve: findings build Live filters from
+// hand-written "signal=NAME" literals. A name the parser doesn't know makes
+// the finding's Enter fail, and the test above only exercises the findings its
+// fixture raises, so check every literal in the findings sources directly.
+func TestFindingSignalLiteralsResolve(t *testing.T) {
+	files, err := filepath.Glob("../findings/*.go")
+	if err != nil || len(files) == 0 {
+		t.Fatalf("no findings sources: %v", err)
+	}
+	lit := regexp.MustCompile(`signal=([A-Za-z_]+)`)
+	n := 0
+	for _, path := range files {
+		if strings.HasSuffix(path, "_test.go") {
+			continue
+		}
+		src, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, line := range strings.Split(string(src), "\n") {
+			if strings.HasPrefix(strings.TrimSpace(line), "//") {
+				continue // doc examples like "signal=A"
+			}
+			for _, m := range lit.FindAllStringSubmatch(line, -1) {
+				n++
+				if _, ok := model.ParseSignalType(m[1]); !ok {
+					t.Errorf("%s: filter literal signal=%s names no signal", filepath.Base(path), m[1])
+				}
+			}
+		}
+	}
+	if n == 0 {
+		t.Fatal("found no signal= literals; has the filter syntax changed?")
+	}
+}
 
 // TestFindingFiltersSelectAffectedSockets runs every per-socket rule on one
 // busy host and checks each finding's Live filter (through the real filter
@@ -62,7 +101,10 @@ func TestFindingFiltersSelectAffectedSockets(t *testing.T) {
 			continue
 		}
 		flt := &Filter{HideListen: !f.ShowListen}
-		flt.SetQuery(f.Filter)
+		if err := flt.SetQuery(f.Filter); err != nil {
+			t.Errorf("%s: filter %q rejected: %v", f.ID, f.Filter, err)
+			continue
+		}
 		n := 0
 		for _, c := range conns {
 			if flt.Matches(c) {

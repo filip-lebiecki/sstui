@@ -1,6 +1,9 @@
 package ui
 
 import (
+	"fmt"
+	"maps"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -26,11 +29,18 @@ func (f *Filter) Matches(c *model.Connection) bool {
 	return f.root.eval(c)
 }
 
-// SetQuery parses query into the filter expression. An empty or malformed query
-// matches everything.
-func (f *Filter) SetQuery(query string) {
-	f.raw = strings.TrimSpace(query)
-	f.root = parseFilter(f.raw)
+// SetQuery parses query into the filter expression; an empty query matches
+// everything. A query naming an unknown key or signal is rejected with an
+// error and the filter is left unchanged: such a term can never match, so
+// applying it would show an empty table that looks like "no problems".
+func (f *Filter) SetQuery(query string) error {
+	q := strings.TrimSpace(query)
+	root, err := parseFilter(q)
+	if err != nil {
+		return err
+	}
+	f.raw, f.root = q, root
+	return nil
 }
 
 // Query returns the raw query text.
@@ -66,10 +76,33 @@ type notNode struct{ child filterNode }
 
 func (n notNode) eval(c *model.Connection) bool { return !n.child.eval(c) }
 
-// predNode is a single "key=value" condition. An empty key is a bareword.
-type predNode struct{ key, value string }
+// predNode is a single "key=value" condition or bareword, with its matcher
+// resolved when parsed.
+type predNode struct {
+	match func(c *model.Connection, value string) bool
+	value string
+}
 
-func (n predNode) eval(c *model.Connection) bool { return matchPred(n.key, n.value, c) }
+func (n predNode) eval(c *model.Connection) bool { return n.match(c, n.value) }
+
+// signalNode is a "signal=<name>" condition, resolved to its type when parsed.
+type signalNode struct{ typ model.SignalType }
+
+func (n signalNode) eval(c *model.Connection) bool {
+	for _, s := range c.Signals {
+		if s.Type == n.typ {
+			return true
+		}
+	}
+	return false
+}
+
+// removedSignals are signals sstui no longer raises, so an old query or
+// runbook is told why instead of getting an empty table.
+var removedSignals = map[string]string{
+	"del_drop": "DEL_DROP", "delivery_drop": "DEL_DROP",
+	"bbr_low": "BBR_LOW", "bbr_underutil": "BBR_LOW",
+}
 
 var knownStates = []string{
 	"ESTAB", "LISTEN", "TIME-WAIT", "CLOSE-WAIT", "FIN-WAIT-1", "FIN-WAIT-2",
@@ -77,37 +110,26 @@ var knownStates = []string{
 	"UDP_ESTAB", "UDP_ACTIVE", "UDP_IDLE",
 }
 
-func matchPred(key, value string, c *model.Connection) bool {
-	switch key {
-	case "proto":
-		return strings.EqualFold(c.Protocol, value)
-	case "local":
-		return matchAddr(c.LocalAddr, value)
-	case "peer":
-		return matchAddr(c.PeerAddr, value)
-	case "sport":
-		return c.LocalPort == value
-	case "dport":
-		return c.PeerPort == value
-	case "state":
-		return c.State == strings.ToUpper(value)
-	case "proc":
-		return c.Process != nil &&
-			strings.Contains(strings.ToLower(*c.Process), strings.ToLower(value))
-	case "pid":
-		return c.PID != nil && strconv.Itoa(*c.PID) == value
-	case "signal":
-		want := strings.ToLower(value)
-		for _, s := range c.Signals {
-			if strings.ToLower(string(s.Type)) == want || strings.ToLower(s.Type.Label()) == want {
-				return true
-			}
-		}
-		return false
-	case "":
-		return matchBareword(value, c)
-	}
-	return false
+// keyMatchers holds the condition for each "key=value" filter key. It is
+// also the list of valid keys; "signal" is parsed separately (signalNode).
+var keyMatchers = map[string]func(c *model.Connection, value string) bool{
+	"proto": func(c *model.Connection, v string) bool { return strings.EqualFold(c.Protocol, v) },
+	"local": func(c *model.Connection, v string) bool { return matchAddr(c.LocalAddr, v) },
+	"peer":  func(c *model.Connection, v string) bool { return matchAddr(c.PeerAddr, v) },
+	"sport": func(c *model.Connection, v string) bool { return c.LocalPort == v },
+	"dport": func(c *model.Connection, v string) bool { return c.PeerPort == v },
+	"state": func(c *model.Connection, v string) bool { return c.State == strings.ToUpper(v) },
+	"proc": func(c *model.Connection, v string) bool {
+		return c.Process != nil && strings.Contains(strings.ToLower(*c.Process), strings.ToLower(v))
+	},
+	"pid": func(c *model.Connection, v string) bool { return c.PID != nil && strconv.Itoa(*c.PID) == v },
+}
+
+// filterKeys lists the valid keys, sorted, for error messages.
+func filterKeys() string {
+	keys := append(slices.Collect(maps.Keys(keyMatchers)), "signal")
+	slices.Sort(keys)
+	return strings.Join(keys, " ")
 }
 
 // matchAddr is a substring match ("peer=10.0" selects a range), or an exact
@@ -125,7 +147,7 @@ func matchAddr(addr, value string) bool {
 // the process name — whichever the user most likely meant. Restricting it to
 // the local address (as it once did) silently missed the common cases of
 // filtering by peer host or process.
-func matchBareword(value string, c *model.Connection) bool {
+func matchBareword(c *model.Connection, value string) bool {
 	up := strings.ToUpper(value)
 	for _, s := range knownStates {
 		if up == s {
@@ -150,9 +172,10 @@ func matchBareword(value string, c *model.Connection) bool {
 //	not  := ("not" | "!") not | primary
 //	primary := "(" or ")" | "key=value" | bareword
 
-func parseFilter(s string) filterNode {
+func parseFilter(s string) (filterNode, error) {
 	p := &filterParser{toks: tokenizeFilter(s)}
-	return p.parseOr()
+	root := p.parseOr()
+	return root, p.err
 }
 
 // tokenizeFilter splits the query on whitespace, treating parentheses as their
@@ -184,6 +207,7 @@ func tokenizeFilter(s string) []string {
 type filterParser struct {
 	toks []string
 	pos  int
+	err  error // first unknown key or signal name
 }
 
 func (p *filterParser) peek() string {
@@ -263,12 +287,43 @@ func (p *filterParser) parsePrimary() filterNode {
 		return nil
 	}
 	p.advance()
-	return makePred(t)
+	return p.makePred(t)
 }
 
-func makePred(tok string) filterNode {
-	if i := strings.Index(tok, "="); i >= 0 {
-		return predNode{key: strings.ToLower(tok[:i]), value: tok[i+1:]}
+func (p *filterParser) makePred(tok string) filterNode {
+	key, value, ok := strings.Cut(tok, "=")
+	switch {
+	case !ok:
+		return predNode{matchBareword, tok}
+	case key == "": // "=x" has always been the bareword x
+		return predNode{matchBareword, value}
 	}
-	return predNode{value: tok}
+	key = strings.ToLower(key)
+	if key == "signal" {
+		return p.makeSignal(value)
+	}
+	match, known := keyMatchers[key]
+	if !known {
+		p.fail(fmt.Errorf("unknown filter key %q (keys: %s)", key, filterKeys()))
+		return signalNode{} // never evaluated: the query is rejected
+	}
+	return predNode{match, value}
+}
+
+func (p *filterParser) makeSignal(name string) filterNode {
+	if t, ok := model.ParseSignalType(name); ok {
+		return signalNode{t}
+	}
+	if label, ok := removedSignals[strings.ToLower(name)]; ok {
+		p.fail(fmt.Errorf("signal %s was removed (it fired on healthy traffic); a slow sender shows RWND_LIM, SNDBUF_LIM, LOSS or HI_RETRANS", label))
+	} else {
+		p.fail(fmt.Errorf("unknown signal %q (signals: %s)", name, strings.Join(model.SignalLabels(), " ")))
+	}
+	return signalNode{}
+}
+
+func (p *filterParser) fail(err error) {
+	if p.err == nil {
+		p.err = err
+	}
 }

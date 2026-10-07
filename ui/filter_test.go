@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"strings"
 	"testing"
 
 	"sstui/model"
@@ -64,6 +65,42 @@ func TestFilterExpressions(t *testing.T) {
 		f.SetQuery(tt.query)
 		if got := f.Matches(c); got != tt.want {
 			t.Errorf("query %q: got %v, want %v", tt.query, got, tt.want)
+		}
+	}
+}
+
+// TestFilterSignalNames: signal= takes a label or type name in any case;
+// unknown or removed names and unknown keys are rejected with a reason and
+// leave the active filter unchanged instead of silently matching nothing.
+func TestFilterSignalNames(t *testing.T) {
+	c := &model.Connection{State: "ESTAB", Signals: []model.Signal{{Type: model.SignalRetransInFlight}}}
+	for _, q := range []string{"signal=RETRANS", "signal=retrans", "signal=retrans_in_flight", "=ESTAB"} {
+		f := &Filter{}
+		if err := f.SetQuery(q); err != nil || !f.Matches(c) {
+			t.Errorf("%q: err=%v, matches=%v; want a match", q, err, f.Matches(c))
+		}
+	}
+	f := &Filter{}
+	if err := f.SetQuery("signal=LOSS"); err != nil || f.Matches(c) {
+		t.Errorf("signal=LOSS: err=%v, should parse and not match a RETRANS socket", err)
+	}
+
+	for _, tt := range []struct{ query, wantErr string }{
+		{"signal=DEL_DROP", "signal DEL_DROP was removed"},
+		{"proc=nginx and signal=bbr_underutil", "signal BBR_LOW was removed"},
+		{"signal=RETRANZ", `unknown signal "RETRANZ"`},
+		{"sigal=RETRANS", `unknown filter key "sigal"`},
+	} {
+		f := &Filter{}
+		if err := f.SetQuery("state=ESTAB"); err != nil {
+			t.Fatal(err)
+		}
+		err := f.SetQuery(tt.query)
+		if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+			t.Errorf("%q: err = %v, want it to contain %q", tt.query, err, tt.wantErr)
+		}
+		if f.Query() != "state=ESTAB" || !f.IsActive() {
+			t.Errorf("%q: rejected query replaced the active filter (now %q)", tt.query, f.Query())
 		}
 	}
 }

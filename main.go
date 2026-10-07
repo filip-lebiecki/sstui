@@ -129,6 +129,7 @@ type AppModel struct {
 	showHelp      bool
 	filterMode    bool
 	filterBuf     string
+	filterErr     string   // why the last Enter was rejected; cleared on the next key
 	filterCursor  int      // byte offset of the edit cursor within filterBuf
 	filterPrevTab ViewMode // tab to restore when filter input is cancelled/applied
 	selectedKey   string
@@ -408,13 +409,17 @@ func (m *AppModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *AppModel) handleFilterInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	m.filterErr = ""
 	switch msg.String() {
 	case "esc":
 		m.filterMode = false
 		m.tab = m.restoreTab()
 		return m, nil
 	case "enter":
-		m.applyFilter()
+		if err := m.filter.SetQuery(m.filterBuf); err != nil {
+			m.filterErr = err.Error() // keep the prompt open to fix it
+			return m, nil
+		}
 		m.table.InvalidateCache()
 		m.filterMode = false
 		m.tab = m.restoreTab()
@@ -484,10 +489,6 @@ func sanitizeFilterInput(s string) string {
 		}
 		return r
 	}, s)
-}
-
-func (m *AppModel) applyFilter() {
-	m.filter.SetQuery(m.filterBuf)
 }
 
 // syncSelectedKey makes the Detail/Socket views follow table navigation: when
@@ -588,6 +589,10 @@ func (m *AppModel) View() string {
 	case ViewFilter:
 		content = "\n  Filter connections:\n\n"
 		content += "  " + renderFilterInput(m.filterBuf, m.filterCursor) + "\n\n"
+		if m.filterErr != "" {
+			content += lipgloss.NewStyle().Foreground(lipgloss.Color("#ff6b6b")).Width(max(m.width-4, 20)).
+				MarginLeft(2).Render(m.filterErr) + "\n\n"
+		}
 		content += lipgloss.NewStyle().Foreground(lipgloss.Color("#888")).Render(
 			"  Syntax: local=<addr> peer=<addr> (peer==<addr> exact) sport=<port> dport=<port>\n" +
 				"          state=<state> proc=<name> pid=<pid> signal=<label> proto=tcp|udp\n" +
@@ -849,7 +854,10 @@ func (m *AppModel) openFinding() {
 		m.setStatus("this finding is host-wide — it isn't tied to specific sockets", 4*time.Second)
 		return
 	}
-	m.filter.SetQuery(f.Filter)
+	if err := m.filter.SetQuery(f.Filter); err != nil {
+		m.setStatus("can't show this finding's sockets: "+err.Error(), 5*time.Second)
+		return
+	}
 	if f.ShowListen {
 		m.filter.HideListen = false
 	}
@@ -1052,7 +1060,16 @@ func addTUIFlags(fs *flag.FlagSet) tuiFlags {
 	}
 }
 
-// apply sets the display options on the app.
+// check rejects a --filter the prompt would reject, before any slow setup
+// (polling ss, loading a recording).
+func (t tuiFlags) check() error {
+	if err := (&ui.Filter{}).SetQuery(*t.filterExpr); err != nil {
+		return fmt.Errorf("--filter: %w", err)
+	}
+	return nil
+}
+
+// apply sets the display options on the app. Call check first.
 func (t tuiFlags) apply(app *AppModel) {
 	if *t.showListen {
 		app.filter.HideListen = false
@@ -1061,7 +1078,7 @@ func (t tuiFlags) apply(app *AppModel) {
 		ui.SetResolveDNS(true)
 	}
 	if *t.filterExpr != "" {
-		app.filter.SetQuery(*t.filterExpr)
+		_ = app.filter.SetQuery(*t.filterExpr) // validated by check
 		app.table.InvalidateCache()
 	}
 }
@@ -1084,6 +1101,10 @@ func runTUI(args []string) int {
 	}
 	if len(rest) > 0 {
 		fmt.Fprintf(os.Stderr, "sstui: unexpected argument %q (commands: check, record, replay, report)\n", rest[0])
+		return 2
+	}
+	if err := disp.check(); err != nil {
+		fmt.Fprintln(os.Stderr, "sstui:", err)
 		return 2
 	}
 	ssf, err := live.setup()

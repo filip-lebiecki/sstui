@@ -464,6 +464,12 @@ Examples:
 
 `Esc` clears the filter.
 
+A term that can never match is rejected instead of quietly showing an empty
+table: an unknown key (`sigal=RETRANS`) or signal name (`signal=RETRANZ`,
+or the removed `DEL_DROP` / `BBR_LOW`). The prompt stays open with the
+reason and the current filter stays in place; `--filter` exits with the
+same message.
+
 ### Filtering at the source
 
 The `/` filter hides sockets *after* sstui has collected them. On a host

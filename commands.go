@@ -523,6 +523,10 @@ Flags:
 		fs.Usage()
 		return 2
 	}
+	if err := disp.check(); err != nil {
+		fmt.Fprintln(stderr, "sstui replay:", err)
+		return 2
+	}
 	app, n, err := loadReplay(files[0])
 	if err != nil {
 		fmt.Fprintln(stderr, "sstui replay:", err)

@@ -1,5 +1,10 @@
 package model
 
+import (
+	"slices"
+	"strings"
+)
+
 // SignalType represents a detected anomaly on a connection.
 type SignalType string
 
@@ -65,6 +70,33 @@ func (s SignalType) Label() string {
 		return l
 	}
 	return string(s)
+}
+
+// signalByName maps each lower-cased label and type name to its type.
+var signalByName = func() map[string]SignalType {
+	m := make(map[string]SignalType, 2*len(signalLabels))
+	for t, l := range signalLabels {
+		m[strings.ToLower(l)] = t
+		m[string(t)] = t
+	}
+	return m
+}()
+
+// ParseSignalType resolves a signal by its label ("RETRANS") or type name
+// ("retrans_in_flight"), ignoring case.
+func ParseSignalType(name string) (SignalType, bool) {
+	t, ok := signalByName[strings.ToLower(name)]
+	return t, ok
+}
+
+// SignalLabels returns every signal label, sorted.
+func SignalLabels() []string {
+	ls := make([]string, 0, len(signalLabels))
+	for _, l := range signalLabels {
+		ls = append(ls, l)
+	}
+	slices.Sort(ls)
+	return ls
 }
 
 // Signal holds a detected anomaly with its severity.

@@ -14,7 +14,6 @@ const (
 	SignalSendBufferPressure SignalType = "send_buffer_pressure"
 	SignalRecvBufferPressure SignalType = "recv_buffer_pressure"
 	SignalHighRetransRate    SignalType = "high_retrans_rate"
-	SignalDeliveryDrop       SignalType = "delivery_drop"
 	SignalCwndLimited        SignalType = "cwnd_limited"
 	SignalListenQueueFull    SignalType = "listen_queue_full"
 	SignalRTOFiring          SignalType = "rto_firing"
@@ -22,7 +21,6 @@ const (
 	SignalPeerNoAck          SignalType = "peer_no_ack"
 	SignalCWndCollapse       SignalType = "cwnd_collapse"
 	SignalDSACKSpurious      SignalType = "dsack_spurious"
-	SignalBBRUnderutil       SignalType = "bbr_underutil"
 	SignalReordering         SignalType = "reordering"
 	SignalSocketDrops        SignalType = "socket_drops"
 	SignalRwndLimited        SignalType = "rwnd_limited"
@@ -45,7 +43,6 @@ var signalLabels = map[SignalType]string{
 	SignalSendBufferPressure: "SEND_Q",
 	SignalRecvBufferPressure: "RCV_Q",
 	SignalHighRetransRate:    "HI_RETRANS",
-	SignalDeliveryDrop:       "DEL_DROP",
 	SignalCwndLimited:        "CWND_LIM",
 	SignalListenQueueFull:    "LISTEN_Q",
 	SignalRTOFiring:          "RTO",
@@ -53,7 +50,6 @@ var signalLabels = map[SignalType]string{
 	SignalPeerNoAck:          "NO_ACK",
 	SignalCWndCollapse:       "CWND_DROP",
 	SignalDSACKSpurious:      "DSACK",
-	SignalBBRUnderutil:       "BBR_LOW",
 	SignalReordering:         "REORDER",
 	SignalSocketDrops:        "DROPS",
 	SignalRwndLimited:        "RWND_LIM",

@@ -8,11 +8,11 @@ just "what's happening now".
 Built for triage: it opens on a ranked list of host-level problems
 ("postgres → 10.0.0.5:5432: 37 connections stalled — peer not reading"),
 each with its evidence and copy-ready fix commands sized from this host's
-kernel settings. Underneath, 26 per-socket signals like `ZERO_WIN`,
+kernel settings. Underneath, 24 per-socket signals like `ZERO_WIN`,
 `NO_ACK`, `RX_LOSS`, `SYN_STALL` and `LISTEN_Q` light up automatically, and
 every kernel metric is one key press away.
 
-![tabs](https://img.shields.io/badge/tabs-9-blue) ![signals](https://img.shields.io/badge/signals-26-orange) ![ring%20buffer](https://img.shields.io/badge/history-50%20min-green)
+![tabs](https://img.shields.io/badge/tabs-9-blue) ![signals](https://img.shields.io/badge/signals-24-orange) ![ring%20buffer](https://img.shields.io/badge/history-50%20min-green)
 
 ---
 
@@ -66,9 +66,9 @@ What you get out of the box:
   `Enter` jumps to exactly the affected sockets; `c` copies the command.
 - **Live table** of every TCP/UDP socket on the host with sortable columns,
   state-coloured fields, and an at-a-glance signal indicator per row.
-- **Automatic problem detection** through 26 named signals — retransmits,
+- **Automatic problem detection** through 24 named signals — retransmits,
   RTO storms, zero-window stalls, listen-queue overflow, ephemeral port
-  exhaustion, packet reordering, CWnd collapse, BBR underutilization, and
+  exhaustion, packet reordering, CWnd collapse, and
   more. Each is tunable in one place (`classifier/classifier.go`).
 - **50 minutes of history** in memory so you can see *when* something
   went wrong, not just that it's wrong now.
@@ -128,7 +128,7 @@ human-paced triage:
 | Per-connection RTT, CWnd, retrans, BBR        | ✓ with `-i`      | ✓ parsed and labelled         |
 | Refreshes automatically                       | `watch ss`       | Built-in, 2 s ticks            |
 | **Per-poll deltas** (TX/RX rates, retrans rate, OOO growth) | ✗   | ✓ computed in poller          |
-| **Anomaly classification** (named signals)    | ✗                | ✓ 26 rules                    |
+| **Anomaly classification** (named signals)    | ✗                | ✓ 24 rules                    |
 | **History** for "when did this start?"        | ✗                | ✓ 50 min ring                 |
 | **Time-series view** per connection           | ✗                | ✓ bar-graph sparklines        |
 | **Event log** of signal onsets                | ✗                | ✓ Events tab                  |
@@ -620,14 +620,6 @@ the sockets of whatever machine you run it on.
    total retrans, in-flight retrans, bytes retrans, lost, DSACK dups,
    reorder counters.
 
-### "Why is this BBR connection underutilizing?"
-
-1. Open the connection in Detail. Identity shows `Cong Ctrl: bbr` (green).
-2. Tab to **Socket**, look at BBR: `BW`, `MRTT`, `Pacing Gain`, `CWnd Gain`.
-3. `BBR_LOW` fires when delivery_rate < 0.5 × bw with non-app-limited
-   active sends; cross-check with `Pacing Gain` to see if BBR is in a
-   probe-down phase.
-
 ### "Capture state for a bug report"
 
 1. `sudo sstui record -o incident.jsonl.gz` on the server while the
@@ -661,7 +653,7 @@ sudo sstui check --json | jq '.findings[] | select(.active) | .title'
 
 ## Signals reference
 
-There are **26 signal types**, each at one of three severities: `info`
+There are **24 signal types**, each at one of three severities: `info`
 (grey), `warn` (yellow/orange), `crit` (red). Severity is reflected in the
 badge color and in the Live-tab indicator glyph.
 
@@ -677,15 +669,13 @@ badge color and in the Live-tab indicator glyph.
 | `SEND_Q`   | `send_buffer_pressure` | Send-Q ≥ 50% of send buffer (crit ≥80%), sustained 2 polls; 16K/64K abs fallback | column + `skmem` `tb` ✓        | 1–2      | yellow |
 | `RCV_Q`    | `recv_buffer_pressure` | Recv-Q ≥ 50% of recv buffer (crit ≥80%), sustained 2 polls; 16K/64K abs fallback | column + `skmem` `rb` ✓        | 1–2      | yellow |
 | `HI_RETRANS`| `high_retrans_rate` | `retrans/sent > 5%` (crit >20%)                                            | deltas of `bytes_sent`/`bytes_retrans` ✓ | 1–2    | red    |
-| `DEL_DROP` | `delivery_drop`      | not app-limited & sending & `delivery/pacing < 0.5`                        | `delivery_rate` `pacing_rate` ✓        | 1        | orange |
 | `CWND_LIM` | `cwnd_limited`       | `unacked > 0.8·cwnd` && `> 10` (using its full window — healthy bulk transfer) | `unacked:` `cwnd:` ✓                | 0 (info) | gray   |
 | `LISTEN_Q` | `listen_queue_full`  | LISTEN `RecvQ/SendQ > 0.8` (crit ≥1.0)                                      | `RecvQ/SendQ` column ✓                 | 1–2      | red    |
 | `RTO`      | `rto_firing`         | ESTAB, timer on, `TimerRetrans ≥ 2` (crit ≥4)                               | `timer:` `TimerRetrans` ✓              | 1–2      | red    |
 | `SYN_STALL`| `syn_stall`          | SYN-SENT, `TimerRetrans > 0` (crit ≥3)                                      | `state`, `TimerRetrans` ✓              | 1–2      | orange |
 | `NO_ACK`   | `peer_no_ack`        | data outstanding on two consecutive polls and nothing ACKed in between (crit if no ACK ≥10s) | `unacked:` `bytes_acked:` delta, `lastack:` ✓ | 1–2 | red |
-| `CWND_DROP`| `cwnd_collapse`      | `CWnd/PrevCWnd < 0.5` (crit <0.25), prev ≥ 20                              | `cwnd:` + prev poll `cwnd` ✓           | 1–2      | orange |
+| `CWND_DROP`| `cwnd_collapse`      | `CWnd/PrevCWnd < 0.5` (crit <0.25), prev ≥ 20, not BBR ProbeRTT            | `cwnd:` + prev poll `cwnd` ✓           | 1–2      | orange |
 | `DSACK`    | `dsack_spurious`     | `Δdsack_dups > 0` (crit >5)                                                 | `dsack_dups:` delta ✓                  | 1–2      | yellow |
-| `BBR_LOW`  | `bbr_underutil`      | BBR active, not app-limited, sending, `delivery < 0.5×BBR_BW`              | `bbr:BW` `delivery_rate` ✓             | 1        | orange |
 | `REORDER`  | `reordering`         | `Δreord_seen > 0` (crit >50) — sender-detected reordering                   | `reord_seen:` delta ✓                  | 1–2      | orange |
 | `DROPS`    | `socket_drops`       | `Δskmem.d > 0` (crit >10) — kernel dropped data at this socket (with `RX_LOSS` and no `RCV_Q`: out-of-order data discarded during loss recovery) | `skmem` `d` delta ✓ | 1–2 | red |
 | `RWND_LIM` | `rwnd_limited`       | sending & `Δrwnd_limited ≥ 25%` of poll (crit ≥75%) — blocked on peer window | `rwnd_limited:` delta ✓               | 1–2      | yellow |
@@ -722,10 +712,8 @@ badge color and in the Live-tab indicator glyph.
 | Signal        | Fires when                                                       | Severity         | What it means                                                       |
 |---------------|------------------------------------------------------------------|------------------|---------------------------------------------------------------------|
 | `ZERO_WIN`    | ESTAB, persist timer armed (or `snd_wnd:0`)                      | crit             | Peer's receive window is closed — peer not reading                  |
-| `CWND_DROP`   | `CWnd / PrevCWnd < 0.5` (with prev ≥ 20)                         | warn / crit (<0.25) | Congestion window collapsed between polls — loss event             |
+| `CWND_DROP`   | `CWnd / PrevCWnd < 0.5` (prev ≥ 20; not BBR ProbeRTT)            | warn / crit (<0.25) | Congestion window collapsed between polls — loss event             |
 | `CWND_LIM`    | `unacked > 0.8 × cwnd` and `unacked > 10`                        | info             | Using its full congestion window — normal for a bulk transfer       |
-| `DEL_DROP`    | not app-limited, sending, `delivery_rate / pacing_rate < 0.5`    | warn             | Kernel can't reach its own pacing target                            |
-| `BBR_LOW`     | BBR active, sending, not app-limited, `delivery_rate < 0.5 × BBR_BW` | warn         | BBR underutilizing its bandwidth estimate                           |
 | `PMTU`        | `pmtu < advmss + 40`                                             | warn             | Path MTU smaller than our advertised MSS                            |
 | `RTT_SPIKE`   | `rtt / minrtt > 5` and ≥10ms above min                            | warn / crit (>15) | Latency spike vs the connection's baseline                         |
 
@@ -876,7 +864,7 @@ ss -atunpeimOH ►│ parser  │──► []*model.Connection
                      ▼
                 ┌─────────┐       ┌─────────────┐
                 │ poller  │──┐    │ classifier  │
-                │ (ring   │  └───►│ (26 signals)│
+                │ (ring   │  └───►│ (24 signals)│
                 │  buffer)│       └─────────────┘
                 └────┬────┘             │
                      │                  ▼
@@ -903,7 +891,7 @@ ss -atunpeimOH ►│ parser  │──► []*model.Connection
   identity, inline numbers) sorted by key for binary-search lookup, plus
   `stateCounts`. Only the newest snapshot keeps full-detail
   `Connection`s; older ones materialize slim connections on demand.
-- **`classifier/`** — pure rules producing 26 signal types, run once per
+- **`classifier/`** — pure rules producing 24 signal types, run once per
   connection per poll (plus aggregate rules for CLOSE-WAIT leaks and
   TIME-WAIT storms).
   Severity is encoded as `0` (info) / `1` (warn) / `2` (crit). New

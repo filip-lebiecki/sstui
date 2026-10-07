@@ -285,6 +285,19 @@ func TestClassifyReorderingUsesReordSeen(t *testing.T) {
 	}
 }
 
+// TestClassifyCWndCollapseSkipsBBRProbeRTT: BBR's periodic ProbeRTT drop to
+// 4 packets (cwnd_gain 1) is by design; the same drop in PROBE_BW is not.
+func TestClassifyCWndCollapseSkipsBBRProbeRTT(t *testing.T) {
+	probeRTT := &model.Connection{Protocol: "tcp", State: "ESTAB", PrevCWnd: ip(698), CWnd: ip(4), BBRCWndGain: fl(1)}
+	if _, ok := sigByType(Classify(probeRTT), model.SignalCWndCollapse); ok {
+		t.Errorf("BBR ProbeRTT should not raise CWND_DROP")
+	}
+	probeBW := &model.Connection{Protocol: "tcp", State: "ESTAB", PrevCWnd: ip(698), CWnd: ip(4), BBRCWndGain: fl(2)}
+	if s, ok := sigByType(Classify(probeBW), model.SignalCWndCollapse); !ok || s.Severity != 2 {
+		t.Errorf("cwnd collapse outside ProbeRTT should be crit, got %+v (present=%v)", s, ok)
+	}
+}
+
 // TestClassifyCwndLimitedIsInfo: a full congestion window is healthy bulk
 // transfer, so CWND_LIM is informational.
 func TestClassifyCwndLimitedIsInfo(t *testing.T) {

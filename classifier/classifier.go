@@ -242,6 +242,13 @@ func noAckFloorMS(c *model.Connection) float64 {
 	return floor
 }
 
+// bbrProbeRTT reports whether a BBR connection is in its ProbeRTT phase, the
+// only phase that runs with a cwnd gain of 1 (STARTUP and DRAIN use 2.89,
+// PROBE_BW uses 2).
+func bbrProbeRTT(c *model.Connection) bool {
+	return c.BBRCWndGain != nil && *c.BBRCWndGain < 1.5
+}
+
 // fmtSecs renders milliseconds as whole seconds ("12s"), or ms below 1s.
 func fmtSecs(ms int) string {
 	if ms < 1000 {
@@ -401,15 +408,6 @@ func Classify(c *model.Connection) []model.Signal {
 		}
 	}
 
-	// Only flag delivery drop when the app is actually trying to send.
-	if c.AppLimited == 0 && c.DeltaBytesSent != nil && *c.DeltaBytesSent > 0 &&
-		c.DeliveryRate != nil && c.PacingRate != nil && *c.PacingRate > 0 {
-		ratio := float64(*c.DeliveryRate) / float64(*c.PacingRate)
-		if ratio < 0.5 {
-			signals = append(signals, model.Signal{Type: model.SignalDeliveryDrop, Severity: 1, Value: ratio})
-		}
-	}
-
 	// Bottleneck attribution: how much of this poll the sender spent blocked on
 	// the peer's receive window (rwnd_limited) vs. its own send buffer
 	// (sndbuf_limited). Only meaningful while actively sending — a limit on an
@@ -474,8 +472,10 @@ func Classify(c *model.Connection) []model.Signal {
 
 	// CWnd collapse: congestion window dropped sharply between polls. Only
 	// meaningful when the prior window was non-trivial; tiny windows
-	// fluctuate naturally during slow start.
-	if c.PrevCWnd != nil && c.CWnd != nil && *c.PrevCWnd >= 20 {
+	// fluctuate naturally during slow start. BBR's ProbeRTT phase is skipped:
+	// every ~10s it deliberately cuts cwnd to 4 packets for ~200ms to re-measure
+	// min RTT, so a poll landing there would otherwise always look like a collapse.
+	if c.PrevCWnd != nil && c.CWnd != nil && *c.PrevCWnd >= 20 && !bbrProbeRTT(c) {
 		ratio := float64(*c.CWnd) / float64(*c.PrevCWnd)
 		if ratio < 0.5 {
 			sev := 1
@@ -525,18 +525,6 @@ func Classify(c *model.Connection) []model.Signal {
 			sev = 2
 		}
 		signals = append(signals, model.Signal{Type: model.SignalReordering, Severity: sev, Value: *c.DeltaReordSeen})
-	}
-
-	// BBR delivering less than half its bandwidth estimate while actively
-	// trying to send (and not app-limited). Surfaces BBR-specific
-	// under-utilization that the generic DEL_DROP signal may miss when
-	// pacing_rate is calibrated to the actual delivery rate.
-	if c.BBRBW != nil && *c.BBRBW > 0 && c.DeliveryRate != nil &&
-		c.AppLimited == 0 && c.DeltaBytesSent != nil && *c.DeltaBytesSent > 0 {
-		ratio := float64(*c.DeliveryRate) / float64(*c.BBRBW)
-		if ratio < 0.5 {
-			signals = append(signals, model.Signal{Type: model.SignalBBRUnderutil, Severity: 1, Value: ratio})
-		}
 	}
 
 	return signals

@@ -285,21 +285,45 @@ func TestClassifyReorderingUsesReordSeen(t *testing.T) {
 	}
 }
 
-// TestClassifyCWndCollapse: BBR's periodic ProbeRTT drop to 4 packets
-// (cwnd_gain 1) is by design; the same drop in PROBE_BW, or on a non-BBR
-// connection (no gain reported), is not.
+// TestClassifyCWndCollapse: a sharp cwnd cut fires only with loss or ECN
+// marks in the same poll; a cut without them (restart after idle, cwnd
+// validation) and BBR's ProbeRTT drop to 4 packets (cwnd_gain 1) are by
+// design. Without bytes_retrans (old kernel) the cause can't be checked.
 func TestClassifyCWndCollapse(t *testing.T) {
-	probeRTT := &model.Connection{Protocol: "tcp", State: "ESTAB", PrevCWnd: ip(698), CWnd: ip(4), BBRCWndGain: fl(1)}
-	if _, ok := sigByType(Classify(probeRTT), model.SignalCWndCollapse); ok {
-		t.Errorf("BBR ProbeRTT should not raise CWND_DROP")
+	collapse := func(prev, cur int) *model.Connection {
+		return &model.Connection{Protocol: "tcp", State: "ESTAB", PrevCWnd: ip(prev), CWnd: ip(cur),
+			DeltaBytesRetrans: ip(0), DeltaDeliveredCE: ip(0)}
 	}
-	probeBW := &model.Connection{Protocol: "tcp", State: "ESTAB", PrevCWnd: ip(698), CWnd: ip(4), BBRCWndGain: fl(2)}
-	if s, ok := sigByType(Classify(probeBW), model.SignalCWndCollapse); !ok || s.Severity != 2 {
-		t.Errorf("cwnd collapse outside ProbeRTT should be crit, got %+v (present=%v)", s, ok)
+	cases := []struct {
+		name    string
+		c       *model.Connection
+		wantSev int // 0 = no signal
+		wantVal string
+	}{
+		{"idle restart, no loss", collapse(241, 100), 0, ""},
+		{"loss: bytes retransmitted", func() *model.Connection { c := collapse(100, 40); c.DeltaBytesRetrans = ip(7240); return c }(), 1, "100→40 after loss"},
+		{"loss: packets marked lost", func() *model.Connection { c := collapse(100, 20); c.Lost = ip(3); return c }(), 2, "100→20 after loss"},
+		{"ECN marks", func() *model.Connection { c := collapse(100, 40); c.DeltaDeliveredCE = ip(12); return c }(), 1, "100→40 after ECN marks"},
+		{"old kernel, cause unknown", &model.Connection{Protocol: "tcp", State: "ESTAB", PrevCWnd: ip(100), CWnd: ip(40)}, 1, "100→40"},
+		{"BBR ProbeRTT on a lossy path", func() *model.Connection {
+			c := collapse(698, 4)
+			c.BBRCWndGain, c.DeltaBytesRetrans = fl(1), ip(1448)
+			return c
+		}(), 0, ""},
+		{"BBR PROBE_BW loss", func() *model.Connection {
+			c := collapse(698, 4)
+			c.BBRCWndGain, c.DeltaBytesRetrans = fl(2), ip(1448)
+			return c
+		}(), 2, "698→4 after loss"},
 	}
-	cubic := &model.Connection{Protocol: "tcp", State: "ESTAB", PrevCWnd: ip(100), CWnd: ip(40)}
-	if s, ok := sigByType(Classify(cubic), model.SignalCWndCollapse); !ok || s.Severity != 1 {
-		t.Errorf("non-BBR cwnd collapse (no gain reported) should warn, got %+v (present=%v)", s, ok)
+	for _, tc := range cases {
+		s, ok := sigByType(Classify(tc.c), model.SignalCWndCollapse)
+		switch {
+		case tc.wantSev == 0 && ok:
+			t.Errorf("%s: want no CWND_DROP, got %+v", tc.name, s)
+		case tc.wantSev > 0 && (!ok || s.Severity != tc.wantSev || s.Value != tc.wantVal):
+			t.Errorf("%s: want CWND_DROP sev %d %q, got %+v (present=%v)", tc.name, tc.wantSev, tc.wantVal, s, ok)
+		}
 	}
 }
 

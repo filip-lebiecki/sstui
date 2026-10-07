@@ -41,9 +41,10 @@ type Connection struct {
 	WscaleRcv *int `json:",omitempty"`
 
 	// throughput
-	Delivered  *int `json:",omitempty"`
-	AppLimited int  `json:",omitempty"`
-	SendBPS    *int `json:",omitempty"`
+	Delivered   *int `json:",omitempty"`
+	DeliveredCE *int `json:",omitempty"` // delivered_ce: delivered packets whose ACKs echoed an ECN congestion mark
+	AppLimited  int  `json:",omitempty"`
+	SendBPS     *int `json:",omitempty"`
 
 	// TCP metrics
 	RTO      *float64 `json:",omitempty"`
@@ -117,6 +118,7 @@ type Connection struct {
 	DeltaDataSegsIn      *int     `json:",omitempty"` // data segments received this poll (OOO ratio denominator)
 	DeltaReordSeen       *int     `json:",omitempty"` // reordering events the sender detected this poll
 	DeltaBytesAcked      *int     `json:",omitempty"` // bytes newly acknowledged by the peer this poll
+	DeltaDeliveredCE     *int     `json:",omitempty"` // packets delivered with an ECN congestion mark this poll
 	DeltaSkmemD          *int     `json:",omitempty"` // new socket-buffer drops since the previous poll
 	DeltaBusyMS          *float64 `json:",omitempty"`
 	DeltaRwndLimitedMS   *float64 `json:",omitempty"` // ms blocked on the peer's recv window this poll

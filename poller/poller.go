@@ -290,6 +290,7 @@ func computeDeltas(cur, prev *model.Connection) {
 		{curVal: cur.DataSegsIn, prevVal: prev.DataSegsIn, out: &cur.DeltaDataSegsIn},
 		{curVal: cur.ReordSeen, prevVal: prev.ReordSeen, out: &cur.DeltaReordSeen},
 		{curVal: cur.BytesAcked, prevVal: prev.BytesAcked, out: &cur.DeltaBytesAcked},
+		{curVal: cur.DeliveredCE, prevVal: prev.DeliveredCE, out: &cur.DeltaDeliveredCE},
 		{curVal: cur.SkmemD, prevVal: prev.SkmemD, out: &cur.DeltaSkmemD},
 	}
 

@@ -386,6 +386,8 @@ func parseRecord(line string, ts time.Time) (*model.Connection, error) {
 			c.LastAck = sl.atoi(val)
 		case "delivered":
 			c.Delivered = sl.atoi(val)
+		case "delivered_ce":
+			c.DeliveredCE = sl.atoi(val)
 		case "busy":
 			c.BusyMS = sl.parseMS(val)
 		case "rwnd_limited":
@@ -646,6 +648,12 @@ var omittedGroups = []omittedGroup{
 		sentinel: func(c *model.Connection) bool { return c.BytesSent != nil },
 		fields: func(c *model.Connection) []**int {
 			return []**int{&c.BytesSent, &c.BytesRetrans, &c.DSACKDups, &c.ReordSeen}
+		},
+	},
+	{ // Linux 4.18: delivered, delivered_ce
+		sentinel: func(c *model.Connection) bool { return c.Delivered != nil },
+		fields: func(c *model.Connection) []**int {
+			return []**int{&c.Delivered, &c.DeliveredCE}
 		},
 	},
 	{ // Linux 5.4: snd_wnd (sentinel, ~never 0 unless zero-window), rcv_ooopack

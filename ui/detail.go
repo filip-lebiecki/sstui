@@ -165,6 +165,9 @@ func RenderDetail(conn *model.Connection, historical bool, buf *poller.Buffer, w
 		sb.WriteString(fmtRowColor("Delivery Rate", fmtBPS(conn.DeliveryRate), dimIfZero(conn.DeliveryRate, colPort)))
 		sb.WriteString(fmtRowColor("Send (inst)", fmtBPS(conn.SendBPS), dimIfZero(conn.SendBPS, colTX)))
 		sb.WriteString(fmtRowColor("Delivered", fmtPackets(conn.Delivered), colDim))
+		if conn.DeliveredCE != nil && *conn.DeliveredCE > 0 { // only on ECN paths that saw congestion
+			sb.WriteString(fmtRowColor("Delivered CE", fmtPackets(conn.DeliveredCE), colQ))
+		}
 		if conn.LastSnd != nil {
 			sb.WriteString(fmtRowColor("Last Send", fmtMs(conn.LastSnd), colDim))
 		}

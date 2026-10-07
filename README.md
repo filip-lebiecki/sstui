@@ -691,7 +691,7 @@ badge color and in the Live-tab indicator glyph.
 | `RTO`      | `rto_firing`         | ESTAB, timer on, `TimerRetrans ≥ 2` (crit ≥4)                               | `timer:` `TimerRetrans` ✓              | 1–2      | red    |
 | `SYN_STALL`| `syn_stall`          | SYN-SENT, `TimerRetrans > 0` (crit ≥3)                                      | `state`, `TimerRetrans` ✓              | 1–2      | orange |
 | `NO_ACK`   | `peer_no_ack`        | data outstanding on two consecutive polls and nothing ACKed in between (crit if no ACK ≥10s) | `unacked:` `bytes_acked:` delta, `lastack:` ✓ | 1–2 | red |
-| `CWND_DROP`| `cwnd_collapse`      | `CWnd/PrevCWnd < 0.5` (crit <0.25), prev ≥ 20, not BBR ProbeRTT            | `cwnd:` + prev poll `cwnd` ✓           | 1–2      | orange |
+| `CWND_DROP`| `cwnd_collapse`      | `CWnd/PrevCWnd < 0.5` (crit <0.25), prev ≥ 20, with loss or ECN marks the same poll, not BBR ProbeRTT | `cwnd:` + prev poll `cwnd`, `bytes_retrans:` delta, `lost:`, `delivered_ce:` delta ✓ | 1–2      | orange |
 | `DSACK`    | `dsack_spurious`     | `Δdsack_dups > 0` (crit >5)                                                 | `dsack_dups:` delta ✓                  | 1–2      | yellow |
 | `REORDER`  | `reordering`         | `Δreord_seen > 0` (crit >50) — sender-detected reordering                   | `reord_seen:` delta ✓                  | 1–2      | orange |
 | `DROPS`    | `socket_drops`       | `Δskmem.d > 0` (crit >10) — kernel dropped data at this socket (with `RX_LOSS` and no `RCV_Q`: out-of-order data discarded during loss recovery) | `skmem` `d` delta ✓ | 1–2 | red |
@@ -729,7 +729,7 @@ badge color and in the Live-tab indicator glyph.
 | Signal        | Fires when                                                       | Severity         | What it means                                                       |
 |---------------|------------------------------------------------------------------|------------------|---------------------------------------------------------------------|
 | `ZERO_WIN`    | ESTAB, persist timer armed (or `snd_wnd:0`)                      | crit             | Peer's receive window is closed — peer not reading                  |
-| `CWND_DROP`   | `CWnd / PrevCWnd < 0.5` (prev ≥ 20; not BBR ProbeRTT)            | warn / crit (<0.25) | Congestion window collapsed between polls — usually loss; also an idle connection restarting |
+| `CWND_DROP`   | `CWnd / PrevCWnd < 0.5` (prev ≥ 20) with retransmits, lost packets or new ECN marks the same poll; not BBR ProbeRTT | warn / crit (<0.25) | Loss or ECN congestion marks cut the congestion window sharply. Cuts without them (restart after idle, an app-limited window trimmed) are ignored |
 | `CWND_LIM`    | `unacked > 0.8 × cwnd` and `unacked > 10`                        | info             | Using its full congestion window — normal for a bulk transfer       |
 | `PMTU`        | `pmtu < advmss + 40`                                             | warn             | Path MTU smaller than our advertised MSS                            |
 | `RTT_SPIKE`   | `rtt / minrtt > 5` and ≥10ms above min                            | warn / crit (>15) | Latency spike vs the connection's baseline                         |
@@ -798,6 +798,7 @@ socket creation.
 | Delivery Rate     | `delivery_rate Xbps` | Observed delivery rate                                 |
 | Send (inst)       | `send Xbps`          | Instantaneous estimated send rate                      |
 | Delivered         | `delivered:`         | cum. delivered packets                                 |
+| Delivered CE      | `delivered_ce:`      | cum. delivered packets ACKed with an ECN congestion mark (shown when non-zero) |
 | AppLimited        | `app_limited`        | TCP was waiting on the application this RTT            |
 | Busy              | `busy:Xms`           | cum. ms doing TCP work; UI shows `ΔBusy / poll` ratio  |
 

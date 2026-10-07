@@ -14,7 +14,7 @@ import (
 // name containing spaces and parens, BBR, retransmits, a zero-window sender
 // (persist timer, no snd_wnd), TIME-WAIT, IPv6, a listener, connected and
 // unconnected UDP, plus a protocol we don't track.
-const sampleSS = `tcp   ESTAB     0      0      10.0.0.1:443   10.0.0.2:51000 users:(("Web Content (x)",pid=4242,fd=7),("nginx",pid=9,fd=3)) timer:(keepalive,50sec,0) uid:1000 ino:111 sk:1 cgroup:/system.slice/cups-lp.service <-> skmem:(r0,rb131072,t0,tb87040,f0,w0,o0,bl0,d2) ts sack bbr wscale:13,10 rto:211 rtt:10.083/0.776 ato:42 mss:1440 pmtu:1500 rcvmss:1440 advmss:1448 cwnd:38 ssthresh:20 bytes_sent:40811 bytes_retrans:1440 bytes_acked:40812 bytes_received:4541 segs_out:45 segs_in:23 data_segs_out:30 data_segs_in:14 bbr:(bw:12345678bps,mrtt:9.5,pacing_gain:2.88672,cwnd_gain:2.88672) send 43415650bps lastsnd:9042 lastrcv:4530 lastack:4530 pacing_rate 86824840bps/90000000bps delivery_rate 20044464bps delivered:31 app_limited busy:31ms rwnd_limited:20ms(64.5%) sndbuf_limited:5ms(16.1%) unacked:3 retrans:1/7 lost:2 dsack_dups:1 reordering:5 reord_seen:2 rcv_rtt:965 rcv_space:14480 rcv_ssthresh:76850 minrtt:9.847 rcv_ooopack:4 snd_wnd:131072 rcv_wnd:77824
+const sampleSS = `tcp   ESTAB     0      0      10.0.0.1:443   10.0.0.2:51000 users:(("Web Content (x)",pid=4242,fd=7),("nginx",pid=9,fd=3)) timer:(keepalive,50sec,0) uid:1000 ino:111 sk:1 cgroup:/system.slice/cups-lp.service <-> skmem:(r0,rb131072,t0,tb87040,f0,w0,o0,bl0,d2) ts sack bbr wscale:13,10 rto:211 rtt:10.083/0.776 ato:42 mss:1440 pmtu:1500 rcvmss:1440 advmss:1448 cwnd:38 ssthresh:20 bytes_sent:40811 bytes_retrans:1440 bytes_acked:40812 bytes_received:4541 segs_out:45 segs_in:23 data_segs_out:30 data_segs_in:14 bbr:(bw:12345678bps,mrtt:9.5,pacing_gain:2.88672,cwnd_gain:2.88672) send 43415650bps lastsnd:9042 lastrcv:4530 lastack:4530 pacing_rate 86824840bps/90000000bps delivery_rate 20044464bps delivered:31 delivered_ce:6 app_limited busy:31ms rwnd_limited:20ms(64.5%) sndbuf_limited:5ms(16.1%) unacked:3 retrans:1/7 lost:2 dsack_dups:1 reordering:5 reord_seen:2 rcv_rtt:965 rcv_space:14480 rcv_ssthresh:76850 minrtt:9.847 rcv_ooopack:4 snd_wnd:131072 rcv_wnd:77824
 tcp   ESTAB     0      1789952 127.0.0.1:60080 127.0.0.1:47123 timer:(persist,2.456sec,0) uid:1000 ino:222 sk:2 <-> skmem:(r0,rb131072,t0,tb2626560,f0,w0,o0,bl0,d0) ts sack cubic wscale:0,10 rto:206 backoff:4 rtt:5.106/10.154 mss:2048 cwnd:10 bytes_sent:4096 bytes_acked:4097 segs_out:8 segs_in:6 busy:4002ms rwnd_limited:4002ms(100.0%) notsent:1789952 minrtt:0.031 rcv_wnd:65536
 tcp   TIME-WAIT 0      0      [2001:db8::1]:47884 [2606:4700::1]:443 timer:(timewait,50sec,0) ino:0 sk:500a
 tcp   LISTEN    0      4096   0.0.0.0:8025   0.0.0.0:*      ino:333 sk:3 cgroup:/system.slice/docker.service <-> skmem:(r0,rb131072,t0,tb16384,f0,w0,o0,bl0,d0) cubic cwnd:10
@@ -86,7 +86,7 @@ func TestScanRecordsSample(t *testing.T) {
 		{"pacing (first of pair)", i(c.PacingRate), 86824840},
 		{"delivery", i(c.DeliveryRate), 20044464},
 		{"last", [3]int{i(c.LastSnd), i(c.LastRcv), i(c.LastAck)}, [3]int{9042, 4530, 4530}},
-		{"delivered", i(c.Delivered), 31},
+		{"delivered/delivered_ce", [2]int{i(c.Delivered), i(c.DeliveredCE)}, [2]int{31, 6}},
 		{"app_limited", c.AppLimited, 1},
 		{"busy/rwnd/sndbuf", [3]float64{f(c.BusyMS), f(c.RwndLimitedMS), f(c.SndbufLimitedMS)}, [3]float64{31, 20, 5}},
 		{"unacked", i(c.Unacked), 3},
@@ -218,7 +218,7 @@ func TestParseLineCongAlgoIgnoresIdentity(t *testing.T) {
 // counters on tcp_info sockets become 0 so the first loss burst yields a delta.
 // Info-less sockets (TIME-WAIT) are left alone.
 func TestFillOmittedZeros(t *testing.T) {
-	clean, _ := ParseLine("ESTAB 0 0 10.0.0.1:1 10.0.0.2:443 cubic rtt:1/1 cwnd:10 bytes_sent:1000 segs_out:5 busy:3ms")
+	clean, _ := ParseLine("ESTAB 0 0 10.0.0.1:1 10.0.0.2:443 cubic rtt:1/1 cwnd:10 bytes_sent:1000 segs_out:5 busy:3ms delivered:4")
 	clean.Protocol = "tcp"
 	tw, _ := ParseLine("TIME-WAIT 0 0 10.0.0.1:2 10.0.0.2:443 timer:(timewait,30sec,0) ino:0")
 	tw.Protocol = "tcp"
@@ -230,6 +230,9 @@ func TestFillOmittedZeros(t *testing.T) {
 	if clean.DSACKDups == nil || clean.RwndLimitedMS == nil || clean.BytesReceived == nil {
 		t.Errorf("omitted counters should be zero-filled: dsack=%v rwnd=%v rx=%v",
 			clean.DSACKDups, clean.RwndLimitedMS, clean.BytesReceived)
+	}
+	if clean.DeliveredCE == nil || *clean.DeliveredCE != 0 {
+		t.Errorf("DeliveredCE = %v, want 0 (delivered shows the kernel reports it)", clean.DeliveredCE)
 	}
 	if clean.RcvOOOPack != nil {
 		t.Errorf("no socket showed snd_wnd, so rcv_ooopack support is unknown and must stay nil")

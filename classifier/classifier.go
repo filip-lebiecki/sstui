@@ -249,6 +249,26 @@ func bbrProbeRTT(c *model.Connection) bool {
 	return c.BBRCWndGain != nil && *c.BBRCWndGain < 1.5
 }
 
+// cwndCutCause names the congestion event in this poll that explains a cwnd
+// reduction: "loss" (retransmissions or packets marked lost) or "ECN marks"
+// (ACKs echoing congestion marks). ok is false when the poll shows neither:
+// the kernel then shrank a window the connection wasn't using, either on
+// restart after idle (tcp_slow_start_after_idle) or while app-limited (cwnd
+// validation), which says nothing about the path. On kernels without
+// bytes_retrans (before 4.19) the evidence isn't visible, so it answers
+// ok with no cause rather than hiding every collapse.
+func cwndCutCause(c *model.Connection) (cause string, ok bool) {
+	switch {
+	case c.DeltaBytesRetrans == nil:
+		return "", true
+	case *c.DeltaBytesRetrans > 0 || (c.Lost != nil && *c.Lost > 0):
+		return "loss", true
+	case c.DeltaDeliveredCE != nil && *c.DeltaDeliveredCE > 0:
+		return "ECN marks", true
+	}
+	return "", false
+}
+
 // fmtSecs renders milliseconds as whole seconds ("12s"), or ms below 1s.
 func fmtSecs(ms int) string {
 	if ms < 1000 {
@@ -470,20 +490,24 @@ func Classify(c *model.Connection) []model.Signal {
 			Value: fmt.Sprintf("%d unacked, no ACK for %s", *c.Unacked, fmtSecs(*c.LastAck))})
 	}
 
-	// CWnd collapse: congestion window dropped sharply between polls. Only
-	// meaningful when the prior window was non-trivial; tiny windows
+	// CWnd collapse: congestion window dropped sharply between polls, with
+	// loss or ECN marks in the same poll to explain it (see cwndCutCause).
+	// Only meaningful when the prior window was non-trivial; tiny windows
 	// fluctuate naturally during slow start. BBR's ProbeRTT phase is skipped:
 	// every ~10s it deliberately cuts cwnd to 4 packets for ~200ms to re-measure
-	// min RTT, so a poll landing there would otherwise always look like a collapse.
+	// min RTT, so on a lossy path a poll landing there would look like a collapse.
 	if c.PrevCWnd != nil && c.CWnd != nil && *c.PrevCWnd >= 20 && !bbrProbeRTT(c) {
 		ratio := float64(*c.CWnd) / float64(*c.PrevCWnd)
-		if ratio < 0.5 {
+		if cause, ok := cwndCutCause(c); ok && ratio < 0.5 {
 			sev := 1
 			if ratio < 0.25 {
 				sev = 2
 			}
-			signals = append(signals, model.Signal{Type: model.SignalCWndCollapse, Severity: sev,
-				Value: fmt.Sprintf("%d→%d", *c.PrevCWnd, *c.CWnd)})
+			v := fmt.Sprintf("%d→%d", *c.PrevCWnd, *c.CWnd)
+			if cause != "" {
+				v += " after " + cause
+			}
+			signals = append(signals, model.Signal{Type: model.SignalCWndCollapse, Severity: sev, Value: v})
 		}
 	}
 

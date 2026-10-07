@@ -32,14 +32,14 @@ var (
 // RenderDetail renders the network-level detail view: identity, signals,
 // performance, congestion, throughput, retransmits. Socket-side and historical
 // data live in RenderSocket on a separate tab.
-func RenderDetail(conn *model.Connection, buf *poller.Buffer, width, height int) string {
+func RenderDetail(conn *model.Connection, historical bool, buf *poller.Buffer, width, height int) string {
 	if conn == nil {
 		return "\n  No connection selected. Use Enter on a connection to view details."
 	}
 
 	var b strings.Builder
 
-	b.WriteString(styleDetailTitle.Render(" Connection Detail") + "\n\n")
+	b.WriteString(styleDetailTitle.Render(" Connection Detail") + historicalNote(conn, historical) + "\n\n")
 	b.WriteString(RenderDiagnosis(conn) + "\n\n")
 
 	var sections []string
@@ -225,13 +225,13 @@ func RenderDetail(conn *model.Connection, buf *poller.Buffer, width, height int)
 // queue depths, socket memory, BBR state, and historical sparklines. Paired
 // with RenderDetail on a sibling tab so the network-level data and the
 // resource-level data each get the full viewport.
-func RenderSocket(conn *model.Connection, buf *poller.Buffer, width, height int) string {
+func RenderSocket(conn *model.Connection, historical bool, buf *poller.Buffer, width, height int) string {
 	if conn == nil {
 		return "\n  No connection selected. Use Enter on a connection to view details."
 	}
 
 	var b strings.Builder
-	b.WriteString(styleDetailTitle.Render(" Socket & History") + "\n")
+	b.WriteString(styleDetailTitle.Render(" Socket & History") + historicalNote(conn, historical) + "\n")
 	peer := conn.PeerAddr + ":" + conn.PeerPort
 	if conn.Process != nil {
 		peer += "  " + *conn.Process
@@ -324,6 +324,18 @@ func RenderSocket(conn *model.Connection, buf *poller.Buffer, width, height int)
 	b.WriteString(renderSparklines(conn, buf, width))
 
 	return b.String()
+}
+
+// historicalNote explains why most fields read "-" when the connection comes
+// from an older snapshot: history keeps only summary fields per poll (see
+// poller.Sample), not the full ss record.
+func historicalNote(conn *model.Connection, historical bool) string {
+	if !historical {
+		return ""
+	}
+	return lipgloss.NewStyle().Foreground(lipgloss.Color("#ffd43b")).Render(
+		fmt.Sprintf("  ⏱ snapshot from %s — history records summary fields only (RTT, cwnd, queues, rates, signals)",
+			conn.Timestamp.Format("15:04:05")))
 }
 
 // layoutSections arranges detail sections into 1 or 2 columns based on width.

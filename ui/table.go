@@ -66,7 +66,7 @@ var defaultColumns = []TableColumn{
 	{
 		Key:   "signal",
 		Title: "",
-		Width: 2,
+		Width: 1,
 		Render: func(c *model.Connection) string {
 			return RenderSignalBar(c.Signals)
 		},

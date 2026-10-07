@@ -106,6 +106,8 @@ type AppModel struct {
 	paused      bool
 	scrubOffset int
 
+	exporting bool // a background export is running
+
 	// tableSnap is the snapshot whose connections the table currently holds,
 	// so syncTable can skip redundant reloads.
 	tableSnap *poller.Snapshot
@@ -147,9 +149,6 @@ func (m *AppModel) contentHeightFor(tab ViewMode) int {
 	footerLines := 1
 	if tab == ViewLive {
 		footerLines++
-	}
-	if m.showHelp {
-		footerLines += 15
 	}
 	h := m.height - headerLines - footerLines
 	if h < 1 {
@@ -298,27 +297,23 @@ func (m *AppModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "r":
 			on := ui.ToggleResolveDNS()
 			if on {
-				m.statusMsg = "reverse DNS: on"
+				m.setStatus("reverse DNS: on", 3*time.Second)
 			} else {
-				m.statusMsg = "reverse DNS: off"
+				m.setStatus("reverse DNS: off", 3*time.Second)
 			}
-			m.statusExpiry = time.Now().Add(3 * time.Second)
 		case "e":
-			if m.tab == ViewEvents {
-				m.exportEvents("json")
-			} else {
-				m.export("json")
-			}
+			return m, m.startExport("json", m.tab == ViewEvents)
 		case "E":
-			if m.tab == ViewEvents {
-				m.exportEvents("csv")
-			} else {
-				m.export("csv")
-			}
+			return m, m.startExport("csv", m.tab == ViewEvents)
 		}
 
 	case tickMsg:
 		return m, pollCmd()
+
+	case exportDoneMsg:
+		m.exporting = false
+		m.setStatus(msg.status, 5*time.Second)
+		return m, nil
 
 	case pollResultMsg:
 		m.lastError = msg.err
@@ -397,13 +392,35 @@ func (m *AppModel) handleFilterInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.filterBuf = left + m.filterBuf[m.filterCursor:]
 		m.filterCursor = len(left)
 	default:
-		s := msg.String()
-		if utf8.RuneCountInString(s) == 1 {
+		// KeyRunes covers both typed characters and bracketed paste (where
+		// msg.String() is "[pasted text]", so it can't be used directly).
+		var s string
+		switch msg.Type {
+		case tea.KeyRunes:
+			s = sanitizeFilterInput(string(msg.Runes))
+		case tea.KeySpace:
+			s = " "
+		}
+		if s != "" {
 			m.filterBuf = m.filterBuf[:m.filterCursor] + s + m.filterBuf[m.filterCursor:]
 			m.filterCursor += len(s)
 		}
 	}
 	return m, nil
+}
+
+// sanitizeFilterInput makes pasted text safe for the one-line filter: line
+// breaks and tabs become spaces, other control characters are dropped.
+func sanitizeFilterInput(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r == '\n' || r == '\r' || r == '\t':
+			return ' '
+		case r < 0x20 || r == 0x7f:
+			return -1
+		}
+		return r
+	}, s)
 }
 
 func (m *AppModel) applyFilter() {
@@ -479,12 +496,12 @@ func (m *AppModel) View() string {
 		showTableFooter = true
 
 	case ViewDetail:
-		conn := m.getConnectionByKey(m.selectedKey)
-		content = ui.RenderDetail(conn, m.buf, m.width, ch)
+		conn, hist := m.getConnectionByKey(m.selectedKey)
+		content = ui.RenderDetail(conn, hist, m.buf, m.width, ch)
 
 	case ViewSocket:
-		conn := m.getConnectionByKey(m.selectedKey)
-		content = ui.RenderSocket(conn, m.buf, m.width, ch)
+		conn, hist := m.getConnectionByKey(m.selectedKey)
+		content = ui.RenderSocket(conn, hist, m.buf, m.width, ch)
 
 	case ViewOverview:
 		content = ui.RenderOverview(m.buf, m.width, ch)
@@ -514,6 +531,14 @@ func (m *AppModel) View() string {
 				"  Enter to apply, Escape to cancel")
 	}
 
+	// The help panel replaces the tab content (rather than being appended
+	// below it) so it can never push the header off-screen on a short
+	// terminal; it's clipped like any other tab.
+	if m.showHelp && m.tab != ViewFilter {
+		content = ui.RenderHelp()
+		showTableFooter = false
+	}
+
 	// Clip content to available height
 	content = clipToHeight(content, ch)
 	b.WriteString(content)
@@ -523,13 +548,8 @@ func (m *AppModel) View() string {
 		b.WriteString("\n" + tableFooter)
 	}
 
-	// Help
-	if m.showHelp {
-		b.WriteString("\n\n" + ui.RenderHelp())
-	}
-
 	// Footer (fixed)
-	if !m.showHelp && m.tab != ViewFilter {
+	if m.tab != ViewFilter {
 		b.WriteString(fmt.Sprintf("\n%s", m.renderFooter()))
 	}
 
@@ -558,20 +578,23 @@ func clipToHeight(s string, maxLines int) string {
 	return strings.Join(lines[:maxLines-1], "\n") + "\n" + indicator
 }
 
-func (m *AppModel) getConnectionByKey(key string) *model.Connection {
+// getConnectionByKey resolves the inspected connection. historical is true
+// when it comes from an older snapshot, which records only summary fields.
+func (m *AppModel) getConnectionByKey(key string) (conn *model.Connection, historical bool) {
 	// While scrubbing, resolve the key against the frozen snapshot so Detail/
 	// Socket stay consistent with the (historical) row the user drilled into.
 	if m.paused {
 		if snap := m.viewSnapshot(); snap != nil {
 			if c := snap.Lookup(key); c != nil {
-				return c
+				return c, !snap.Full()
 			}
 		}
 	}
 	// Otherwise search newest-first across the whole buffer rather than only the
 	// latest snapshot, so Detail/Socket keep rendering a connection that has just
 	// closed instead of blanking out the moment it drops off the table.
-	return m.buf.LookupRecent(key)
+	c := m.buf.LookupRecent(key)
+	return c, c != nil && m.buf.GetLatest().Lookup(key) != c
 }
 
 // viewSnapshot returns the snapshot the Live table should render: the frozen
@@ -671,72 +694,68 @@ func (m *AppModel) clampEventsScroll() {
 	}
 }
 
-func (m *AppModel) exportEvents(kind string) {
-	events := ui.CollectEvents(m.buf)
-	if len(events) == 0 {
-		m.statusMsg = "no events to export"
-		m.statusExpiry = time.Now().Add(5 * time.Second)
-		return
-	}
+// exportDoneMsg reports the outcome of a background export.
+type exportDoneMsg struct{ status string }
 
-	ts := time.Now().Format("20060102-150405")
-	name := fmt.Sprintf("ss-events-%s.%s", ts, kind)
-	cwd, err := os.Getwd()
-	if err != nil {
-		cwd = "."
+// startExport kicks off an export in the background and returns the command
+// that runs it. Exporting the whole ring buffer can take seconds on a busy
+// host, so it must not run on the Update goroutine (that froze the UI). The
+// buffer's snapshots are immutable once published, so reading them from
+// another goroutine is safe.
+func (m *AppModel) startExport(kind string, events bool) tea.Cmd {
+	if m.exporting {
+		m.setStatus("export already in progress", 3*time.Second)
+		return nil
 	}
-	path := filepath.Join(cwd, name)
-
-	var n int
-	switch kind {
-	case "json":
-		n, err = ui.ExportEventsJSON(events, path)
-	case "csv":
-		n, err = ui.ExportEventsCSV(events, path)
-	default:
-		m.statusMsg = "unknown export kind: " + kind
-		m.statusExpiry = time.Now().Add(5 * time.Second)
-		return
+	m.exporting = true
+	m.setStatus("exporting…", time.Hour) // replaced by exportDoneMsg
+	buf := m.buf
+	return func() tea.Msg {
+		return exportDoneMsg{status: runExport(buf, kind, events)}
 	}
-	if err != nil {
-		m.statusMsg = "events export failed: " + err.Error()
-	} else {
-		m.statusMsg = fmt.Sprintf("Exported %d events → %s", n, path)
-	}
-	m.statusExpiry = time.Now().Add(5 * time.Second)
 }
 
-func (m *AppModel) export(kind string) {
-	ts := time.Now().Format("20060102-150405")
-	name := fmt.Sprintf("ss-stats-%s.%s", ts, kind)
+// runExport writes the export file and returns the status line to show.
+func runExport(buf *poller.Buffer, kind string, events bool) string {
+	prefix, what := "ss-stats", ""
+	if events {
+		prefix = "ss-events"
+	}
 	cwd, err := os.Getwd()
 	if err != nil {
 		cwd = "."
 	}
-	path := filepath.Join(cwd, name)
+	path := filepath.Join(cwd, fmt.Sprintf("%s-%s.%s", prefix, time.Now().Format("20060102-150405"), kind))
 
-	var (
-		n    int
-		unit string
-	)
-	switch kind {
-	case "json":
-		n, err = m.buf.ExportJSON(path)
-		unit = "snapshots"
-	case "csv":
-		n, err = m.buf.ExportCSV(path)
-		unit = "rows"
+	var n int
+	switch {
+	case events:
+		evs := ui.CollectEvents(buf)
+		if len(evs) == 0 {
+			return "no events to export"
+		}
+		what = "events"
+		if kind == "json" {
+			n, err = ui.ExportEventsJSON(evs, path)
+		} else {
+			n, err = ui.ExportEventsCSV(evs, path)
+		}
+	case kind == "json":
+		n, err = buf.ExportJSON(path)
+		what = "snapshots"
 	default:
-		m.statusMsg = "unknown export kind: " + kind
-		m.statusExpiry = time.Now().Add(5 * time.Second)
-		return
+		n, err = buf.ExportCSV(path)
+		what = "rows"
 	}
 	if err != nil {
-		m.statusMsg = "export failed: " + err.Error()
-	} else {
-		m.statusMsg = fmt.Sprintf("Exported %d %s → %s", n, unit, path)
+		return "export failed: " + err.Error()
 	}
-	m.statusExpiry = time.Now().Add(5 * time.Second)
+	return fmt.Sprintf("Exported %d %s → %s", n, what, path)
+}
+
+func (m *AppModel) setStatus(msg string, d time.Duration) {
+	m.statusMsg = msg
+	m.statusExpiry = time.Now().Add(d)
 }
 
 func (m *AppModel) renderFooter() string {

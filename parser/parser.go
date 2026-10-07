@@ -512,10 +512,16 @@ type omittedGroup struct {
 }
 
 var omittedGroups = []omittedGroup{
-	{ // Linux 4.1/4.2: bytes_received, segs_out, segs_in
+	{ // Linux 4.1/4.2: bytes_acked, bytes_received, segs_out, segs_in
 		sentinel: func(c *model.Connection) bool { return c.SegsOut != nil },
 		fields: func(c *model.Connection) []**int {
-			return []**int{&c.BytesReceived, &c.SegsOut, &c.SegsIn}
+			return []**int{&c.BytesAcked, &c.BytesReceived, &c.SegsOut, &c.SegsIn}
+		},
+	},
+	{ // unacked is printed only when non-zero (it's in every tcp_info version)
+		sentinel: func(c *model.Connection) bool { return true },
+		fields: func(c *model.Connection) []**int {
+			return []**int{&c.Unacked}
 		},
 	},
 	{ // Linux 4.10: busy, rwnd_limited, sndbuf_limited

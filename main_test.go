@@ -149,20 +149,22 @@ func manyConns(n int, txFor func(i int) int) []*model.Connection {
 // TestTableCursorStaysVisible is the regression for the cursor walking onto
 // rows clipped off the bottom of the page: every selected row must be drawn.
 func TestTableCursorStaysVisible(t *testing.T) {
-	for _, help := range []bool{false, true} {
+	for _, filtered := range []bool{false, true} {
 		m := NewApp()
 		m = feed(m, tea.WindowSizeMsg{Width: 160, Height: 60})
 		m = feed(m, pollResultMsg{conns: manyConns(200, func(int) int { return 0 })})
-		if help {
-			m = feed(m, key("?"))
+		if filtered { // the filter bar adds a header line
+			m.filter.SetQuery("state=ESTAB")
+			m.table.InvalidateCache()
 		}
+		help := filtered
 		for i := 0; i < 120; i++ {
 			sel := m.table.GetSelected()
 			if sel == nil {
-				t.Fatalf("help=%v: no selection after %d presses", help, i)
+				t.Fatalf("filtered=%v: no selection after %d presses", help, i)
 			}
 			if !strings.Contains(m.View(), ":"+sel.LocalPort) {
-				t.Fatalf("help=%v: selected row %s not visible after %d presses", help, sel.LocalPort, i)
+				t.Fatalf("filtered=%v: selected row %s not visible after %d presses", help, sel.LocalPort, i)
 			}
 			m = feed(m, key("j"))
 		}
@@ -190,5 +192,58 @@ func TestTableSelectionFollowsConnection(t *testing.T) {
 	m = feed(m, pollResultMsg{conns: manyConns(10, func(i int) int { return (10 - i) * 100 })})
 	if got := m.table.GetSelected().LocalPort; got != want {
 		t.Errorf("selection jumped from port %s to %s after re-sort", want, got)
+	}
+}
+
+// TestFilterPaste: bracketed paste arrives as one KeyRunes message with the
+// whole text; it must be inserted (newlines flattened), not ignored.
+func TestFilterPaste(t *testing.T) {
+	m := NewApp()
+	m = feed(m, tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = feed(m, key("/"))
+	m = feed(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("peer=10.0.0.1\n"), Paste: true})
+	m = feed(m, tea.KeyMsg{Type: tea.KeySpace})
+	m = feed(m, key("x"))
+	if m.filterBuf != "peer=10.0.0.1  x" {
+		t.Errorf("filterBuf = %q, want %q", m.filterBuf, "peer=10.0.0.1  x")
+	}
+}
+
+// TestHelpNeverOverflows: on a short terminal the help panel must not push
+// the frame past the terminal height (which scrolls the header away).
+func TestHelpNeverOverflows(t *testing.T) {
+	m := NewApp()
+	m = feed(m, tea.WindowSizeMsg{Width: 120, Height: 20})
+	m = feed(m, pollResultMsg{conns: snapWithAddr("10.0.0.1")})
+	m = feed(m, key("?"))
+	v := m.View()
+	if n := strings.Count(v, "\n") + 1; n > 20 {
+		t.Errorf("help view is %d lines on a 20-line terminal", n)
+	}
+	if !strings.Contains(v, "TOTAL") {
+		t.Errorf("header should stay visible with help open")
+	}
+}
+
+// TestExportRunsInBackground: pressing e returns a command instead of writing
+// synchronously, shows progress, and reports the result when it completes.
+func TestExportRunsInBackground(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	m := NewApp()
+	m = feed(m, tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = feed(m, pollResultMsg{conns: snapWithAddr("10.0.0.1")})
+
+	next, cmd := m.Update(key("e"))
+	m = next.(*AppModel)
+	if cmd == nil || !m.exporting || m.statusMsg != "exporting…" {
+		t.Fatalf("export should start in background (cmd=%v exporting=%v status=%q)", cmd != nil, m.exporting, m.statusMsg)
+	}
+	if _, again := m.Update(key("e")); again != nil {
+		t.Errorf("a second export while one is running should be refused")
+	}
+	m = feed(m, cmd())
+	if m.exporting || !strings.HasPrefix(m.statusMsg, "Exported 1 snapshots") {
+		t.Errorf("after completion: exporting=%v status=%q", m.exporting, m.statusMsg)
 	}
 }

@@ -57,7 +57,9 @@ func renderPerfSummary(buf *poller.Buffer, snap *poller.Snapshot, width int) str
 			totalEstab++
 		}
 		for _, s := range c.Signals {
-			counts[s.Type]++
+			if s.Severity >= 1 { // info-level context (IDLE, APP_LIM, CWND_LIM) isn't a problem
+				counts[s.Type]++
+			}
 			switch s.Severity {
 			case 1:
 				totalWarn++
@@ -77,16 +79,13 @@ func renderPerfSummary(buf *poller.Buffer, snap *poller.Snapshot, width int) str
 		styleTopHdr.Render("Critical:"),
 		lipgloss.NewStyle().Foreground(lipgloss.Color("#ff6b6b")).Bold(true).Render(fmt.Sprintf("%d", totalCrit))))
 
-	// Per-signal-type counts (skip info-level: idle, app_limited).
+	// Per-signal-type counts of warn/crit signals.
 	type sigCount struct {
 		t model.SignalType
 		n int
 	}
 	var sigs []sigCount
 	for t, n := range counts {
-		if t == model.SignalIdle || t == model.SignalAppLimited {
-			continue
-		}
 		sigs = append(sigs, sigCount{t, n})
 	}
 	sort.Slice(sigs, func(i, j int) bool { return sigs[i].n > sigs[j].n })

@@ -76,7 +76,7 @@ What you get out of the box:
 ## Who it's for
 
 - **SREs and on-call engineers** triaging a host: "is it the network or
-  the app?" — sstui surfaces ZERO_WIN, RTO, SYN_STALL, ONE_WAY,
+  the app?" — sstui surfaces ZERO_WIN, RTO, SYN_STALL, NO_ACK,
   LISTEN_Q in seconds and points at the specific 4-tuple/process.
 - **Performance engineers** chasing tail latency: the RTT-inflation
   view, RTT/MinRTT ratio per connection, and CWND_DROP/REORDER signals
@@ -84,7 +84,7 @@ What you get out of the box:
   reordering".
 - **Backend developers** debugging connection-pool / DB-client issues:
   filter by `proc=` to see only your service's sockets, watch SEND_Q,
-  RCV_Q, UNACKED, IDLE patterns over time.
+  RCV_Q, CWND_LIM, IDLE patterns over time.
 - **Network engineers** investigating reorder/MTU/path issues: PMTU,
   REORDER, RTT_SPIKE signals plus per-peer aggregates in the Top tab.
 - **Anyone curious about a Linux box's network state** — sstui needs
@@ -150,8 +150,9 @@ Command-line flags:
 
 Requirements:
 
-- Linux (the parser is `ss(8)`-specific — iproute2 ≥ 4.4 recommended).
-- Go 1.22+ (uses generics-free stdlib only).
+- Linux with a recent iproute2 (the parser is `ss(8)`-specific and uses
+  `ss -O`/`--oneline`, added in 2018).
+- Go 1.26+ to build (see `go.mod`).
 - A terminal that speaks 24-bit color and Unicode block glyphs (most do).
 
 If `ss` isn't in `$PATH`, sstui exits with `ss not found in PATH;
@@ -192,8 +193,8 @@ sudo setcap cap_net_admin+ep /usr/sbin/ss
 ┌─ sstui ────────────────────── ESTAB 245   LISTEN 38   TIME-WAIT 12 ─┐
 │ Live  Detail  Socket  Overview  Top  Perf  Events  System           │
 │                                                                     │
-│ 🔴 TCP  ESTAB     10.0.0.1:443   …  17.2ms  ↑  120 KB/s   chrome  … │
-│ 🟡 TCP  ESTAB     10.0.0.5:5432  …   1.1ms  ↓   55 KB/s   psql    … │
+│ ● TCP  ESTAB     10.0.0.1:443   …  17.2ms  ↑  120 KB/s   chrome  … │
+│ ● TCP  ESTAB     10.0.0.5:5432  …   1.1ms  ↓   55 KB/s   psql    … │
 │ ...                                                                 │
 │                                                                     │
 │  RETRANS  RTO  CWND_DROP  ← signal badges for the selected row      │
@@ -201,7 +202,7 @@ sudo setcap cap_net_admin+ep /usr/sbin/ss
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-Press `1`–`7` to switch tabs, `Enter` on a row to drill in, `/` to filter,
+Press `1`–`8` to switch tabs, `Enter` on a row to drill in, `/` to filter,
 `?` for the help overlay.
 
 ---
@@ -216,10 +217,10 @@ The leftmost column is a single-glyph **signal indicator**:
 
 | Glyph | Meaning                                          |
 |-------|--------------------------------------------------|
-| 🟢    | No warn/crit signals                             |
-| 🟡    | 1+ warn-level signals                            |
-| 🟠    | ≥4 warn signals                                  |
-| 🔴    | 1+ crit-level signals                            |
+| green `●`  | No warn/crit signals                         |
+| yellow `●` | 1+ warn-level signals                        |
+| orange `●` | ≥4 warn signals                              |
+| red `●`    | 1+ crit-level signals                        |
 
 `j`/`k` move the cursor; `Enter` opens **Detail** for that connection.
 Below the table, signal badges show every signal firing on the highlighted
@@ -306,7 +307,7 @@ Accept queue / SYN, Loss / retransmit, Buffer pressure / OFO, and UDP.
 
 | Key            | Action                                                     |
 |----------------|------------------------------------------------------------|
-| `1`–`7`        | Switch tabs (Live, Detail, Socket, Overview, Top, Perf, Events) |
+| `1`–`8`        | Switch tabs (Live, Detail, Socket, Overview, Top, Perf, Events, System) |
 | `Tab` / `S-Tab`| Next / previous tab                                        |
 | `Space`        | Pause / resume — freeze the Live table for inspection       |
 | `[` / `]`      | Scrub back / forward one snapshot (auto-pauses)             |
@@ -385,7 +386,7 @@ A green status line at the bottom confirms the path and row/snapshot count.
 2. `/proc=<your-service>` to scope the table.
 3. Sort by RTT (`h` to cycle) — anything > 50 ms is yellow, > 200 ms
    orange.
-4. Glance at the signal indicator column: 🔴 means a crit signal is
+4. Glance at the signal indicator column: a red `●` means a crit signal is
    active. `Enter` on a red row to open **Detail**.
 5. On Detail, scan the Signals row at the bottom: `RETRANS` + `LOSS`
    means real packet loss; `RTT_SPIKE` alone means bufferbloat or path
@@ -456,23 +457,23 @@ badge color and in the Live-tab indicator glyph.
 | `RETRANS`  | `retrans_in_flight`  | `retrans_now > 3` (crit >10)                                               | `retrans:N/M` ✓                        | 1–2      | red    |
 | `APP_LIM`  | `app_limited`        | `app_limited` flag set                                                      | `app_limited` ✓                        | 0 (info) | green  |
 | `IDLE`     | `idle`               | ESTAB & no bytes moved this poll                                            | computed deltas ✓                      | 0 (info) | gray   |
-| `ZERO_WIN` | `zero_window`        | `snd_wnd == 0` on ESTAB                                                     | `snd_wnd:` ✓                           | 2        | red    |
+| `ZERO_WIN` | `zero_window`        | ESTAB with the persist (zero-window probe) timer armed, or `snd_wnd:0`     | `timer:(persist,…)` ✓ (`ss` omits `snd_wnd` when 0) | 2 | red |
 | `LOSS`     | `congestion_loss`    | `lost > 2` (crit >10)                                                       | `lost:` ✓                              | 1–2      | red    |
 | `PMTU`     | `pmtu_mismatch`      | `pmtu < advmss+40`                                                          | `pmtu:` `advmss:` ✓                    | 1        | orange |
-| `RTT_SPIKE`| `rtt_spike`          | `rtt/minrtt > 5` (crit >15)                                                 | `rtt:` `minrtt:` ✓                     | 1–2      | orange |
+| `RTT_SPIKE`| `rtt_spike`          | `rtt/minrtt > 5` (crit >15) and `rtt − minrtt ≥ 10ms`                       | `rtt:` `minrtt:` ✓                     | 1–2      | orange |
 | `SEND_Q`   | `send_buffer_pressure` | Send-Q ≥ 50% of send buffer (crit ≥80%), sustained 2 polls; 16K/64K abs fallback | column + `skmem` `tb` ✓        | 1–2      | yellow |
 | `RCV_Q`    | `recv_buffer_pressure` | Recv-Q ≥ 50% of recv buffer (crit ≥80%), sustained 2 polls; 16K/64K abs fallback | column + `skmem` `rb` ✓        | 1–2      | yellow |
 | `HI_RETRANS`| `high_retrans_rate` | `retrans/sent > 5%` (crit >20%)                                            | deltas of `bytes_sent`/`bytes_retrans` ✓ | 1–2    | red    |
 | `DEL_DROP` | `delivery_drop`      | not app-limited & sending & `delivery/pacing < 0.5`                        | `delivery_rate` `pacing_rate` ✓        | 1        | orange |
-| `UNACKED`  | `unacked_buildup`    | `unacked > 0.8·cwnd` && `> 10`                                              | `unacked:` `cwnd:` ✓                   | 1        | yellow |
+| `CWND_LIM` | `cwnd_limited`       | `unacked > 0.8·cwnd` && `> 10` (using its full window — healthy bulk transfer) | `unacked:` `cwnd:` ✓                | 0 (info) | gray   |
 | `LISTEN_Q` | `listen_queue_full`  | LISTEN `RecvQ/SendQ > 0.8` (crit ≥1.0)                                      | `RecvQ/SendQ` column ✓                 | 1–2      | red    |
 | `RTO`      | `rto_firing`         | ESTAB, timer on, `TimerRetrans ≥ 2` (crit ≥4)                               | `timer:` `TimerRetrans` ✓              | 1–2      | red    |
 | `SYN_STALL`| `syn_stall`          | SYN-SENT, `TimerRetrans > 0` (crit ≥3)                                      | `state`, `TimerRetrans` ✓              | 1–2      | orange |
-| `ONE_WAY`  | `one_way_stall`      | ESTAB, sending but no recv >30s (or symmetric)                              | `lastsnd:` `lastrcv:` computed deltas ✓ | 1       | yellow |
+| `NO_ACK`   | `peer_no_ack`        | data outstanding on two consecutive polls and nothing ACKed in between (crit if no ACK ≥10s) | `unacked:` `bytes_acked:` delta, `lastack:` ✓ | 1–2 | red |
 | `CWND_DROP`| `cwnd_collapse`      | `CWnd/PrevCWnd < 0.5` (crit <0.25), prev ≥ 20                              | `cwnd:` + prev poll `cwnd` ✓           | 1–2      | orange |
 | `DSACK`    | `dsack_spurious`     | `Δdsack_dups > 0` (crit >5)                                                 | `dsack_dups:` delta ✓                  | 1–2      | yellow |
 | `BBR_LOW`  | `bbr_underutil`      | BBR active, not app-limited, sending, `delivery < 0.5×BBR_BW`              | `bbr:BW` `delivery_rate` ✓             | 1        | orange |
-| `REORDER`  | `reordering`         | `Δrcv_ooopack > 0` (crit >50)                                               | `rcv_ooopack:` delta ✓                 | 1–2      | orange |
+| `REORDER`  | `reordering`         | `Δreord_seen > 0` (crit >50) — sender-detected reordering                   | `reord_seen:` delta ✓                  | 1–2      | orange |
 | `DROPS`    | `socket_drops`       | `Δskmem.d > 0` (crit >10) — kernel dropped data at this socket              | `skmem` `d` delta ✓                     | 1–2      | red    |
 | `RWND_LIM` | `rwnd_limited`       | sending & `Δrwnd_limited ≥ 25%` of poll (crit ≥75%) — blocked on peer window | `rwnd_limited:` delta ✓               | 1–2      | yellow |
 | `SNDBUF_LIM`| `sndbuf_limited`    | sending & `Δsndbuf_limited ≥ 25%` of poll (crit ≥75%) — blocked on send buffer | `sndbuf_limited:` delta ✓          | 1–2      | yellow |
@@ -487,7 +488,7 @@ badge color and in the Live-tab indicator glyph.
 | `APP_LIM`    | `app_limited` flag set                                                       | info       | TCP could send more; the app isn't producing data fast enough          |
 | `LISTEN_Q`   | LISTEN socket with `RecvQ/SendQ > 0.8` (or RecvQ > 100 when SendQ unknown)   | warn / crit (≥1.0) | Accept queue full — incoming SYNs are being dropped              |
 | `SYN_STALL`  | `SYN-SENT` state with retransmit timer active (`TimerRetrans > 0`)           | warn / crit (≥3) | Handshake stuck — DNS, firewall, or routing problem              |
-| `ONE_WAY`    | ESTAB sending bytes but no recv for >30 s (or symmetric)                     | warn       | Half-closed peer or stuck application read/write                       |
+| `NO_ACK`     | Data outstanding across a whole poll with no bytes ACKed                     | warn / crit (≥10s) | Peer hung, or the path / a middlebox is black-holing packets   |
 
 ### Loss & retransmission signals
 
@@ -498,20 +499,20 @@ badge color and in the Live-tab indicator glyph.
 | `LOSS`        | `lost:N > 2`                                                           | warn / crit (>10)       | Kernel-detected packet loss                                |
 | `HI_RETRANS`  | `Δbytes_retrans / Δbytes_sent > 5%`                                    | warn / crit (>20%)      | Current-poll retransmit rate is bad                        |
 | `DSACK`       | `dsack_dups` grew this poll                                            | warn / crit (>5)        | Spurious retransmits — RTO too aggressive                  |
-| `REORDER`     | `rcv_ooopack` grew this poll                                           | warn / crit (>50)       | Path is reordering packets (often LACP / multipath / queue issue)|
+| `REORDER`     | `reord_seen` grew this poll (sender detected reordering)               | warn / crit (>50)       | Path is reordering packets (often ECMP / LACP / multi-queue hashing). `rcv_ooopack` isn't used: it also grows after plain loss |
 | `DROPS`       | `skmem` drop counter (`d`) grew this poll                             | warn / crit (>10)       | Kernel discarded data at the socket — buffer overran, receiver too slow|
 
 ### Congestion & flow control
 
 | Signal        | Fires when                                                       | Severity         | What it means                                                       |
 |---------------|------------------------------------------------------------------|------------------|---------------------------------------------------------------------|
-| `ZERO_WIN`    | ESTAB, `snd_wnd == 0`                                            | crit             | Peer's receive window is closed — peer not reading                  |
+| `ZERO_WIN`    | ESTAB, persist timer armed (or `snd_wnd:0`)                      | crit             | Peer's receive window is closed — peer not reading                  |
 | `CWND_DROP`   | `CWnd / PrevCWnd < 0.5` (with prev ≥ 20)                         | warn / crit (<0.25) | Congestion window collapsed between polls — loss event             |
-| `UNACKED`     | `unacked > 0.8 × cwnd` and `unacked > 10`                        | warn             | Most of cwnd is in flight, waiting for ACKs                         |
+| `CWND_LIM`    | `unacked > 0.8 × cwnd` and `unacked > 10`                        | info             | Using its full congestion window — normal for a bulk transfer       |
 | `DEL_DROP`    | not app-limited, sending, `delivery_rate / pacing_rate < 0.5`    | warn             | Kernel can't reach its own pacing target                            |
 | `BBR_LOW`     | BBR active, sending, not app-limited, `delivery_rate < 0.5 × BBR_BW` | warn         | BBR underutilizing its bandwidth estimate                           |
 | `PMTU`        | `pmtu < advmss + 40`                                             | warn             | Path MTU smaller than our advertised MSS                            |
-| `RTT_SPIKE`   | `rtt / minrtt > 5`                                               | warn / crit (>15) | Latency spike vs the connection's baseline                         |
+| `RTT_SPIKE`   | `rtt / minrtt > 5` and ≥10ms above min                            | warn / crit (>15) | Latency spike vs the connection's baseline                         |
 
 ### Buffer pressure
 
@@ -601,7 +602,7 @@ socket creation.
 | Reordering     | `reordering:`       | Kernel's reordering-distance estimate                              |
 | Reord Seen     | `reord_seen:`       | cum. reorder events observed                                       |
 | Rcv OOO        | `rcv_ooopack:`      | cum. out-of-order packets received                                 |
-| Δ Rcv OOO      | (computed)          | Drives the `REORDER` signal                                        |
+| Δ Reord Seen   | (computed)          | Drives the `REORDER` signal                                        |
 
 ### Last-activity timestamps
 
@@ -611,7 +612,7 @@ socket creation.
 | LastRcv | `lastrcv:`    | ms since last receive                              |
 | LastAck | `lastack:`    | ms since last ACK                                  |
 
-Used by the `ONE_WAY` signal.
+`lastack` sets the `NO_ACK` severity.
 
 ### BBR (when CongAlgo = bbr)
 

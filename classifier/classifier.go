@@ -180,6 +180,24 @@ func RTTInflation(c *model.Connection) (ratio float64, ok bool) {
 	return *c.RTT / *c.MinRTT, true
 }
 
+// sendingState reports whether a socket in this state can have data of its
+// own in flight awaiting ACK.
+func sendingState(state string) bool {
+	switch state {
+	case "ESTAB", "CLOSE-WAIT", "FIN-WAIT-1", "LAST-ACK", "CLOSING":
+		return true
+	}
+	return false
+}
+
+// fmtSecs renders milliseconds as whole seconds ("12s"), or ms below 1s.
+func fmtSecs(ms int) string {
+	if ms < 1000 {
+		return fmt.Sprintf("%dms", ms)
+	}
+	return fmt.Sprintf("%ds", ms/1000)
+}
+
 // Classify analyzes a connection and returns detected signals.
 func Classify(c *model.Connection) []model.Signal {
 	var signals []model.Signal
@@ -357,11 +375,12 @@ func Classify(c *model.Connection) []model.Signal {
 		}
 	}
 
-	// Unacked relative to cwnd: >80% of the congestion window in flight.
-	if c.Unacked != nil && c.CWnd != nil && *c.CWnd > 0 && *c.Unacked > 0 {
-		if float64(*c.Unacked) > 0.8*float64(*c.CWnd) && *c.Unacked > 10 {
-			signals = append(signals, model.Signal{Type: model.SignalUnackedBuildup, Severity: 1, Value: *c.Unacked})
-		}
+	// Cwnd-limited: most of the congestion window is in flight. That's what a
+	// healthy bulk transfer looks like (the sender is using all the window it
+	// has), so it's informational context, not a warning.
+	if c.Unacked != nil && c.CWnd != nil && *c.CWnd > 0 && *c.Unacked > 10 &&
+		float64(*c.Unacked) > 0.8*float64(*c.CWnd) {
+		signals = append(signals, model.Signal{Type: model.SignalCwndLimited, Severity: 0, Value: *c.Unacked})
 	}
 
 	// RTO firing: retransmission timer active and we've already retransmitted
@@ -377,19 +396,25 @@ func Classify(c *model.Connection) []model.Signal {
 		signals = append(signals, model.Signal{Type: model.SignalRTOFiring, Severity: sev, Value: *c.TimerRetrans})
 	}
 
-	// One-way stall: we are actively transferring in one direction but the
-	// other direction has been silent for >30s. Classic symptom of a
-	// half-closed peer or stuck application read/write.
-	if c.State == "ESTAB" && c.LastSnd != nil && c.LastRcv != nil {
-		sending := c.DeltaBytesSent != nil && *c.DeltaBytesSent > 0
-		receiving := c.DeltaBytesReceived != nil && *c.DeltaBytesReceived > 0
-		if sending && !receiving && *c.LastRcv > 30000 {
-			signals = append(signals, model.Signal{Type: model.SignalOneWayStall, Severity: 1,
-				Value: fmt.Sprintf("tx only, no rx for %ds", *c.LastRcv/1000)})
-		} else if receiving && !sending && *c.LastSnd > 30000 {
-			signals = append(signals, model.Signal{Type: model.SignalOneWayStall, Severity: 1,
-				Value: fmt.Sprintf("rx only, no tx for %ds", *c.LastSnd/1000)})
+	// Peer not acknowledging: data was outstanding at the previous poll, is
+	// still outstanding, and not one byte was ACKed in between. A live peer
+	// ACKs within an RTT, so a whole silent poll interval means it's hung or
+	// the path is black-holing. Requiring outstanding data on both polls
+	// avoids flagging the instant after an idle connection sends (when
+	// unacked > 0 for one RTT) and one-way bulk transfers (which are ACKed).
+	// Zero-window stalls don't trip it: probes are sent outside the window,
+	// so unacked is 0 while persisting.
+	if sendingState(c.State) && c.Unacked != nil && *c.Unacked > 0 &&
+		c.PrevUnacked != nil && *c.PrevUnacked > 0 &&
+		c.DeltaBytesAcked != nil && *c.DeltaBytesAcked == 0 {
+		sev, v := 1, any(*c.Unacked)
+		if c.LastAck != nil {
+			v = fmt.Sprintf("%d unacked, no ACK for %s", *c.Unacked, fmtSecs(*c.LastAck))
+			if *c.LastAck >= 10000 {
+				sev = 2
+			}
 		}
+		signals = append(signals, model.Signal{Type: model.SignalPeerNoAck, Severity: sev, Value: v})
 	}
 
 	// CWnd collapse: congestion window dropped sharply between polls. Only
@@ -417,16 +442,17 @@ func Classify(c *model.Connection) []model.Signal {
 		signals = append(signals, model.Signal{Type: model.SignalDSACKSpurious, Severity: sev, Value: *c.DeltaDSACKDups})
 	}
 
-	// Reordering: receiver saw out-of-order packets this poll. Distinguishes
-	// real packet reordering on the path from straight loss — both can
-	// trigger spurious retransmits, but the fix is different (often a queue
-	// or LACP issue, not congestion).
-	if c.DeltaRcvOOOPack != nil && *c.DeltaRcvOOOPack > 0 {
+	// Reordering: the sender detected reordering this poll (reord_seen —
+	// e.g. a SACK for a segment above a hole that is later filled without a
+	// retransmit). rcv_ooopack is deliberately not used: the receiver queues
+	// out-of-order packets after any loss too, so it can't tell reordering
+	// from loss — and the fix differs (ECMP/LACP hashing vs. congestion).
+	if c.DeltaReordSeen != nil && *c.DeltaReordSeen > 0 {
 		sev := 1
-		if *c.DeltaRcvOOOPack > 50 {
+		if *c.DeltaReordSeen > 50 {
 			sev = 2
 		}
-		signals = append(signals, model.Signal{Type: model.SignalReordering, Severity: sev, Value: *c.DeltaRcvOOOPack})
+		signals = append(signals, model.Signal{Type: model.SignalReordering, Severity: sev, Value: *c.DeltaReordSeen})
 	}
 
 	// BBR delivering less than half its bandwidth estimate while actively

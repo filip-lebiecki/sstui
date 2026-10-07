@@ -245,3 +245,48 @@ func TestClassifyRTTSpikeFloor(t *testing.T) {
 		t.Errorf("120ms vs 10ms min should warn RTT_SPIKE, got %+v (present=%v)", s, ok)
 	}
 }
+
+// TestClassifyPeerNoAck: NO_ACK needs data outstanding on two consecutive
+// polls with nothing ACKed in between — not just unacked > 0 once.
+func TestClassifyPeerNoAck(t *testing.T) {
+	stuck := &model.Connection{Protocol: "tcp", State: "ESTAB",
+		Unacked: ip(5), PrevUnacked: ip(5), DeltaBytesAcked: ip(0), LastAck: ip(12000)}
+	if s, ok := sigByType(Classify(stuck), model.SignalPeerNoAck); !ok || s.Severity != 2 {
+		t.Errorf("12s without an ACK while data is outstanding should be crit NO_ACK, got %+v (present=%v)", s, ok)
+	}
+
+	// Idle connection that just sent: outstanding now, but not last poll.
+	justSent := &model.Connection{Protocol: "tcp", State: "ESTAB",
+		Unacked: ip(1), PrevUnacked: ip(0), DeltaBytesAcked: ip(0), LastAck: ip(60000)}
+	// Bulk upload: outstanding on both polls but the peer is ACKing.
+	bulk := &model.Connection{Protocol: "tcp", State: "ESTAB",
+		Unacked: ip(40), PrevUnacked: ip(40), DeltaBytesAcked: ip(5_000_000), LastAck: ip(2)}
+	for name, c := range map[string]*model.Connection{"just sent": justSent, "bulk upload": bulk} {
+		if _, ok := sigByType(Classify(c), model.SignalPeerNoAck); ok {
+			t.Errorf("%s should not raise NO_ACK", name)
+		}
+	}
+}
+
+// TestClassifyReorderingUsesReordSeen: receiver-side out-of-order packets
+// (rcv_ooopack) also follow plain loss, so only sender-detected reordering
+// counts.
+func TestClassifyReorderingUsesReordSeen(t *testing.T) {
+	lossOnly := &model.Connection{Protocol: "tcp", State: "ESTAB", DeltaRcvOOOPack: ip(30)}
+	if _, ok := sigByType(Classify(lossOnly), model.SignalReordering); ok {
+		t.Errorf("rcv_ooopack growth alone should not raise REORDER")
+	}
+	reord := &model.Connection{Protocol: "tcp", State: "ESTAB", DeltaReordSeen: ip(3)}
+	if s, ok := sigByType(Classify(reord), model.SignalReordering); !ok || s.Severity != 1 {
+		t.Errorf("reord_seen growth should warn REORDER, got %+v (present=%v)", s, ok)
+	}
+}
+
+// TestClassifyCwndLimitedIsInfo: a full congestion window is healthy bulk
+// transfer, so CWND_LIM is informational.
+func TestClassifyCwndLimitedIsInfo(t *testing.T) {
+	c := &model.Connection{Protocol: "tcp", State: "ESTAB", Unacked: ip(38), CWnd: ip(40)}
+	if s, ok := sigByType(Classify(c), model.SignalCwndLimited); !ok || s.Severity != 0 {
+		t.Errorf("want info-level CWND_LIM, got %+v (present=%v)", s, ok)
+	}
+}

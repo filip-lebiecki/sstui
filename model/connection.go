@@ -6,129 +6,133 @@ import "time"
 type Connection struct {
 	Timestamp time.Time
 
-	Protocol  string // "tcp" or "udp"
-	State     string
-	RecvQ     *int
-	SendQ     *int
-	LocalAddr string
-	LocalPort string
-	PeerAddr  string
-	PeerPort  string
-	Process   *string
-	PID       *int
-	UID       *int
-	Inode     *string
-	Cgroup    *string
+	Protocol  string  `json:",omitempty"` // "tcp" or "udp"
+	State     string  `json:",omitempty"`
+	RecvQ     *int    `json:",omitempty"`
+	SendQ     *int    `json:",omitempty"`
+	LocalAddr string  `json:",omitempty"`
+	LocalPort string  `json:",omitempty"`
+	PeerAddr  string  `json:",omitempty"`
+	PeerPort  string  `json:",omitempty"`
+	Process   *string `json:",omitempty"`
+	PID       *int    `json:",omitempty"`
+	UID       *int    `json:",omitempty"`
+	Inode     *string `json:",omitempty"`
+	Cgroup    *string `json:",omitempty"`
 
 	// skmem
-	SkmemR  *int
-	SkmemRB *int
-	SkmemT  *int
-	SkmemTB *int
-	SkmemF  *int
-	SkmemW  *int
-	SkmemO  *int
-	SkmemBL *int
-	SkmemD  *int
+	SkmemR  *int `json:",omitempty"`
+	SkmemRB *int `json:",omitempty"`
+	SkmemT  *int `json:",omitempty"`
+	SkmemTB *int `json:",omitempty"`
+	SkmemF  *int `json:",omitempty"`
+	SkmemW  *int `json:",omitempty"`
+	SkmemO  *int `json:",omitempty"`
+	SkmemBL *int `json:",omitempty"`
+	SkmemD  *int `json:",omitempty"`
 
 	// timer
-	TimerType    *string
-	TimerDur     *string
-	TimerRetrans *int
+	TimerType    *string `json:",omitempty"`
+	TimerDur     *string `json:",omitempty"`
+	TimerRetrans *int    `json:",omitempty"`
 
 	// wscale
-	WscaleSnd *int
-	WscaleRcv *int
+	WscaleSnd *int `json:",omitempty"`
+	WscaleRcv *int `json:",omitempty"`
 
 	// throughput
-	Delivered  *int
-	AppLimited int
-	SendBPS    *int
+	Delivered  *int `json:",omitempty"`
+	AppLimited int  `json:",omitempty"`
+	SendBPS    *int `json:",omitempty"`
 
 	// TCP metrics
-	RTO      *float64
-	RTT      *float64
-	RTTVar   *float64
-	ATO      *float64
-	MSS      *int
-	CWnd     *int
-	SSThresh *int
+	RTO      *float64 `json:",omitempty"`
+	RTT      *float64 `json:",omitempty"`
+	RTTVar   *float64 `json:",omitempty"`
+	ATO      *float64 `json:",omitempty"`
+	MSS      *int     `json:",omitempty"`
+	CWnd     *int     `json:",omitempty"`
+	SSThresh *int     `json:",omitempty"`
 
 	// bytes
-	BytesSent     *int
-	BytesReceived *int
-	BytesAcked    *int
-	BytesRetrans  *int
+	BytesSent     *int `json:",omitempty"`
+	BytesReceived *int `json:",omitempty"`
+	BytesAcked    *int `json:",omitempty"`
+	BytesRetrans  *int `json:",omitempty"`
 
 	// segments
-	SegsOut     *int
-	SegsIn      *int
-	DataSegsOut *int
-	DataSegsIn  *int
+	SegsOut     *int `json:",omitempty"`
+	SegsIn      *int `json:",omitempty"`
+	DataSegsOut *int `json:",omitempty"`
+	DataSegsIn  *int `json:",omitempty"`
 
-	MinRTT       *float64
-	PacingRate   *int
-	DeliveryRate *int
+	MinRTT       *float64 `json:",omitempty"`
+	PacingRate   *int     `json:",omitempty"`
+	DeliveryRate *int     `json:",omitempty"`
 
 	// retrans
-	RetransNow *int
-	Retrans    *int
+	RetransNow *int `json:",omitempty"`
+	Retrans    *int `json:",omitempty"`
 
-	Lost        *int
-	Unacked     *int
-	SndWnd      *int
-	RcvWnd      *int
-	RcvRTT      *float64
-	RcvSpace    *int
-	RcvSSThresh *int
+	Lost        *int     `json:",omitempty"`
+	Unacked     *int     `json:",omitempty"`
+	SndWnd      *int     `json:",omitempty"`
+	RcvWnd      *int     `json:",omitempty"`
+	RcvRTT      *float64 `json:",omitempty"`
+	RcvSpace    *int     `json:",omitempty"`
+	RcvSSThresh *int     `json:",omitempty"`
 
 	// Congestion control algorithm (cubic, bbr, reno, ...). Reported as a
 	// bare token by ss; absent on non-TCP sockets.
-	CongAlgo *string
+	CongAlgo *string `json:",omitempty"`
 
-	BusyMS          *float64
-	RwndLimitedMS   *float64 // cumulative ms the sender was blocked on the peer's recv window
-	SndbufLimitedMS *float64 // cumulative ms the sender was blocked on its own send buffer
-	PMTU            *int
-	AdvMSS          *int
-	RcvMSS          *int
-	LastSnd         *int
-	LastRcv         *int
-	LastAck         *int
-	DSACKDups       *int
-	Reordering      *int // reordering: kernel's reordering distance estimate
-	ReordSeen       *int // reord_seen: cumulative reorder events observed
-	RcvOOOPack      *int // rcv_ooopack: cumulative out-of-order packets received
+	BusyMS          *float64 `json:",omitempty"`
+	RwndLimitedMS   *float64 `json:",omitempty"` // cumulative ms the sender was blocked on the peer's recv window
+	SndbufLimitedMS *float64 `json:",omitempty"` // cumulative ms the sender was blocked on its own send buffer
+	PMTU            *int     `json:",omitempty"`
+	AdvMSS          *int     `json:",omitempty"`
+	RcvMSS          *int     `json:",omitempty"`
+	LastSnd         *int     `json:",omitempty"`
+	LastRcv         *int     `json:",omitempty"`
+	LastAck         *int     `json:",omitempty"`
+	DSACKDups       *int     `json:",omitempty"`
+	Reordering      *int     `json:",omitempty"` // reordering: kernel's reordering distance estimate
+	ReordSeen       *int     `json:",omitempty"` // reord_seen: cumulative reorder events observed
+	RcvOOOPack      *int     `json:",omitempty"` // rcv_ooopack: cumulative out-of-order packets received
 
 	// BBR
-	BBRBW         *int
-	BBRMRTT       *float64
-	BBRPacingGain *float64
-	BBRCWndGain   *float64
+	BBRBW         *int     `json:",omitempty"`
+	BBRMRTT       *float64 `json:",omitempty"`
+	BBRPacingGain *float64 `json:",omitempty"`
+	BBRCWndGain   *float64 `json:",omitempty"`
 
 	// Computed deltas
-	DeltaBytesSent       *int
-	DeltaBytesReceived   *int
-	DeltaSegsOut         *int
-	DeltaSegsIn          *int
-	DeltaBytesRetrans    *int
-	DeltaDSACKDups       *int
-	DeltaRcvOOOPack      *int
-	DeltaSkmemD          *int // new socket-buffer drops since the previous poll
-	DeltaBusyMS          *float64
-	DeltaRwndLimitedMS   *float64 // ms blocked on the peer's recv window this poll
-	DeltaSndbufLimitedMS *float64 // ms blocked on the local send buffer this poll
+	DeltaBytesSent       *int     `json:",omitempty"`
+	DeltaBytesReceived   *int     `json:",omitempty"`
+	DeltaSegsOut         *int     `json:",omitempty"`
+	DeltaSegsIn          *int     `json:",omitempty"`
+	DeltaBytesRetrans    *int     `json:",omitempty"`
+	DeltaDSACKDups       *int     `json:",omitempty"`
+	DeltaRcvOOOPack      *int     `json:",omitempty"`
+	DeltaReordSeen       *int     `json:",omitempty"` // reordering events the sender detected this poll
+	DeltaBytesAcked      *int     `json:",omitempty"` // bytes newly acknowledged by the peer this poll
+	DeltaSkmemD          *int     `json:",omitempty"` // new socket-buffer drops since the previous poll
+	DeltaBusyMS          *float64 `json:",omitempty"`
+	DeltaRwndLimitedMS   *float64 `json:",omitempty"` // ms blocked on the peer's recv window this poll
+	DeltaSndbufLimitedMS *float64 `json:",omitempty"` // ms blocked on the local send buffer this poll
 
 	// Previous values kept for non-monotonic signals (e.g. cwnd collapse) and
 	// for queue-pressure persistence (a queue must stay full across two polls
 	// before the signal fires, so normal transfer bursts don't trip it).
-	PrevCWnd  *int
-	PrevSendQ *int
-	PrevRecvQ *int
+	PrevCWnd  *int `json:",omitempty"`
+	PrevSendQ *int `json:",omitempty"`
+	PrevRecvQ *int `json:",omitempty"`
+	// PrevUnacked lets NO_ACK require data to stay outstanding across polls.
+	PrevUnacked *int `json:",omitempty"`
 
 	// Signals are populated by poller.AddSnapshot after deltas, so the
 	// classifier runs once per poll rather than once per render frame.
-	Signals []Signal
+	Signals []Signal `json:",omitempty"`
 
 	// key caches ConnKey(). Set via SetKey before the connection is published
 	// to readers; never written afterwards.

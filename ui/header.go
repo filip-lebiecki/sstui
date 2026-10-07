@@ -46,11 +46,11 @@ var (
 		model.SignalRecvBufferPressure: lipgloss.Color("#ffd43b"),
 		model.SignalHighRetransRate:    lipgloss.Color("#ff6b6b"),
 		model.SignalDeliveryDrop:       lipgloss.Color("#ffa94d"),
-		model.SignalUnackedBuildup:     lipgloss.Color("#ffd43b"),
+		model.SignalCwndLimited:        lipgloss.Color("#868e96"),
 		model.SignalListenQueueFull:    lipgloss.Color("#ff6b6b"),
 		model.SignalRTOFiring:          lipgloss.Color("#ff6b6b"),
 		model.SignalSynStall:           lipgloss.Color("#ffa94d"),
-		model.SignalOneWayStall:        lipgloss.Color("#ffd43b"),
+		model.SignalPeerNoAck:          lipgloss.Color("#ff6b6b"),
 		model.SignalCWndCollapse:       lipgloss.Color("#ffa94d"),
 		model.SignalDSACKSpurious:      lipgloss.Color("#ffd43b"),
 		model.SignalBBRUnderutil:       lipgloss.Color("#ffa94d"),
@@ -80,7 +80,7 @@ var styleWarnStat = lipgloss.NewStyle().
 func RenderHeader(buf *poller.Buffer, filter *Filter, drops, width int) string {
 	snap := buf.GetLatest()
 	if snap == nil {
-		return styleHeader.Render(fmt.Sprintf(" ss-stats | waiting for data... | %d cols", width))
+		return styleHeader.Render(" sstui | waiting for data...")
 	}
 
 	filtered := filter != nil && filter.IsActive()
@@ -141,7 +141,7 @@ func RenderHeader(buf *poller.Buffer, filter *Filter, drops, width int) string {
 	}
 
 	pillsStr := strings.Join(pills, "")
-	prefix := "ss-stats"
+	prefix := "sstui"
 
 	content := prefix + " " + pillsStr
 	if pad := width - lipgloss.Width(content); pad > 0 {
@@ -213,10 +213,20 @@ func RenderSignals(signals []model.Signal) string {
 	return strings.Join(parts, " ")
 }
 
+// Status dots for the signal column. A colored "●" rather than emoji: emoji
+// width is ambiguous across terminals and tmux (1 vs 2 cells), which
+// misaligned every column to its right.
+var (
+	dotOK   = colorize("●", lipgloss.Color("#51cf66"))
+	dotWarn = colorize("●", lipgloss.Color("#ffd43b"))
+	dotMany = colorize("●", lipgloss.Color("#ffa94d"))
+	dotCrit = colorize("●", lipgloss.Color("#ff6b6b"))
+)
+
 // RenderSignalBar renders a compact signal indicator column.
 func RenderSignalBar(signals []model.Signal) string {
 	if len(signals) == 0 {
-		return "🟢"
+		return dotOK
 	}
 	var maxSev, warnCount int
 	for _, s := range signals {
@@ -229,13 +239,13 @@ func RenderSignalBar(signals []model.Signal) string {
 	}
 	switch {
 	case maxSev == 2:
-		return "🔴"
+		return dotCrit
 	case warnCount >= 4:
-		return "🟠"
+		return dotMany
 	case warnCount > 0:
-		return "🟡"
+		return dotWarn
 	default:
-		return "🟢"
+		return dotOK
 	}
 }
 

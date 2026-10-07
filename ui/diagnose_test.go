@@ -40,10 +40,10 @@ func TestDiagnose(t *testing.T) {
 }
 
 // TestDiagnosePrefersRootCause checks that a decisive root cause (zero window)
-// is chosen over a downstream symptom (unacked buildup) at equal-ish severity.
+// is chosen over a downstream symptom (RTT spike) at equal-ish severity.
 func TestDiagnosePrefersRootCause(t *testing.T) {
 	c := withSignals(
-		model.Signal{Type: model.SignalUnackedBuildup, Severity: 1},
+		model.Signal{Type: model.SignalRTTSpike, Severity: 1},
 		model.Signal{Type: model.SignalZeroWindow, Severity: 2},
 	)
 	if d := diagnose(c); !strings.Contains(d.Headline, "receive window is zero") {

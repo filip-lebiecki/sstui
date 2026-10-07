@@ -283,6 +283,8 @@ func computeDeltas(cur, prev *model.Connection) {
 		{curVal: cur.BytesRetrans, prevVal: prev.BytesRetrans, out: &cur.DeltaBytesRetrans},
 		{curVal: cur.DSACKDups, prevVal: prev.DSACKDups, out: &cur.DeltaDSACKDups},
 		{curVal: cur.RcvOOOPack, prevVal: prev.RcvOOOPack, out: &cur.DeltaRcvOOOPack},
+		{curVal: cur.ReordSeen, prevVal: prev.ReordSeen, out: &cur.DeltaReordSeen},
+		{curVal: cur.BytesAcked, prevVal: prev.BytesAcked, out: &cur.DeltaBytesAcked},
 		{curVal: cur.SkmemD, prevVal: prev.SkmemD, out: &cur.DeltaSkmemD},
 	}
 
@@ -316,6 +318,10 @@ func computeDeltas(cur, prev *model.Connection) {
 	if prev.RecvQ != nil {
 		v := *prev.RecvQ
 		cur.PrevRecvQ = &v
+	}
+	if prev.Unacked != nil {
+		v := *prev.Unacked
+		cur.PrevUnacked = &v
 	}
 
 	// busy: is cumulative ms of TCP work since socket creation; the per-poll

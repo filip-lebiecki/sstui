@@ -258,12 +258,14 @@ func bbrProbeRTT(c *model.Connection) bool {
 // (kernels before 4.19) only packets marked lost count: no evidence, no claim.
 //
 // Only this poll is checked. Once an event's reduction settles it is at
-// most half (cubic 0.7x, Reno and DCTCP no lower than 0.5x; BBR restores its
-// previous cwnd when recovery ends), so a deeper settled drop between two
-// polls needs a further event in the later one. Deeper transient cuts (an
-// RTO's reset to 1, BBR holding cwnd to packets in flight during recovery,
-// PRR under heavy loss) start with a retransmission, which the first poll to
-// see the lower cwnd also counts.
+// most half (cubic 0.7x, Reno 0.5x, DCTCP 0.5x-1x; BBR restores its previous
+// cwnd when recovery ends), so a deeper settled drop between two polls needs
+// a further event in the later one. Reno's halving rounds down, so an odd
+// cwnd settles just under half (41→20); if that straddles a poll it goes
+// unflagged, which is right: one halving isn't a collapse. Deeper transient
+// cuts (an RTO's reset to 1, BBR holding cwnd to packets in flight during
+// recovery, PRR under heavy loss) start with a retransmission, which the
+// first poll to see the lower cwnd also counts.
 func cwndCutCause(c *model.Connection) string {
 	switch {
 	case c.DeltaBytesRetrans != nil && *c.DeltaBytesRetrans > 0, c.Lost != nil && *c.Lost > 0:

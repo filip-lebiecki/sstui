@@ -58,7 +58,7 @@ func (f *Finding) Command() string {
 type Input struct {
 	Conns        []*model.Connection // latest full-detail snapshot
 	Sys, SysPrev *poller.SysStat     // host counters, current and previous poll
-	// SysWindow is the host counters from about poller.LossWindow ago, for
+	// SysWindow is the host counters from about poller.SlotWindow ago, for
 	// rates that shouldn't swing with one poll; nil until that much history
 	// exists.
 	SysWindow *poller.SysStat

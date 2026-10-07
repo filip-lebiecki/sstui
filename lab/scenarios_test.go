@@ -20,7 +20,7 @@ var slow = link{Delay: "20ms", Rate: "10mbit", Buffer: 35}
 // long is a 100 ms RTT path at 100 Mbit/s with a one-BDP buffer.
 var long = link{Delay: "50ms", Rate: "100mbit", Buffer: 850}
 
-// Loss is judged over about 12 s of sending (poller.LossWindow), so loss
+// Loss is judged over about 12 s of sending (poller.SlotWindow), so loss
 // scenarios record longer than that.
 const lossRecord = 16 * time.Second
 
@@ -96,7 +96,9 @@ func TestPacketLoss(t *testing.T) {
 	l.path(wan.with("loss 1%"), wan)
 	l.start(l.b, "sink", addrB+port)
 	l.start(l.a, "send", addrB+port)
-	l.recordAndCheck(l.a, lossRecord).expect(t, "loss", "warning")
+	r := l.recordAndCheck(l.a, lossRecord)
+	r.expect(t, "loss", "warning")
+	r.expectNone(t, "reorder") // loss recovery ticks reord_seen; it isn't reordering
 }
 
 // TestLightPacketLoss: 0.1% loss. Still enough to hold a cubic flow on a
@@ -106,7 +108,9 @@ func TestLightPacketLoss(t *testing.T) {
 	l.path(wan.with("loss 0.1%"), wan)
 	l.start(l.b, "sink", addrB+port)
 	l.start(l.a, "send", addrB+port)
-	l.recordAndCheck(l.a, lossRecord).expect(t, "loss", "warning")
+	r := l.recordAndCheck(l.a, lossRecord)
+	r.expect(t, "loss", "warning")
+	r.expectNone(t, "reorder") // loss recovery ticks reord_seen; it isn't reordering
 }
 
 // TestHeavyPacketLoss: 3% loss is critical.
@@ -115,7 +119,9 @@ func TestHeavyPacketLoss(t *testing.T) {
 	l.path(wan.with("loss 3%"), wan)
 	l.start(l.b, "sink", addrB+port)
 	l.start(l.a, "send", addrB+port)
-	l.recordAndCheck(l.a, lossRecord).expect(t, "loss", "critical")
+	r := l.recordAndCheck(l.a, lossRecord)
+	r.expect(t, "loss", "critical")
+	r.expectNone(t, "reorder") // loss recovery ticks reord_seen; it isn't reordering
 }
 
 // TestPacketLossBBR: BBR keeps its throughput under 1% loss, but the path is
@@ -125,7 +131,9 @@ func TestPacketLossBBR(t *testing.T) {
 	l.path(wan.with("loss 1%"), wan)
 	l.start(l.b, "sink", addrB+port)
 	l.start(l.a, "send", addrB+port, "1", "bbr")
-	l.recordAndCheck(l.a, lossRecord).expect(t, "loss", "warning")
+	r := l.recordAndCheck(l.a, lossRecord)
+	r.expect(t, "loss", "warning")
+	r.expectNone(t, "reorder") // loss recovery ticks reord_seen; it isn't reordering
 }
 
 // TestPacketLossRequestResponse: 1% loss on the response path of a bursty
@@ -135,7 +143,48 @@ func TestPacketLossRequestResponse(t *testing.T) {
 	l.path(wan, wan.with("loss 1%"))
 	l.start(l.b, "reqserver", addrB+port, "1000000")
 	l.start(l.a, "reqclient", addrB+port, "1000000", "8")
-	l.recordAndCheck(l.b, lossRecord).expect(t, "loss", "warning")
+	r := l.recordAndCheck(l.b, lossRecord)
+	r.expect(t, "loss", "warning")
+	r.expectNone(t, "reorder") // loss recovery ticks reord_seen; it isn't reordering
+}
+
+// TestReordering: 0.5% of packets overtake a few others on the way to the
+// peer, as with ECMP or LACP hashing. Linux copes, but it's worth knowing,
+// and it must not read as packet loss.
+func TestReordering(t *testing.T) {
+	l := newLab(t)
+	l.path(wan, wan)
+	l.reorder(l.a, "0.5%")
+	l.start(l.b, "sink", addrB+port)
+	l.start(l.a, "send", addrB+port)
+	r := l.recordAndCheck(l.a, lossRecord)
+	r.expect(t, "reorder", "warning")
+	r.expectNone(t, "loss")
+}
+
+// TestHeavyReordering: 10% of packets reordered is critical.
+func TestHeavyReordering(t *testing.T) {
+	l := newLab(t)
+	l.path(wan, wan)
+	l.reorder(l.a, "10%")
+	l.start(l.b, "sink", addrB+port)
+	l.start(l.a, "send", addrB+port)
+	r := l.recordAndCheck(l.a, lossRecord)
+	r.expect(t, "reorder", "critical")
+	r.expectNone(t, "loss")
+}
+
+// TestReorderingRequestResponse: reordering on the response path of a bursty
+// request/response service, recorded on the server.
+func TestReorderingRequestResponse(t *testing.T) {
+	l := newLab(t)
+	l.path(wan, wan)
+	l.reorder(l.b, "2%")
+	l.start(l.b, "reqserver", addrB+port, "1000000")
+	l.start(l.a, "reqclient", addrB+port, "1000000", "8")
+	r := l.recordAndCheck(l.b, lossRecord)
+	r.expect(t, "reorder", "warning")
+	r.expectNone(t, "loss")
 }
 
 // TestZeroWindow: the receiving application stops reading. Its buffer fills,

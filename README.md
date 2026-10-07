@@ -700,7 +700,7 @@ badge color and in the Live-tab indicator glyph.
 | `NO_ACK`   | `peer_no_ack`        | data outstanding on two consecutive polls and nothing ACKed in between (crit if no ACK ≥10s) | `unacked:` `bytes_acked:` delta, `lastack:` ✓ | 1–2 | red |
 | `CWND_DROP`| `cwnd_collapse`      | `CWnd < ⌊PrevCWnd/2⌋` (crit `< ⌊PrevCWnd/4⌋`), prev ≥ 20, with loss or ECN marks the same poll, not BBR ProbeRTT | `cwnd:` + prev poll `cwnd`, `bytes_retrans:` delta, `lost:`, `delivered_ce:` delta ✓ | 1–2      | orange |
 | `DSACK`    | `dsack_spurious`     | `Δdsack_dups > 0` (crit >5)                                                 | `dsack_dups:` delta ✓                  | 1–2      | yellow |
-| `REORDER`  | `reordering`         | `Δreord_seen > 0` (crit >50) — sender-detected reordering                   | `reord_seen:` delta ✓                  | 1–2      | orange |
+| `REORDER`  | `reordering`         | over the last ~12 s: reordering events in at least half of the 2 s slots and ≥0.1% of segments (crit ≥5%); not under `PATH_LOSS` | `reord_seen:` `bytes_sent:` deltas, `mss:` ✓ | 1–2 | orange |
 | `DROPS`    | `socket_drops`       | `Δskmem.d > 0` (crit >10) — kernel dropped data at this socket (with `RX_LOSS` and no `RCV_Q`: out-of-order data discarded during loss recovery) | `skmem` `d` delta ✓ | 1–2 | red |
 | `RWND_LIM` | `rwnd_limited`       | sending & `Δrwnd_limited ≥ 25%` of poll (crit ≥75%) — blocked on peer window | `rwnd_limited:` delta ✓               | 1–2      | yellow |
 | `SNDBUF_LIM`| `sndbuf_limited`    | sending & `Δsndbuf_limited ≥ 25%` of poll (crit ≥75%) — blocked on send buffer | `sndbuf_limited:` delta ✓          | 1–2      | yellow |
@@ -729,7 +729,7 @@ badge color and in the Live-tab indicator glyph.
 | `LOSS`        | `lost:N > 2`                                                           | warn / crit (>10)       | Kernel-detected packet loss                                |
 | `HI_RETRANS`  | `Δbytes_retrans / Δbytes_sent > 5%`                                    | warn / crit (>20%)      | This poll's retransmit rate is high. Context only: a burst like this is normal during slow start, so findings rely on `PATH_LOSS` |
 | `DSACK`       | `dsack_dups` grew this poll                                            | warn / crit (>5)        | Spurious retransmits — the data had arrived (aggressive RTO, or reordering) |
-| `REORDER`     | `reord_seen` grew this poll (sender detected reordering)               | warn / crit (>50)       | Our packets are reordered on the way to the peer (often ECMP / LACP / multi-queue hashing). Loss can inflate this counter too, so the finding warns when the same connections are losing packets |
+| `REORDER`     | Over the last ~12 s: `reord_seen` grew in at least half of the 2 s slots, by ≥0.1% of the segments sent; not evaluated while `PATH_LOSS` fires | warn / crit (≥5%) | Our packets are reordered on the way to the peer (often ECMP / LACP / multi-queue hashing). The counter also ticks now and then during loss recovery or request bursts, and steadily under steady loss, so one-off events and lossy connections don't count |
 | `DROPS`       | `skmem` drop counter (`d`) grew this poll                             | warn / crit (>10)       | Kernel discarded data at the socket — buffer overran, receiver too slow. With `RX_LOSS` and an empty receive queue it's out-of-order data discarded during loss recovery instead, and Findings/Detail say so |
 | `RX_LOSS`     | ≥2% of data segments received this poll arrived after a gap (crit ≥10%; needs ≥100 segments) | warn / crit | **Inbound** loss (or reordering) on the peer → here path. The only loss signal available on the receiving side — the retransmit counters live on the sender. One lost segment makes everything behind it arrive out of order, so the ratio overstates the loss rate; the thresholds account for that |
 
@@ -834,7 +834,7 @@ socket creation.
 | Reord Seen     | `reord_seen:`       | cum. reorder events observed                                       |
 | Rcv OOO        | `rcv_ooopack:`      | cum. out-of-order segments **received**: each one arrived after a gap, i.e. a segment from the peer was lost (or reordered) on its way here. When sstui runs on the receiving host this is the only visible trace of inbound loss — the sender's retransmit counters live on the other machine |
 | OOO / data in  | (computed)          | `rcv_ooopack / data_segs_in`, per poll and over the connection's life (Detail → Inbound). Drives the `RX_LOSS` signal |
-| Δ Reord Seen   | (computed)          | Drives the `REORDER` signal                                        |
+| Δ Reord Seen   | (computed)          | Summed per send slot; drives the `REORDER` signal                  |
 
 ### Last-activity timestamps
 

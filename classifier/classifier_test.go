@@ -273,17 +273,64 @@ func TestClassifyPeerNoAck(t *testing.T) {
 	}
 }
 
-// TestClassifyReorderingUsesReordSeen: receiver-side out-of-order packets
-// (rcv_ooopack) also follow plain loss, so only sender-detected reordering
-// counts.
-func TestClassifyReorderingUsesReordSeen(t *testing.T) {
-	lossOnly := &model.Connection{Protocol: "tcp", State: "ESTAB", DeltaRcvOOOPack: ip(30)}
-	if _, ok := sigByType(Classify(lossOnly), model.SignalReordering); ok {
-		t.Errorf("rcv_ooopack growth alone should not raise REORDER")
+// TestReordering: steady reord_seen growth over the window is reordering;
+// the stray event or two loss recovery and request bursts produce isn't, and
+// neither is out-of-order arrival at the receiver (rcv_ooopack), which plain
+// loss causes too. reord(n, steady, events) builds n complete 2 s slots of
+// 1.448 MB (1000 segments) each, the first `steady` of them with `events`
+// reordering events.
+func TestReordering(t *testing.T) {
+	t0 := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	reord := func(n, steady, events int) *model.Connection {
+		c := &model.Connection{Protocol: "tcp", State: "ESTAB", MSS: ip(1448), DeltaRcvOOOPack: ip(30)}
+		for i := range n {
+			s := model.SendSlot{Start: t0.Add(time.Duration(2*i) * time.Second), End: t0.Add(time.Duration(2*i+2) * time.Second), Sent: 1_448_000}
+			if i < steady {
+				s.Reord = events
+			}
+			c.SendSlots = append(c.SendSlots, s)
+		}
+		return c
 	}
-	reord := &model.Connection{Protocol: "tcp", State: "ESTAB", DeltaReordSeen: ip(3)}
-	if s, ok := sigByType(Classify(reord), model.SignalReordering); !ok || s.Severity != 1 {
-		t.Errorf("reord_seen growth should warn REORDER, got %+v (present=%v)", s, ok)
+	for _, tt := range []struct {
+		name    string
+		c       *model.Connection
+		wantSev int
+	}{
+		{"steady reordering", reord(6, 6, 9), 1},
+		{"heavy reordering", reord(6, 6, 80), 2},
+		{"in half the slots", reord(6, 3, 9), 1},
+		{"stray events in two slots", reord(6, 2, 2), 0},
+		{"steady but below 0.1% of segments", func() *model.Connection {
+			c := reord(6, 6, 1)
+			for i := range c.SendSlots {
+				c.SendSlots[i].Sent *= 10 // 1 event per 10,000 segments
+			}
+			return c
+		}(), 0},
+		{"too little history", reord(3, 3, 9), 0},
+		{"no MSS to count segments", func() *model.Connection { c := reord(6, 6, 9); c.MSS = nil; return c }(), 0},
+		{"receiver-side out-of-order only", &model.Connection{Protocol: "tcp", State: "ESTAB", DeltaRcvOOOPack: ip(30)}, 0},
+		{"under steady path loss the counter proves nothing", func() *model.Connection {
+			c := reord(6, 6, 9)
+			c.MinRTT = fl(40)
+			for i := range c.SendSlots {
+				c.SendSlots[i].Retrans = 30_000 // ~2% retransmitted, steady, no queue: PATH_LOSS
+				c.SendSlots[i].QueueMS = []float64{1}
+			}
+			if _, ok := sigByType(Classify(c), model.SignalPathLoss); !ok {
+				t.Fatal("setup: this case needs PATH_LOSS to fire")
+			}
+			return c
+		}(), 0},
+	} {
+		s, ok := sigByType(Classify(tt.c), model.SignalReordering)
+		switch {
+		case tt.wantSev == 0 && ok:
+			t.Errorf("%s: want no REORDER, got %+v", tt.name, s)
+		case tt.wantSev > 0 && (!ok || s.Severity != tt.wantSev):
+			t.Errorf("%s: want REORDER sev %d, got %+v (present=%v)", tt.name, tt.wantSev, s, ok)
+		}
 	}
 }
 
@@ -397,27 +444,27 @@ func TestPathLoss(t *testing.T) {
 	lossy := func(n, retransmitting int, queueMS float64) *model.Connection {
 		c := &model.Connection{Protocol: "tcp", State: "ESTAB", MinRTT: fl(40)}
 		for i := range n {
-			s := model.LossSlot{Start: t0.Add(time.Duration(2*i) * time.Second), End: t0.Add(time.Duration(2*i+2) * time.Second),
+			s := model.SendSlot{Start: t0.Add(time.Duration(2*i) * time.Second), End: t0.Add(time.Duration(2*i+2) * time.Second),
 				Sent: 1_000_000, QueueMS: []float64{queueMS, queueMS}}
 			if i < retransmitting {
 				s.Retrans = 2_000
 			}
-			c.LossSlots = append(c.LossSlots, s)
+			c.SendSlots = append(c.SendSlots, s)
 		}
 		return c
 	}
 	bbr := func(c *model.Connection) *model.Connection { c.CongAlgo = sp("bbr"); return c }
 	heavy := func(c *model.Connection) *model.Connection {
-		for i := range c.LossSlots {
-			if c.LossSlots[i].Retrans > 0 {
-				c.LossSlots[i].Retrans = 30_000
+		for i := range c.SendSlots {
+			if c.SendSlots[i].Retrans > 0 {
+				c.SendSlots[i].Retrans = 30_000
 			}
 		}
 		return c
 	}
 	partial := func(c *model.Connection) *model.Connection {
-		last := c.LossSlots[len(c.LossSlots)-1].End
-		c.LossSlots = append(c.LossSlots, model.LossSlot{Start: last, End: last.Add(time.Second), Sent: 1_000_000})
+		last := c.SendSlots[len(c.SendSlots)-1].End
+		c.SendSlots = append(c.SendSlots, model.SendSlot{Start: last, End: last.Add(time.Second), Sent: 1_000_000})
 		return c
 	}
 	for _, tt := range []struct {
@@ -434,8 +481,8 @@ func TestPathLoss(t *testing.T) {
 		{"BBR's standing queue isn't congestion", bbr(lossy(6, 6, 30)), 1},
 		{"too little loss", func() *model.Connection {
 			c := lossy(6, 6, 1)
-			for i := range c.LossSlots {
-				c.LossSlots[i].Retrans = 400 // 0.04%
+			for i := range c.SendSlots {
+				c.SendSlots[i].Retrans = 400 // 0.04%
 			}
 			return c
 		}(), 0},

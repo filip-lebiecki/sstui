@@ -178,6 +178,15 @@ func (l *lab) path(toB, toA link) {
 	}
 }
 
+// reorder adds a reordering stage on namespace ns's own link: netem delays
+// its packets by 1 ms and lets pct of them skip the delay, so they overtake
+// up to 1 ms of traffic, a few packets at 100 Mbit/s, as with ECMP or LACP
+// hashing. (On the router's 20 ms stage they would overtake ~170 packets.)
+func (l *lab) reorder(ns, pct string) {
+	l.t.Helper()
+	l.sh("tc", "-n", ns, "qdisc", "replace", "dev", "veth0", "root", "netem", "delay", "1ms", "reorder", pct)
+}
+
 // start runs a workload role (see runRole) inside namespace ns until the test
 // ends.
 func (l *lab) start(ns string, role ...string) {
@@ -280,6 +289,17 @@ func (r *report) expect(t *testing.T, k, severity string) {
 		}
 	}
 	t.Errorf("want a %s finding at %s or worse; got %s", k, severity, r.kinds())
+}
+
+// expectNone fails if a finding of this kind was reported.
+func (r *report) expectNone(t *testing.T, k string) {
+	t.Helper()
+	for _, f := range r.Findings {
+		if kind(f.ID) == k {
+			t.Errorf("want no %s finding; got %s", k, r.kinds())
+			return
+		}
+	}
 }
 
 // expectClean fails if anything was reported.

@@ -390,12 +390,17 @@ func TestLossDropsAttributedToInboundLoss(t *testing.T) {
 // flagged as unreliable when the same connections are losing packets.
 func TestReorderingDirectionAndLossCaveat(t *testing.T) {
 	c := conn("ESTAB", "10.0.0.1", "1", "203.0.113.5", "443", sig(model.SignalReordering, 1), sig(model.SignalRTOFiring, 2))
-	c.DeltaReordSeen = ip(4)
+	t0 := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	c.MSS = ip(1000)
+	c.SendSlots = []model.SendSlot{
+		{Start: t0, End: t0.Add(2 * time.Second), Sent: 100_000, Reord: 1},
+		{Start: t0.Add(2 * time.Second), End: t0.Add(8 * time.Second), Sent: 100_000, Reord: 3},
+	}
 	f := byID(Analyze(Input{Conns: []*model.Connection{c}}), "reorder|")
 	if f == nil || !strings.HasPrefix(f.Title, "Packets to 203.0.113.5") {
 		t.Fatalf("title should describe packets to the peer: %+v", f)
 	}
-	if !hasText(f.Evidence, "4 reordering events") || !hasText(f.Evidence, "caution: 1 of these connections also show packet loss") {
+	if !hasText(f.Evidence, "4 reordering events over the last 8s (2.00% of segments)") || !hasText(f.Evidence, "caution: 1 of these connections also show packet loss") {
 		t.Errorf("evidence = %q", f.Evidence)
 	}
 }

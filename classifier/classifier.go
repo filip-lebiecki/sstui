@@ -101,12 +101,11 @@ const (
 // retransmits about 0.02-0.07% on fast links and in a minority of slots,
 // while 0.1% path loss already caps a cubic flow at a fraction of the link.
 const (
-	pathLossWarn     = 0.0005 // share of bytes retransmitted
-	pathLossCrit     = 0.01
-	pathLossMinSlots = 4 // complete slots: ~8 s of sending at 2 s slots
+	pathLossWarn = 0.0005 // share of bytes retransmitted
+	pathLossCrit = 0.01
 )
 
-// pathLoss judges a connection's recent sending (c.LossSlots, kept by the
+// pathLoss judges a connection's recent sending (c.SendSlots, kept by the
 // poller over the last several seconds) for loss on the path rather than the
 // loss TCP causes itself while filling a link. It fires when all three hold:
 //
@@ -129,11 +128,8 @@ const (
 // queue shows, so several flows saturating one also look like path loss; the
 // finding names both causes.
 func pathLoss(c *model.Connection) (sev int, value string) {
-	slots := c.LossSlots
-	if n := len(slots); n > 0 && slots[n-1].End.Sub(slots[n-1].Start) < model.LossSlotMin {
-		slots = slots[:n-1] // still filling
-	}
-	if len(slots) < pathLossMinSlots {
+	slots := completeSlots(c)
+	if slots == nil {
 		return 0, ""
 	}
 	var sent, retr, lossy int
@@ -160,9 +156,72 @@ func pathLoss(c *model.Connection) (sev int, value string) {
 			return 0, "" // the flow builds a queue: congestion
 		}
 	}
-	span := slots[len(slots)-1].End.Sub(slots[0].Start).Round(time.Second)
 	return tierSeverityF(rate, pathLossWarn, pathLossCrit),
-		fmt.Sprintf("%.2f%% retransmitted over %s, in %d of %d slots", rate*100, span, lossy, len(slots))
+		fmt.Sprintf("%.2f%% retransmitted over %s, in %d of %d slots", rate*100, slotSpan(slots), lossy, len(slots))
+}
+
+// slotMinCount is the least complete send slots PATH_LOSS and REORDER judge:
+// about 8 s of sending at 2 s slots.
+const slotMinCount = 4
+
+// completeSlots returns c's send slots without the one still filling, or nil
+// when fewer than slotMinCount are complete: too little sending to judge.
+func completeSlots(c *model.Connection) []model.SendSlot {
+	slots := c.SendSlots
+	if n := len(slots); n > 0 && slots[n-1].End.Sub(slots[n-1].Start) < model.SendSlotMin {
+		slots = slots[:n-1]
+	}
+	if len(slots) < slotMinCount {
+		return nil
+	}
+	return slots
+}
+
+func slotSpan(slots []model.SendSlot) time.Duration {
+	return slots[len(slots)-1].End.Sub(slots[0].Start).Round(time.Second)
+}
+
+// Reordering thresholds: reordering events as a share of data segments sent.
+// Set from the scenario lab: 0.1% of packets reordered on a 100 Mbit/s path
+// gives about 0.9% (each reordered packet can count more than once), while
+// the stray events loss recovery and request bursts produce stay far below
+// 0.1% over a window, and in a few percent of polls.
+const (
+	reorderWarn = 0.001
+	reorderCrit = 0.05
+)
+
+// reordering judges a connection's recent sending for packet reordering on
+// the way to the peer, from reord_seen: the sender saw a segment acknowledged
+// out of order without a retransmit. It fires when reordering is steady (in
+// at least half of the slots) and at least reorderWarn of the segments sent.
+// The counter also ticks now and then without any reordering (loss recovery,
+// request bursts: one or two events in a few percent of polls), which a
+// per-poll rule reported as reordering; real reordering, from ECMP or LACP
+// hashing or multi-queue NICs, shows up in nearly every poll.
+//
+// rcv_ooopack is deliberately not used: the receiver queues out-of-order
+// packets after any loss too, so it can't tell reordering from loss, and the
+// fix differs (path hashing vs. congestion).
+func reordering(c *model.Connection) (sev int, value string) {
+	slots := completeSlots(c)
+	if slots == nil || c.MSS == nil || *c.MSS <= 0 {
+		return 0, ""
+	}
+	var sent, events, steady int
+	for _, s := range slots {
+		sent += s.Sent
+		events += s.Reord
+		if s.Reord > 0 {
+			steady++
+		}
+	}
+	rate := float64(events) / (float64(sent) / float64(*c.MSS))
+	if steady*2 < len(slots) || rate < reorderWarn {
+		return 0, ""
+	}
+	return tierSeverityF(rate, reorderWarn, reorderCrit),
+		fmt.Sprintf("%.2f%% of segments over %s, in %d of %d slots", rate*100, slotSpan(slots), steady, len(slots))
 }
 
 // tierSeverityF is tierSeverity for ratios.
@@ -493,8 +552,9 @@ func Classify(c *model.Connection) []model.Signal {
 		signals = append(signals, model.Signal{Type: model.SignalRecvBufferPressure, Severity: sev, Value: *c.RecvQ})
 	}
 
-	if sev, v := pathLoss(c); sev > 0 {
-		signals = append(signals, model.Signal{Type: model.SignalPathLoss, Severity: sev, Value: v})
+	lossSev, lossV := pathLoss(c)
+	if lossSev > 0 {
+		signals = append(signals, model.Signal{Type: model.SignalPathLoss, Severity: lossSev, Value: lossV})
 	}
 
 	if c.DeltaBytesRetrans != nil && c.DeltaBytesSent != nil && *c.DeltaBytesSent > 0 {
@@ -618,17 +678,14 @@ func Classify(c *model.Connection) []model.Signal {
 		}
 	}
 
-	// Reordering: the sender detected reordering this poll (reord_seen —
-	// e.g. a SACK for a segment above a hole that is later filled without a
-	// retransmit). rcv_ooopack is deliberately not used: the receiver queues
-	// out-of-order packets after any loss too, so it can't tell reordering
-	// from loss — and the fix differs (ECMP/LACP hashing vs. congestion).
-	if c.DeltaReordSeen != nil && *c.DeltaReordSeen > 0 {
-		sev := 1
-		if *c.DeltaReordSeen > 50 {
-			sev = 2
+	// Steady loss recovery can tick reord_seen steadily too, so under
+	// PATH_LOSS the counter proves nothing; the loss is what to act on.
+	// Real reordering doesn't raise PATH_LOSS (in the lab it caused only the
+	// occasional retransmit), so this hides no reordering on its own.
+	if lossSev == 0 {
+		if sev, v := reordering(c); sev > 0 {
+			signals = append(signals, model.Signal{Type: model.SignalReordering, Severity: sev, Value: v})
 		}
-		signals = append(signals, model.Signal{Type: model.SignalReordering, Severity: sev, Value: *c.DeltaReordSeen})
 	}
 
 	return signals

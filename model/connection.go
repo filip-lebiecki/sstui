@@ -2,15 +2,17 @@ package model
 
 import "time"
 
-// LossSlotMin is the shortest span a LossSlot covers once complete.
-const LossSlotMin = 2 * time.Second
+// SendSlotMin is the shortest span a SendSlot covers once complete.
+const SendSlotMin = 2 * time.Second
 
-// LossSlot summarizes at least LossSlotMin of a connection's sending: the
-// polls in which it sent data, and the queueing delay each of them saw.
-type LossSlot struct {
+// SendSlot summarizes at least SendSlotMin of a connection's sending: the
+// polls in which it sent data, what was retransmitted or reordered, and the
+// queueing delay each poll saw.
+type SendSlot struct {
 	Start, End time.Time
 	Sent       int       // bytes sent
 	Retrans    int       // bytes retransmitted
+	Reord      int       // reordering events the sender detected (reord_seen)
 	QueueMS    []float64 // rtt - minrtt at each of those polls
 }
 
@@ -144,11 +146,11 @@ type Connection struct {
 	PrevRecvQ *int `json:",omitempty"`
 	// PrevUnacked lets NO_ACK require data to stay outstanding across polls.
 	PrevUnacked *int `json:",omitempty"`
-	// LossSlots summarize the connection's recent sending, oldest first, so
-	// the PATH_LOSS signal can judge loss over several seconds rather than
-	// one poll. The poller carries them from poll to poll; they aren't
-	// recorded or exported (replay rebuilds them).
-	LossSlots []LossSlot `json:"-"`
+	// SendSlots summarize the connection's recent sending, oldest first, so
+	// PATH_LOSS and REORDER judge several seconds rather than one poll. The
+	// poller carries them from poll to poll; they aren't recorded or
+	// exported (replay rebuilds them).
+	SendSlots []SendSlot `json:"-"`
 
 	// Signals are populated by poller.AddSnapshot after deltas, so the
 	// classifier runs once per poll rather than once per render frame.

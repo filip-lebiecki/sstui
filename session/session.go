@@ -44,7 +44,7 @@ type Session struct {
 	SysCur, SysPrev *poller.SysStat
 	Sysctl          poller.Sysctls
 	// sysHist holds recent host counters, oldest first, back to the first
-	// sample at least poller.LossWindow old (the windowed retransmit rate).
+	// sample at least poller.SlotWindow old (the windowed retransmit rate).
 	sysHist []timedSys
 
 	SSFilter     string // ss filter in effect ("" for none)
@@ -69,10 +69,10 @@ type timedSys struct {
 	sys *poller.SysStat
 }
 
-// sysWindow returns the host counters from about poller.LossWindow ago, or nil
+// sysWindow returns the host counters from about poller.SlotWindow ago, or nil
 // while the history is shorter than that.
 func (s *Session) sysWindow(now time.Time) *poller.SysStat {
-	if len(s.sysHist) == 0 || now.Sub(s.sysHist[0].at) < poller.LossWindow() {
+	if len(s.sysHist) == 0 || now.Sub(s.sysHist[0].at) < poller.SlotWindow() {
 		return nil
 	}
 	return s.sysHist[0].sys
@@ -97,7 +97,7 @@ func (s *Session) Ingest(p *Poll) bool {
 	if p.Sys != nil {
 		s.SysPrev, s.SysCur = s.SysCur, p.Sys
 		s.sysHist = append(s.sysHist, timedSys{p.Time, p.Sys})
-		for len(s.sysHist) > 1 && p.Time.Sub(s.sysHist[1].at) >= poller.LossWindow() {
+		for len(s.sysHist) > 1 && p.Time.Sub(s.sysHist[1].at) >= poller.SlotWindow() {
 			s.sysHist = s.sysHist[1:]
 		}
 	}

@@ -307,15 +307,13 @@ func lossEvidence(conns []*model.Connection) string {
 				counts[s.Type.Label()]++
 			}
 		}
-		for _, s := range c.LossSlots {
+		for _, s := range c.SendSlots {
 			sent += s.Sent
 			retr += s.Retrans
 			if from.IsZero() || s.Start.Before(from) {
 				from = s.Start
 			}
-			if s.End.After(to) {
-				to = s.End
-			}
+			to = maxTime(to, s.End)
 		}
 	}
 	ev := strings.Join(topBy(counts, len(counts)), " · ")
@@ -323,6 +321,13 @@ func lossEvidence(conns []*model.Connection) string {
 		ev += fmt.Sprintf(" · %.2f%% of bytes retransmitted over the last %s", float64(retr)/float64(sent)*100, to.Sub(from).Round(time.Second))
 	}
 	return ev
+}
+
+func maxTime(a, b time.Time) time.Time {
+	if b.After(a) {
+		return b
+	}
+	return a
 }
 
 // anySignal reports whether any of conns carries signal t.
@@ -349,7 +354,7 @@ func windowRetransEvidence(a *analysis) []string {
 		return nil
 	}
 	re, _ := a.in.Sys.Delta(a.in.SysWindow, "Tcp:RetransSegs")
-	return []string{fmt.Sprintf("host-wide: %d of %d TCP segments retransmitted over the last %s", re, out, poller.LossWindow().Round(time.Second))}
+	return []string{fmt.Sprintf("host-wide: %d of %d TCP segments retransmitted over the last %s", re, out, poller.SlotWindow().Round(time.Second))}
 }
 
 func localLossActions() []Action {
@@ -452,18 +457,29 @@ func discardEvidence(conns []*model.Connection) ([]string, int) {
 // ruleReordering: sender-detected reordering, grouped by peer.
 func ruleReordering(a *analysis) {
 	for _, g := range a.groupBySignal(func(c *model.Connection) string { return c.PeerAddr }, model.SignalReordering) {
-		events, lossy := 0, 0
+		events, segs, lossy := 0, 0.0, 0
+		var from, to time.Time
 		for _, c := range g.conns {
-			events += deref(c.DeltaReordSeen)
-			// Any loss counts here, not just loss bad enough for a finding:
-			// a retransmit this poll, or a loss signal.
-			if deref(c.DeltaBytesRetrans) > 0 || slices.ContainsFunc(c.Signals, func(s model.Signal) bool {
-				return slices.Contains(lossSignals, s.Type)
-			}) {
+			for _, s := range c.SendSlots {
+				events += s.Reord
+				if c.MSS != nil && *c.MSS > 0 {
+					segs += float64(s.Sent) / float64(*c.MSS)
+				}
+				if from.IsZero() || s.Start.Before(from) {
+					from = s.Start
+				}
+				to = maxTime(to, s.End)
+			}
+			// Steady loss or stalls, not a retransmit now and then: real
+			// reordering itself causes the occasional one.
+			if slices.ContainsFunc(c.Signals, func(s model.Signal) bool { return slices.Contains(lossSignals, s.Type) }) {
 				lossy++
 			}
 		}
-		ev := []string{fmt.Sprintf("the sender detected %d reordering events in the last poll", events)}
+		ev := []string{fmt.Sprintf("the sender saw %d reordering events over the last %s", events, to.Sub(from).Round(time.Second))}
+		if segs > 0 {
+			ev[0] += fmt.Sprintf(" (%.2f%% of segments)", float64(events)/segs*100)
+		}
 		if lossy > 0 {
 			// reord_seen also grows when ACKs are lost or retransmits turn
 			// out spurious, so alongside loss it isn't proof of reordering.
@@ -918,7 +934,7 @@ func ruleUDPRcvbufHost(a *analysis) {
 }
 
 // ruleRetransHost: high host-wide TCP retransmit rate, over the last
-// poller.LossWindow rather than one poll: a slow-start overshoot or a burst
+// poller.SlotWindow rather than one poll: a slow-start overshoot or a burst
 // of requests can resend a large share of one poll's segments on a healthy
 // host. Skipped only when the host-wide loss finding already covers it: a
 // single lossy peer doesn't explain a high rate across the whole host.
@@ -940,7 +956,7 @@ func ruleRetransHost(a *analysis) {
 	a.add(Finding{
 		ID:       "retrans_host",
 		Severity: sev,
-		Title:    fmt.Sprintf("Host-wide TCP retransmit rate is %.1f%% over the last %s", pct, poller.LossWindow().Round(time.Second)),
+		Title:    fmt.Sprintf("Host-wide TCP retransmit rate is %.1f%% over the last %s", pct, poller.SlotWindow().Round(time.Second)),
 		Detail:   "A noticeable share of all outgoing TCP segments are resent. No single connection stands out, so look at the host's link and load.",
 		Evidence: windowRetransEvidence(a),
 		Actions:  localLossActions(),

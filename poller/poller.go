@@ -223,7 +223,9 @@ func (b *Buffer) AddSnapshot(conns []*model.Connection) {
 	for i, c := range conns {
 		c.Signals = b.signals.intern(c.Signals)
 		samples[i] = newSample(c, c.Signals)
-		stateCounts[c.State]++
+		// Key by the interned state: c.State is a substring of the raw ss
+		// line and would pin it for as long as this snapshot lives.
+		stateCounts[samples[i].State()]++
 	}
 
 	b.mu.Lock()

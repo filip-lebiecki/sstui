@@ -105,6 +105,10 @@ type AppModel struct {
 	// poll so the viewed moment stays pinned as history grows behind it.
 	paused      bool
 	scrubOffset int
+
+	// tableSnap is the snapshot whose connections the table currently holds,
+	// so syncTable can skip redundant reloads.
+	tableSnap *poller.Snapshot
 }
 
 func NewApp() *AppModel {
@@ -585,9 +589,15 @@ func (m *AppModel) viewSnapshot() *poller.Snapshot {
 // and re-applies the layout size. Called whenever that snapshot changes.
 func (m *AppModel) syncTable() {
 	m.resizeTable()
-	if snap := m.viewSnapshot(); snap != nil {
-		m.table.SetConnections(snap.Connections())
+	snap := m.viewSnapshot()
+	// While paused, polls keep arriving but usually leave the viewed snapshot
+	// untouched; re-materializing a historical snapshot's connections each
+	// time would allocate the whole table again for an identical view.
+	if snap == nil || snap == m.tableSnap {
+		return
 	}
+	m.tableSnap = snap
+	m.table.SetConnections(snap.Connections())
 }
 
 // clampScrub keeps the scrub offset within the available history.

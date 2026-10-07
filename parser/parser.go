@@ -434,12 +434,38 @@ const ssFlags = "-atunpeimOH"
 // record lines that could not be parsed (so the UI can surface a silent parse
 // failure rather than dropping sockets invisibly).
 func RunSS() ([]*model.Connection, int, error) {
-	conns, drops, err := runSS(ssFlags)
-	if err != nil {
+	conns, drops, err := runSS(ssFlags, "")
+	if err != nil && !errors.Is(err, errSSNotFound) {
+		// The combined query can fail when one protocol's socket diagnostics
+		// are unavailable (restricted netlink, missing diag module). Fall
+		// back to per-protocol queries so the one that works is still shown.
+		tcp, tcpDrops, tcpErr := runSS("-atnpeimOH", "tcp")
+		udp, udpDrops, udpErr := runSS("-aunpeimOH", "udp")
+		conns, err = mergeResults(tcp, tcpErr, udp, udpErr)
+		drops = tcpDrops + udpDrops
+	}
+	if conns == nil {
 		return nil, 0, err
 	}
 	postProcess(conns)
-	return conns, drops, nil
+	return conns, drops, err
+}
+
+// mergeResults combines per-protocol fallback results. When both queries fail
+// it returns a nil slice and an error (the caller keeps the last good
+// snapshot). When only one fails it returns the protocol that succeeded plus
+// an error describing the partial result, so the UI can flag it rather than
+// silently dropping a whole protocol.
+func mergeResults(tcpConns []*model.Connection, tcpErr error, udpConns []*model.Connection, udpErr error) ([]*model.Connection, error) {
+	switch {
+	case tcpErr != nil && udpErr != nil:
+		return nil, fmt.Errorf("tcp: %v; udp: %v", tcpErr, udpErr)
+	case tcpErr != nil:
+		return udpConns, fmt.Errorf("tcp query failed (showing UDP only): %v", tcpErr)
+	case udpErr != nil:
+		return tcpConns, fmt.Errorf("udp query failed (showing TCP only): %v", udpErr)
+	}
+	return append(tcpConns, udpConns...), nil
 }
 
 // postProcess applies the cross-record fixups: synthetic UDP states and
@@ -453,12 +479,19 @@ func postProcess(conns []*model.Connection) {
 	fillOmittedZeros(conns)
 }
 
-// parseNetidRecord splits off the leading Netid column and parses the rest.
-// skip is true for protocols sstui doesn't track (nothing to count as a drop).
-func parseNetidRecord(line string, ts time.Time) (c *model.Connection, skip bool) {
-	netid, i := nextField(line, 0)
-	if netid != "tcp" && netid != "udp" {
-		return nil, true
+var errSSNotFound = errors.New("ss not found in PATH; install iproute2")
+
+// parseProtoRecord parses one record. With protocol "" the record starts with
+// ss's Netid column (combined -t -u output), which is split off and used as
+// the protocol; otherwise the record has no Netid column and protocol is
+// applied. skip is true for protocols sstui doesn't track (not a drop).
+func parseProtoRecord(line, protocol string, ts time.Time) (c *model.Connection, skip bool) {
+	netid, i := protocol, 0
+	if protocol == "" {
+		netid, i = nextField(line, 0)
+		if netid != "tcp" && netid != "udp" {
+			return nil, true
+		}
 	}
 	c, err := parseRecord(line[i:], ts)
 	if err != nil || c == nil {
@@ -567,7 +600,7 @@ func applyUDPState(c *model.Connection) {
 	}
 }
 
-func runSS(flags string) ([]*model.Connection, int, error) {
+func runSS(flags, protocol string) ([]*model.Connection, int, error) {
 	cmd := exec.Command("ss", flags)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -575,12 +608,12 @@ func runSS(flags string) ([]*model.Connection, int, error) {
 	}
 	if err := cmd.Start(); err != nil {
 		if errors.Is(err, exec.ErrNotFound) {
-			return nil, 0, fmt.Errorf("ss not found in PATH; install iproute2")
+			return nil, 0, errSSNotFound
 		}
 		return nil, 0, fmt.Errorf("ss: %w", err)
 	}
 
-	conns, drops, scanErr := scanRecords(stdout, time.Now())
+	conns, drops, scanErr := scanRecords(stdout, protocol, time.Now())
 	if err := cmd.Wait(); err != nil {
 		return nil, 0, fmt.Errorf("ss: %w", err)
 	}
@@ -590,9 +623,10 @@ func runSS(flags string) ([]*model.Connection, int, error) {
 	return conns, drops, nil
 }
 
-// scanRecords reads Netid-prefixed ss records from r. Split out from runSS so
-// it can be fed captured ss output in tests.
-func scanRecords(r io.Reader, ts time.Time) ([]*model.Connection, int, error) {
+// scanRecords reads ss records from r (Netid-prefixed when protocol is "", see
+// parseProtoRecord). Split out from runSS so it can be fed captured ss output
+// in tests.
+func scanRecords(r io.Reader, protocol string, ts time.Time) ([]*model.Connection, int, error) {
 	var conns []*model.Connection
 	var drops int // record lines that looked like sockets but didn't parse
 	scanner := bufio.NewScanner(r)
@@ -605,7 +639,7 @@ func scanRecords(r io.Reader, ts time.Time) ([]*model.Connection, int, error) {
 		// ss is run with -H, so every non-continuation line is a socket record.
 		// A nil result means a record we couldn't parse — count it rather than
 		// discarding it silently.
-		if c, skip := parseNetidRecord(pending, ts); c != nil {
+		if c, skip := parseProtoRecord(pending, protocol, ts); c != nil {
 			conns = append(conns, c)
 		} else if !skip {
 			drops++

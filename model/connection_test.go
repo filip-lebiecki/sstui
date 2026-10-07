@@ -41,3 +41,18 @@ func TestConnKeyFallsBackWithoutInode(t *testing.T) {
 		t.Errorf("inode-0 key %q != tuple key %q", zeroInode.ConnKey(), base.ConnKey())
 	}
 }
+
+func TestParseSSDuration(t *testing.T) {
+	for in, want := range map[string]float64{
+		"50sec": 50000, "6.077sec": 6077, "200ms": 200, "2min": 120000, "1min49sec": 109000,
+	} {
+		if got, ok := ParseSSDuration(in); !ok || got != want {
+			t.Errorf("ParseSSDuration(%q) = %v, %v; want %v", in, got, ok, want)
+		}
+	}
+	for _, bad := range []string{"", "abc", "5hours", "1.2.3sec"} {
+		if _, ok := ParseSSDuration(bad); ok {
+			t.Errorf("ParseSSDuration(%q) should fail", bad)
+		}
+	}
+}

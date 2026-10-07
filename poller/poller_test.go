@@ -3,6 +3,7 @@ package poller
 import (
 	"testing"
 	"time"
+	"unsafe"
 
 	"sstui/classifier"
 	"sstui/model"
@@ -172,5 +173,71 @@ func TestFirstLossBurstProducesDelta(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("40%% retransmit rate on first loss burst should raise HI_RETRANS")
+	}
+}
+
+// TestSampleRoundTrip: every field the history views read must survive
+// newSample -> Conn. Adding a history field means extending newSample, Conn
+// and this test together.
+func TestSampleRoundTrip(t *testing.T) {
+	i := func(v int) *int { return &v }
+	str := func(v string) *string { return &v }
+	rtt := 12.5
+	sig := []model.Signal{{Type: model.SignalRTTSpike, Severity: 1, Value: 6.2}}
+	c := &model.Connection{
+		Protocol: "tcp", State: "ESTAB",
+		LocalAddr: "10.0.0.1", LocalPort: "443", PeerAddr: "10.0.0.2", PeerPort: "51000",
+		Inode: str("99"), Process: str("nginx"), PID: i(42),
+		TimerType: str("keepalive"), TimerDur: str("1min49sec"),
+		RTT: &rtt, RecvQ: i(1), SendQ: i(2), CWnd: i(30), Unacked: i(4), Retrans: i(5),
+		DeltaBytesSent: i(1000), DeltaBytesReceived: i(2000),
+		Signals: sig,
+	}
+	ts := time.Unix(1700000000, 0)
+	got := func() *model.Connection { s := newSample(c, c.Signals); return s.Conn(ts) }()
+
+	ptrs := func(c *model.Connection) []any {
+		d := func(p *int) any {
+			if p == nil {
+				return nil
+			}
+			return *p
+		}
+		ds := func(p *string) any {
+			if p == nil {
+				return nil
+			}
+			return *p
+		}
+		df := func(p *float64) any {
+			if p == nil {
+				return nil
+			}
+			return *p
+		}
+		return []any{c.Protocol, c.State, c.LocalAddr, c.LocalPort, c.PeerAddr, c.PeerPort,
+			ds(c.Inode), ds(c.Process), d(c.PID), ds(c.TimerType), df(c.RTT),
+			d(c.RecvQ), d(c.SendQ), d(c.CWnd), d(c.Unacked), d(c.Retrans),
+			d(c.DeltaBytesSent), d(c.DeltaBytesReceived), c.ConnKey(), len(c.Signals)}
+	}
+	want, have := ptrs(c), ptrs(got)
+	for k := range want {
+		if want[k] != have[k] {
+			t.Errorf("field #%d: want %v, got %v", k, want[k], have[k])
+		}
+	}
+	if ms, _ := model.ParseSSDuration(*got.TimerDur); ms != 109000 {
+		t.Errorf("timer duration round-trip: got %q (%vms), want 109000ms", *got.TimerDur, ms)
+	}
+	if !got.Timestamp.Equal(ts) {
+		t.Errorf("timestamp = %v, want %v", got.Timestamp, ts)
+	}
+}
+
+// TestSampleSizeBudget guards the ring buffer's memory footprint: history
+// holds ~1500 samples per socket, so every byte here is multiplied.
+func TestSampleSizeBudget(t *testing.T) {
+	if sz := unsafe.Sizeof(Sample{}); sz > 104 {
+		t.Errorf("Sample is %d bytes; budget is 104 — keep history fields compact", sz)
 	}
 }

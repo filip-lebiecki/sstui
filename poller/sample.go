@@ -2,6 +2,7 @@ package poller
 
 import (
 	"math"
+	"strconv"
 	"time"
 	"unique"
 
@@ -23,14 +24,18 @@ type Sample struct {
 	key   unique.Handle[string] // ConnKey(); also the sort/lookup key
 	ident unique.Handle[sampleIdent]
 	state unique.Handle[string]
-	timer unique.Handle[sampleTimer] // valid when has&hasTimer
+	timer unique.Handle[string] // timer type (keepalive/on/persist…); valid when has&hasTimer
 
 	signals []model.Signal
 
 	deltaSent, deltaRecv              int64
 	rtt                               float32
 	recvQ, sendQ, cwnd, unacked, retr int32
-	has                               uint16
+	// timerMS is the timer's remaining time. Stored inline rather than
+	// interned with the type: it counts down every poll, so interning it
+	// would create a new unique entry per socket per poll.
+	timerMS int32
+	has     uint16
 }
 
 // sampleIdent is the per-socket identity that rarely changes between polls,
@@ -41,8 +46,6 @@ type sampleIdent struct {
 	PID                                                int
 	HasInode, HasProcess, HasPID                       bool
 }
-
-type sampleTimer struct{ Type, Dur string }
 
 const (
 	hasRTT uint16 = 1 << iota
@@ -92,8 +95,10 @@ func newSample(c *model.Connection, signals []model.Signal) Sample {
 		signals: signals,
 	}
 	if c.TimerType != nil && c.TimerDur != nil {
-		s.timer = unique.Make(sampleTimer{*c.TimerType, *c.TimerDur})
-		s.has |= hasTimer
+		if ms, ok := model.ParseSSDuration(*c.TimerDur); ok {
+			s.timer, s.timerMS = unique.Make(*c.TimerType), clamp32(int(ms))
+			s.has |= hasTimer
+		}
 	}
 	if c.RTT != nil {
 		s.rtt, s.has = float32(*c.RTT), s.has|hasRTT
@@ -169,8 +174,8 @@ func (s *Sample) Conn(ts time.Time) *model.Connection {
 		c.PID = &id.PID
 	}
 	if s.has&hasTimer != 0 {
-		t := s.timer.Value()
-		c.TimerType, c.TimerDur = &t.Type, &t.Dur
+		typ, dur := s.timer.Value(), fmtTimerMS(s.timerMS)
+		c.TimerType, c.TimerDur = &typ, &dur
 	}
 	if v, ok := s.RTT(); ok {
 		c.RTT = &v
@@ -195,6 +200,18 @@ func (s *Sample) Conn(ts time.Time) *model.Connection {
 		c.DeltaBytesReceived = &n
 	}
 	return c
+}
+
+// fmtTimerMS renders a timer duration the way ss does ("50sec", "6.077sec",
+// "200ms"), so the materialized connection reads like a live one.
+func fmtTimerMS(ms int32) string {
+	switch {
+	case ms < 1000:
+		return strconv.Itoa(int(ms)) + "ms"
+	case ms%1000 == 0:
+		return strconv.Itoa(int(ms/1000)) + "sec"
+	}
+	return strconv.FormatFloat(float64(ms)/1000, 'f', 3, 64) + "sec"
 }
 
 // signalSetKey identifies a small signal set whose members carry no Value.
@@ -233,7 +250,10 @@ func (si *signalInterner) intern(sigs []model.Signal) []model.Signal {
 			if shared, ok := si.sets[k]; ok {
 				return shared
 			}
+			// Full slice expression: cap == len, so an append by any holder
+			// copies instead of writing into the shared backing array.
 			cp := append([]model.Signal(nil), sigs...)
+			cp = cp[:len(cp):len(cp)]
 			si.sets[k] = cp
 			return cp
 		}

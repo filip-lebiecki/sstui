@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -22,7 +23,7 @@ mptcp ESTAB     0      0      10.0.0.1:1     10.0.0.2:2
 tcp   ESTAB     0`
 
 func TestScanRecordsSample(t *testing.T) {
-	conns, drops, err := scanRecords(strings.NewReader(sampleSS), time.Now())
+	conns, drops, err := scanRecords(strings.NewReader(sampleSS), "", time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,6 +116,35 @@ func TestScanRecordsSample(t *testing.T) {
 		if ck.got != ck.want {
 			t.Errorf("%s = %v, want %v", ck.name, ck.got, ck.want)
 		}
+	}
+}
+
+func TestMergeResults(t *testing.T) {
+	tcp := []*model.Connection{{Protocol: "tcp"}}
+	udp := []*model.Connection{{Protocol: "udp"}}
+	boom := errors.New("boom")
+
+	if c, err := mergeResults(tcp, nil, udp, nil); err != nil || len(c) != 2 {
+		t.Errorf("both ok: got %d conns, err %v", len(c), err)
+	}
+	if c, err := mergeResults(nil, boom, nil, boom); c != nil || err == nil {
+		t.Errorf("both failed: want nil conns and error, got %d, %v", len(c), err)
+	}
+	if c, err := mergeResults(nil, boom, udp, nil); len(c) != 1 || err == nil || !strings.Contains(err.Error(), "UDP only") {
+		t.Errorf("tcp failed: want UDP-only + error, got %d, %v", len(c), err)
+	}
+	if c, err := mergeResults(tcp, nil, nil, boom); len(c) != 1 || err == nil || !strings.Contains(err.Error(), "TCP only") {
+		t.Errorf("udp failed: want TCP-only + error, got %d, %v", len(c), err)
+	}
+}
+
+// TestScanRecordsFixedProtocol: per-protocol fallback output has no Netid
+// column; the protocol is applied from the caller.
+func TestScanRecordsFixedProtocol(t *testing.T) {
+	in := "UNCONN 0 0 0.0.0.0:68 0.0.0.0:* ino:5 sk:5 <-> skmem:(r0,rb1,t0,tb1,f0,w0,o0,bl0,d0)\n"
+	conns, drops, err := scanRecords(strings.NewReader(in), "udp", time.Now())
+	if err != nil || drops != 0 || len(conns) != 1 || conns[0].Protocol != "udp" || conns[0].LocalPort != "68" {
+		t.Fatalf("got %d conns (drops %d, err %v)", len(conns), drops, err)
 	}
 }
 

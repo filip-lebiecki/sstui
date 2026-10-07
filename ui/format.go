@@ -17,29 +17,11 @@ func keepaliveSeconds(c *model.Connection) float64 {
 	if c.TimerType == nil || c.TimerDur == nil || *c.TimerType != "keepalive" {
 		return -1
 	}
-	s := *c.TimerDur
-	var mult float64
-	switch {
-	case strings.HasSuffix(s, "min"):
-		mult = 60
-		s = strings.TrimSuffix(s, "min")
-	case strings.HasSuffix(s, "ms"):
-		mult = 0.001
-		s = strings.TrimSuffix(s, "ms")
-	case strings.HasSuffix(s, "sec"):
-		mult = 1
-		s = strings.TrimSuffix(s, "sec")
-	case strings.HasSuffix(s, "s"):
-		mult = 1
-		s = strings.TrimSuffix(s, "s")
-	default:
+	ms, ok := model.ParseSSDuration(*c.TimerDur)
+	if !ok {
 		return -1
 	}
-	f, err := strconv.ParseFloat(s, 64)
-	if err != nil {
-		return -1
-	}
-	return f * mult
+	return ms / 1000
 }
 
 func fmtKeepalive(c *model.Connection) string {

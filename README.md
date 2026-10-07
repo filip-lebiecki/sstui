@@ -148,6 +148,7 @@ Command-line flags:
 | `--filter`       | (none)  | Start pre-filtered with a `/`-prompt expression, e.g. `--filter 'dport=443 not state=TIME-WAIT'`. |
 | `--show-listen`  | off     | Show LISTEN sockets at startup (hidden by default).      |
 | `--resolve`      | off     | Resolve peer/local addresses to hostnames (reverse DNS). |
+| `--ss-filter`    | (none)  | Filter passed to `ss` itself, e.g. `--ss-filter 'dport = :443'`. Non-matching sockets are never collected — see [Filtering at the source](#filtering-at-the-source). |
 | `--version`      |         | Print version and exit.                                  |
 
 ```bash
@@ -407,6 +408,33 @@ Examples:
 
 `Esc` clears the filter.
 
+### Filtering at the source
+
+The `/` filter hides sockets *after* sstui has collected them. On a host
+with tens of thousands of sockets where you only care about a few, use
+`--ss-filter` instead: the expression is handed to `ss` itself (its
+`STATE-FILTER` and `EXPRESSION` syntax, see `ss(8)`), so everything else is
+never collected, parsed or kept in history — less CPU and memory, and only
+the sockets you asked about everywhere in the UI.
+
+```bash
+sstui --ss-filter 'dport = :443 or sport = :443'
+sstui --ss-filter 'state established ( dst 10.0.0.0/8 )'
+sstui --ss-filter 'sport = :5432'          # just the local Postgres
+```
+
+- The expression is validated at startup; a typo exits with `ss`'s own
+  error message.
+- Only filter expressions are accepted — words starting with `-` are
+  rejected, so nothing can sneak an option like `-K` (kill sockets) into
+  the `ss` command line.
+- It's fixed for the session and shown in the footer. Both filters
+  combine: `--ss-filter` decides what's collected, `/` narrows the view.
+- Findings say when a filter is active: socket-count checks (ephemeral
+  ports, TIME-WAIT storms, CLOSE-WAIT leaks) then only see the matching
+  sockets, while the kernel counters (System tab, overflow/drop findings)
+  stay host-wide.
+
 ---
 
 ## Export
@@ -658,7 +686,8 @@ socket creation.
 | Δ DSACK Dups   | (computed)          | Drives the `DSACK` signal                                          |
 | Reordering     | `reordering:`       | Kernel's reordering-distance estimate                              |
 | Reord Seen     | `reord_seen:`       | cum. reorder events observed                                       |
-| Rcv OOO        | `rcv_ooopack:`      | cum. out-of-order packets received                                 |
+| Rcv OOO        | `rcv_ooopack:`      | cum. out-of-order segments **received**: each one arrived after a gap, i.e. a segment from the peer was lost (or reordered) on its way here. When sstui runs on the receiving host this is the only visible trace of inbound loss — the sender's retransmit counters live on the other machine |
+| OOO / data in  | (computed)          | `rcv_ooopack / data_segs_in`, per poll and over the connection's life (Detail → Inbound). A few % is heavy inbound loss |
 | Δ Reord Seen   | (computed)          | Drives the `REORDER` signal                                        |
 
 ### Last-activity timestamps

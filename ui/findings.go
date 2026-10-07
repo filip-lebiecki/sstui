@@ -30,8 +30,14 @@ var (
 // failing) and is shown under the summary.
 func RenderFindings(rep findings.Report, sel, width, height int, now time.Time, stale string) string {
 	head := renderFindingsSummary(rep) + "\n"
+	// Notes are truncated with an ellipsis so a long filter visibly
+	// continues instead of being clipped silently at the edge.
 	if stale != "" {
-		head += styleFindWarn.Render("  ⚠ "+stale) + "\n"
+		head += styleFindWarn.Render(truncate("  ⚠ "+stale, width)) + "\n"
+		height--
+	}
+	if rep.SSFilter != "" {
+		head += styleFindDim.Render(truncate("  scope: ss filter \""+rep.SSFilter+"\" — socket checks see only matching sockets; kernel counters stay host-wide", width)) + "\n"
 		height--
 	}
 

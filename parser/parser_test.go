@@ -2,6 +2,7 @@ package parser
 
 import (
 	"errors"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -23,7 +24,7 @@ mptcp ESTAB     0      0      10.0.0.1:1     10.0.0.2:2
 tcp   ESTAB     0`
 
 func TestScanRecordsSample(t *testing.T) {
-	conns, drops, err := scanRecords(strings.NewReader(sampleSS), "", time.Now())
+	conns, drops, err := scanRecords(strings.NewReader(sampleSS), "", "", time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +143,7 @@ func TestMergeResults(t *testing.T) {
 // column; the protocol is applied from the caller.
 func TestScanRecordsFixedProtocol(t *testing.T) {
 	in := "UNCONN 0 0 0.0.0.0:68 0.0.0.0:* ino:5 sk:5 <-> skmem:(r0,rb1,t0,tb1,f0,w0,o0,bl0,d0)\n"
-	conns, drops, err := scanRecords(strings.NewReader(in), "udp", time.Now())
+	conns, drops, err := scanRecords(strings.NewReader(in), "udp", "", time.Now())
 	if err != nil || drops != 0 || len(conns) != 1 || conns[0].Protocol != "udp" || conns[0].LocalPort != "68" {
 		t.Fatalf("got %d conns (drops %d, err %v)", len(conns), drops, err)
 	}
@@ -177,7 +178,7 @@ func TestParseLineLimitedMetrics(t *testing.T) {
 // TestRunSSIntegration exercises the real ss binary when present so we catch
 // regressions in flag handling / parsing end to end.
 func TestRunSSIntegration(t *testing.T) {
-	conns, drops, err := RunSS()
+	conns, drops, err := RunSS(SSFilter{})
 	if err != nil {
 		t.Skipf("RunSS returned error (ss unavailable or restricted?): %v", err)
 	}
@@ -247,4 +248,98 @@ func TestFillOmittedZerosOldKernel(t *testing.T) {
 	if c.BytesSent != nil || c.BytesRetrans != nil {
 		t.Errorf("unsupported group must stay nil, got sent=%v retrans=%v", c.BytesSent, c.BytesRetrans)
 	}
+}
+
+func TestParseSSFilter(t *testing.T) {
+	f, err := ParseSSFilter("state established (dport = :443 or sport = :22)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"state", "established", "(", "dport", "=", ":443", "or", "sport", "=", ":22", ")"}
+	if strings.Join(f.args, " ") != strings.Join(want, " ") {
+		t.Errorf("args = %q, want %q", f.args, want)
+	}
+	if f.impliedState != "ESTAB" {
+		t.Errorf("single-state filter should imply ESTAB, got %q", f.impliedState)
+	}
+	for expr, implied := range map[string]string{
+		"state Established":                "ESTAB", // ss accepts any case
+		"state established state syn-sent": "",      // two states: ss keeps the column
+		"state connected":                  "",      // a group
+		"exclude established":              "",
+		"dport = :443":                     "",
+		"state time-wait":                  "TIME-WAIT",
+	} {
+		if f, _ := ParseSSFilter(expr); f.impliedState != implied {
+			t.Errorf("%q: impliedState = %q, want %q", expr, f.impliedState, implied)
+		}
+	}
+	// Options would reach ss as flags; -K kills sockets.
+	for _, bad := range []string{"-K dport = :22", "dport = :22 --kill"} {
+		if _, err := ParseSSFilter(bad); err == nil {
+			t.Errorf("%q should be rejected", bad)
+		}
+	}
+	if f, _ := ParseSSFilter("   "); f.Active() {
+		t.Errorf("blank filter should be inactive")
+	}
+}
+
+// TestImpliedStateFillsMissingColumn: with a single-state filter ss prints no
+// State column; the parser must not shift every field by one.
+func TestImpliedStateFillsMissingColumn(t *testing.T) {
+	in := "tcp 0      0      10.0.0.1:443 10.0.0.2:51000 ino:9 sk:1 <-> skmem:(r0,rb1,t0,tb1,f0,w0,o0,bl0,d0) cubic cwnd:10\n"
+	conns, drops, err := scanRecords(strings.NewReader(in), "", "ESTAB", time.Now())
+	if err != nil || drops != 0 || len(conns) != 1 {
+		t.Fatalf("got %d conns, %d drops, err %v", len(conns), drops, err)
+	}
+	c := conns[0]
+	if c.State != "ESTAB" || c.LocalPort != "443" || c.PeerAddr != "10.0.0.2" || c.RecvQ == nil || *c.RecvQ != 0 {
+		t.Errorf("fields shifted: state=%q local=%s:%s peer=%s", c.State, c.LocalAddr, c.LocalPort, c.PeerAddr)
+	}
+}
+
+// TestMissingStateColumnDetectedWithoutHint: even when the filter text gives
+// no implied state, a record without the State column must not shift fields.
+func TestMissingStateColumnDetectedWithoutHint(t *testing.T) {
+	in := "tcp 0      0      10.0.0.1:443 10.0.0.2:51000 ino:9 sk:1\n"
+	conns, _, _ := scanRecords(strings.NewReader(in), "", "", time.Now())
+	if len(conns) != 1 || conns[0].State != "UNKNOWN" || conns[0].LocalPort != "443" {
+		t.Fatalf("got %+v", conns)
+	}
+}
+
+// TestRunSSWithFilter exercises real ss filtering when ss is available.
+func TestRunSSWithFilter(t *testing.T) {
+	if _, err := exec.LookPath("ss"); err != nil {
+		t.Skip("ss not installed")
+	}
+	if err := CheckSSFilter(mustFilter(t, "dport = :443 andd")); err == nil || !strings.Contains(err.Error(), "andd") {
+		t.Errorf("malformed filter should fail with ss's message, got %v", err)
+	}
+	f := mustFilter(t, "state established")
+	if err := CheckSSFilter(f); err != nil {
+		t.Skipf("ss unavailable: %v", err)
+	}
+	conns, drops, err := RunSS(f)
+	if err != nil {
+		t.Skipf("RunSS: %v", err)
+	}
+	if drops != 0 {
+		t.Errorf("%d records failed to parse with a single-state filter", drops)
+	}
+	for _, c := range conns {
+		if c.State != "ESTAB" && c.State != "UDP_ESTAB" {
+			t.Errorf("state established returned a %s socket", c.State)
+		}
+	}
+}
+
+func mustFilter(t *testing.T, expr string) SSFilter {
+	t.Helper()
+	f, err := ParseSSFilter(expr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return f
 }

@@ -60,6 +60,11 @@ type Input struct {
 	Sys, SysPrev *poller.SysStat     // host counters, current and previous poll
 	Sysctl       poller.Sysctls
 	Interval     time.Duration // poll interval, to turn counter deltas into rates
+	// SSFilter is the ss filter expression in effect ("" for none). When
+	// set, Conns is only the matching subset, so socket-count checks
+	// (ephemeral ports, TIME-WAIT storms, CLOSE-WAIT leaks) see a partial
+	// picture; the report carries it so the UI can say so.
+	SSFilter string
 }
 
 // Report is the result of one analysis pass.
@@ -70,6 +75,9 @@ type Report struct {
 	// RetransPct is the host-wide TCP retransmit rate over the last poll
 	// (RetransSegs / OutSegs), or -1 when unknown.
 	RetransPct float64
+	// SSFilter echoes Input.SSFilter: when non-empty, socket-based findings
+	// cover only sockets matching it (host counters stay host-wide).
+	SSFilter string
 }
 
 // Crit and Warn count findings by severity.
@@ -101,7 +109,7 @@ func Analyze(in Input) Report {
 		}
 		return cmp.Compare(y.Count, x.Count)
 	})
-	rep := Report{Findings: a.out, Sockets: len(in.Conns), RetransPct: -1}
+	rep := Report{Findings: a.out, Sockets: len(in.Conns), RetransPct: -1, SSFilter: in.SSFilter}
 	for _, c := range in.Conns {
 		if c.State == "ESTAB" {
 			rep.Estab++

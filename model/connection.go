@@ -114,6 +114,7 @@ type Connection struct {
 	DeltaBytesRetrans    *int     `json:",omitempty"`
 	DeltaDSACKDups       *int     `json:",omitempty"`
 	DeltaRcvOOOPack      *int     `json:",omitempty"`
+	DeltaDataSegsIn      *int     `json:",omitempty"` // data segments received this poll (OOO ratio denominator)
 	DeltaReordSeen       *int     `json:",omitempty"` // reordering events the sender detected this poll
 	DeltaBytesAcked      *int     `json:",omitempty"` // bytes newly acknowledged by the peer this poll
 	DeltaSkmemD          *int     `json:",omitempty"` // new socket-buffer drops since the previous poll

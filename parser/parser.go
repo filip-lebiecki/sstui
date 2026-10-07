@@ -430,17 +430,110 @@ func parseRecord(line string, ts time.Time) (*model.Connection, error) {
 // two halves the cost of -p, which makes ss walk every /proc/<pid>/fd.
 const ssFlags = "-atunpeimOH"
 
-// RunSS runs ss for TCP and UDP and returns the connections plus the number of
-// record lines that could not be parsed (so the UI can surface a silent parse
-// failure rather than dropping sockets invisibly).
-func RunSS() ([]*model.Connection, int, error) {
-	conns, drops, err := runSS(ssFlags, "")
+// SSFilter is a filter expression handed to ss itself (its STATE-FILTER and
+// EXPRESSION arguments, see ss(8)), so non-matching sockets are never
+// collected — unlike the UI filter, which hides sockets after collection.
+// The zero value means "no filter".
+type SSFilter struct {
+	expr string
+	args []string // the expression split into ss argv words
+	// impliedState is set when the filter selects exactly one TCP state:
+	// ss then omits the State column, so the parser fills it in. It's only a
+	// label: whether the column is missing is detected per record.
+	impliedState string
+}
+
+// ssStateNames maps ss filter state keywords to the State-column names ss
+// prints. Group keywords (all, connected, synchronized, bucket, big) select
+// several states, in which case ss keeps the column.
+var ssStateNames = map[string]string{
+	"established": "ESTAB", "syn-sent": "SYN-SENT", "syn-recv": "SYN-RECV",
+	"fin-wait-1": "FIN-WAIT-1", "fin-wait-2": "FIN-WAIT-2", "time-wait": "TIME-WAIT",
+	"closed": "UNCONN", "close-wait": "CLOSE-WAIT", "last-ack": "LAST-ACK",
+	"listening": "LISTEN", "closing": "CLOSING",
+}
+
+// ParseSSFilter prepares a user-supplied ss filter, e.g.
+//
+//	dport = :443 or sport = :22
+//	state established ( dst 10.0.0.0/8 )
+//
+// The expression is split into words (parentheses become their own words,
+// which ss requires). Words starting with "-" are rejected: they'd reach ss
+// as options, and some are destructive (-K kills the matching sockets).
+func ParseSSFilter(expr string) (SSFilter, error) {
+	f := SSFilter{expr: strings.TrimSpace(expr)}
+	if f.expr == "" {
+		return SSFilter{}, nil
+	}
+	f.args = strings.Fields(strings.NewReplacer("(", " ( ", ")", " ) ").Replace(f.expr))
+	states, multi := []string{}, false
+	for i, w := range f.args {
+		if strings.HasPrefix(w, "-") {
+			return SSFilter{}, fmt.Errorf("ss filter: %q looks like an option; only filter expressions are allowed", w)
+		}
+		switch strings.ToLower(w) {
+		case "state":
+			if i+1 < len(f.args) {
+				states = append(states, strings.ToLower(f.args[i+1]))
+			}
+		case "exclude", "excl":
+			multi = true
+		}
+	}
+	if len(states) == 1 && !multi {
+		f.impliedState = ssStateNames[states[0]]
+	}
+	return f, nil
+}
+
+// String returns the filter as the user wrote it.
+func (f SSFilter) String() string { return f.expr }
+
+// Active reports whether a filter is set.
+func (f SSFilter) Active() bool { return len(f.args) > 0 }
+
+// CheckSSFilter runs ss once with the filter (cheaply: no process or TCP
+// info) so a malformed expression fails at startup with ss's own message.
+func CheckSSFilter(f SSFilter) error {
+	if !f.Active() {
+		return nil
+	}
+	// Only ss's verdict matters: discard the (possibly huge) socket listing
+	// and keep stderr for the error message.
+	cmd := exec.Command("ss", append([]string{"-atunH"}, f.args...)...)
+	var stderr strings.Builder
+	cmd.Stdout, cmd.Stderr = io.Discard, &stderr
+	if err := cmd.Run(); err != nil {
+		if errors.Is(err, exec.ErrNotFound) {
+			return errSSNotFound
+		}
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		return fmt.Errorf("invalid ss filter %q: %s", f.expr, firstLine(msg))
+	}
+	return nil
+}
+
+func firstLine(s string) string {
+	line, _, _ := strings.Cut(s, "\n")
+	return line
+}
+
+// RunSS runs ss for TCP and UDP (restricted to f when set) and returns the
+// connections plus the number of record lines that could not be parsed (so
+// the UI can surface a silent parse failure rather than dropping sockets
+// invisibly).
+func RunSS(f SSFilter) ([]*model.Connection, int, error) {
+	conns, drops, err := runSS(ssFlags, "", f)
 	if err != nil && !errors.Is(err, errSSNotFound) {
 		// The combined query can fail when one protocol's socket diagnostics
 		// are unavailable (restricted netlink, missing diag module). Fall
 		// back to per-protocol queries so the one that works is still shown.
-		tcp, tcpDrops, tcpErr := runSS("-atnpeimOH", "tcp")
-		udp, udpDrops, udpErr := runSS("-aunpeimOH", "udp")
+		tcp, tcpDrops, tcpErr := runSS("-atnpeimOH", "tcp", f)
+		udp, udpDrops, udpErr := runSS("-aunpeimOH", "udp", f)
 		conns, err = mergeResults(tcp, tcpErr, udp, udpErr)
 		drops = tcpDrops + udpDrops
 	}
@@ -485,7 +578,7 @@ var errSSNotFound = errors.New("ss not found in PATH; install iproute2")
 // ss's Netid column (combined -t -u output), which is split off and used as
 // the protocol; otherwise the record has no Netid column and protocol is
 // applied. skip is true for protocols sstui doesn't track (not a drop).
-func parseProtoRecord(line, protocol string, ts time.Time) (c *model.Connection, skip bool) {
+func parseProtoRecord(line, protocol, impliedState string, ts time.Time) (c *model.Connection, skip bool) {
 	netid, i := protocol, 0
 	if protocol == "" {
 		netid, i = nextField(line, 0)
@@ -493,7 +586,20 @@ func parseProtoRecord(line, protocol string, ts time.Time) (c *model.Connection,
 			return nil, true
 		}
 	}
-	c, err := parseRecord(line[i:], ts)
+	rec := line[i:]
+	// ss omits the State column when its filter selects a single state. That
+	// is detected from the record itself — the first field is then Recv-Q (a
+	// number), and a state name never starts with a digit — rather than
+	// predicted from the filter text, so an unmodeled keyword can't shift
+	// every column. The filter only supplies the label.
+	if first, _ := nextField(rec, 0); first != "" && first[0] >= '0' && first[0] <= '9' {
+		state := impliedState
+		if state == "" {
+			state = "UNKNOWN"
+		}
+		rec = state + " " + rec
+	}
+	c, err := parseRecord(rec, ts)
 	if err != nil || c == nil {
 		return nil, false
 	}
@@ -528,6 +634,12 @@ var omittedGroups = []omittedGroup{
 		sentinel: func(c *model.Connection) bool { return c.BusyMS != nil },
 		floats: func(c *model.Connection) []**float64 {
 			return []**float64{&c.BusyMS, &c.RwndLimitedMS, &c.SndbufLimitedMS}
+		},
+	},
+	{ // Linux 4.6: data_segs_out, data_segs_in
+		sentinel: func(c *model.Connection) bool { return c.DataSegsOut != nil || c.DataSegsIn != nil },
+		fields: func(c *model.Connection) []**int {
+			return []**int{&c.DataSegsOut, &c.DataSegsIn}
 		},
 	},
 	{ // Linux 4.19: bytes_sent, bytes_retrans, dsack_dups, reord_seen
@@ -606,8 +718,10 @@ func applyUDPState(c *model.Connection) {
 	}
 }
 
-func runSS(flags, protocol string) ([]*model.Connection, int, error) {
-	cmd := exec.Command("ss", flags)
+func runSS(flags, protocol string, f SSFilter) ([]*model.Connection, int, error) {
+	cmd := exec.Command("ss", append([]string{flags}, f.args...)...)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, 0, fmt.Errorf("ss: %w", err)
@@ -619,8 +733,12 @@ func runSS(flags, protocol string) ([]*model.Connection, int, error) {
 		return nil, 0, fmt.Errorf("ss: %w", err)
 	}
 
-	conns, drops, scanErr := scanRecords(stdout, protocol, time.Now())
+	conns, drops, scanErr := scanRecords(stdout, protocol, f.impliedState, time.Now())
 	if err := cmd.Wait(); err != nil {
+		// Include what ss said; "exit status 1" alone is undiagnosable.
+		if msg := firstLine(strings.TrimSpace(stderr.String())); msg != "" {
+			return nil, 0, fmt.Errorf("ss: %s (%w)", msg, err)
+		}
 		return nil, 0, fmt.Errorf("ss: %w", err)
 	}
 	if scanErr != nil {
@@ -632,7 +750,7 @@ func runSS(flags, protocol string) ([]*model.Connection, int, error) {
 // scanRecords reads ss records from r (Netid-prefixed when protocol is "", see
 // parseProtoRecord). Split out from runSS so it can be fed captured ss output
 // in tests.
-func scanRecords(r io.Reader, protocol string, ts time.Time) ([]*model.Connection, int, error) {
+func scanRecords(r io.Reader, protocol, impliedState string, ts time.Time) ([]*model.Connection, int, error) {
 	var conns []*model.Connection
 	var drops int // record lines that looked like sockets but didn't parse
 	scanner := bufio.NewScanner(r)
@@ -645,7 +763,7 @@ func scanRecords(r io.Reader, protocol string, ts time.Time) ([]*model.Connectio
 		// ss is run with -H, so every non-continuation line is a socket record.
 		// A nil result means a record we couldn't parse — count it rather than
 		// discarding it silently.
-		if c, skip := parseProtoRecord(pending, protocol, ts); c != nil {
+		if c, skip := parseProtoRecord(pending, protocol, impliedState, ts); c != nil {
 			conns = append(conns, c)
 		} else if !skip {
 			drops++

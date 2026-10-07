@@ -201,7 +201,6 @@ func RenderDetail(conn *model.Connection, historical bool, buf *poller.Buffer, w
 		sb.WriteString(fmtRowColor("DSACK Dups", fmtNumRaw(conn.DSACKDups), dimIfZero(conn.DSACKDups, colQ)))
 		sb.WriteString(fmtRowColor("Reordering", fmtNumRaw(conn.Reordering), colDim))
 		sb.WriteString(fmtRowColor("Reord Seen", fmtNumRaw(conn.ReordSeen), dimIfZero(conn.ReordSeen, colQ)))
-		sb.WriteString(fmtRowColor("Rcv OOO", fmtNumRaw(conn.RcvOOOPack), dimIfZero(conn.RcvOOOPack, colQ)))
 		{
 			rate := 0.0
 			if conn.DeltaBytesSent != nil && *conn.DeltaBytesSent > 0 && conn.DeltaBytesRetrans != nil {
@@ -213,6 +212,35 @@ func RenderDetail(conn *model.Connection, historical bool, buf *poller.Buffer, w
 		}
 		return sb.String()
 	})
+
+	// Inbound: what the receiving side of this socket can see. When the peer
+	// sends to us and a segment is lost on the way, every segment after the
+	// gap arrives out of order until the retransmission fills it — so
+	// rcv_ooopack is the only trace of inbound loss visible on this host
+	// (reordering on the path also counts). The retransmit counters above
+	// only describe what *we* send.
+	if conn.Protocol == "tcp" && conn.CWnd != nil { // has tcp_info
+		add("Inbound (receiver side)", func() string {
+			var sb strings.Builder
+			sb.WriteString(fmtRowColor("Data Segs In", fmtNumRaw(conn.DataSegsIn), colRX))
+			sb.WriteString(fmtRowColor("Rcv OOO", fmtNumRaw(conn.RcvOOOPack), dimIfZero(conn.RcvOOOPack, colQ)))
+			poll, pollOK := oooRatio(conn.DeltaRcvOOOPack, conn.DeltaDataSegsIn)
+			life, lifeOK := oooRatio(conn.RcvOOOPack, conn.DataSegsIn)
+			val := "-"
+			switch {
+			case pollOK && lifeOK:
+				val = fmt.Sprintf("%.2f%% poll · %.2f%% life", poll*100, life*100)
+			case lifeOK:
+				val = fmt.Sprintf("%.2f%% lifetime", life*100)
+			}
+			// Map 0% → empty, 5% → full: a few percent of inbound segments
+			// arriving after a gap is already heavy loss for TCP.
+			sb.WriteString(fmtRowBar("OOO / data in", val, max(poll, life)/0.05))
+			sb.WriteString(styleDetailLabel.Foreground(colDim).Render("  ↳ OOO = segments that arrived after a gap:") + "\n")
+			sb.WriteString(styleDetailLabel.Foreground(colDim).Render("    loss (or reordering) on the peer → here path") + "\n")
+			return sb.String()
+		})
+	}
 
 	b.WriteString(layoutSections(sections, width))
 	if len(conn.Signals) > 0 {
@@ -336,6 +364,15 @@ func historicalNote(conn *model.Connection, historical bool) string {
 	return lipgloss.NewStyle().Foreground(lipgloss.Color("#ffd43b")).Render(
 		fmt.Sprintf("  ⏱ snapshot from %s — history records summary fields only (RTT, cwnd, queues, rates, signals)",
 			conn.Timestamp.Format("15:04:05")))
+}
+
+// oooRatio returns out-of-order segments as a fraction of data segments
+// received, when there's data to compare against.
+func oooRatio(ooo, dataIn *int) (float64, bool) {
+	if ooo == nil || dataIn == nil || *dataIn <= 0 {
+		return 0, false
+	}
+	return float64(*ooo) / float64(*dataIn), true
 }
 
 // layoutSections arranges detail sections into 1 or 2 columns based on width.

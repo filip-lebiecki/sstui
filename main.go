@@ -18,6 +18,7 @@ import (
 	"github.com/aymanbagabas/go-osc52/v2"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // tickMsg fires the next poll.
@@ -38,9 +39,9 @@ func tickCmd(d time.Duration) tea.Cmd {
 	})
 }
 
-func pollCmd() tea.Cmd {
+func pollCmd(f parser.SSFilter) tea.Cmd {
 	return func() tea.Msg {
-		conns, drops, err := parser.RunSS()
+		conns, drops, err := parser.RunSS(f)
 		sys, _ := poller.ReadSysStat() // best-effort; nil on platforms without /proc/net
 		return pollResultMsg{conns: conns, drops: drops, sys: sys, sysctl: poller.ReadSysctls(), err: err}
 	}
@@ -157,6 +158,10 @@ type AppModel struct {
 	findingSelID string
 	reportAt     time.Time // when the report was last refreshed
 
+	// ssFilter is passed to ss itself (--ss-filter): non-matching sockets
+	// are never collected. Fixed for the session.
+	ssFilter parser.SSFilter
+
 	// tableSnap is the snapshot whose connections the table currently holds,
 	// so syncTable can skip redundant reloads.
 	tableSnap *poller.Snapshot
@@ -176,7 +181,7 @@ func NewApp() *AppModel {
 func (m *AppModel) Init() tea.Cmd {
 	return tea.Batch(
 		tea.WindowSize(),
-		pollCmd(),
+		pollCmd(m.ssFilter),
 	)
 }
 
@@ -362,7 +367,7 @@ func (m *AppModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tickMsg:
-		return m, pollCmd()
+		return m, pollCmd(m.ssFilter)
 
 	case exportDoneMsg:
 		m.exporting = false
@@ -768,6 +773,7 @@ func (m *AppModel) refreshFindings() {
 		SysPrev:  m.sysPrev,
 		Sysctl:   m.sysctl,
 		Interval: poller.PollInterval,
+		SSFilter: m.ssFilter.String(),
 	})
 	m.tracker.Update(rep.Findings, time.Now())
 	m.report = rep
@@ -960,10 +966,15 @@ func (m *AppModel) renderFooter() string {
 	}
 	parts = append(parts, fmt.Sprintf("snapshots: %d", m.buf.Count()))
 	parts = append(parts, "updated: "+ui.RenderTimeAgo(m.buf.LastUpdate()))
+	if m.ssFilter.Active() {
+		parts = append(parts, "ss filter: "+m.ssFilter.String())
+	}
 
+	// Truncate with an ellipsis so a long --ss-filter visibly continues
+	// (the renderer would otherwise clip it silently at the edge).
 	return lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#666")).
-		Render("  " + strings.Join(parts, "  |  "))
+		Render(ansi.Truncate("  "+strings.Join(parts, "  |  "), max(m.width, 1), "…"))
 }
 
 // renderFilterInput renders the filter buffer with a block cursor at byte
@@ -990,6 +1001,7 @@ func main() {
 		filterExpr = flag.String("filter", "", "initial filter expression (same syntax as the `/` prompt)")
 		showListen = flag.Bool("show-listen", false, "show LISTEN sockets at startup (hidden by default)")
 		resolve    = flag.Bool("resolve", false, "resolve peer addresses to hostnames (reverse DNS) at startup")
+		ssFilter   = flag.String("ss-filter", "", "filter passed to ss itself, e.g. 'dport = :443' or 'state established ( dst 10.0.0.0/8 )'; non-matching sockets aren't collected at all (see ss(8) FILTER)")
 		showVer    = flag.Bool("version", false, "print version and exit")
 	)
 	flag.Parse()
@@ -1005,7 +1017,17 @@ func main() {
 	}
 	poller.SetInterval(*interval)
 
+	ssf, err := parser.ParseSSFilter(*ssFilter)
+	if err == nil {
+		err = parser.CheckSSFilter(ssf)
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+
 	app := NewApp()
+	app.ssFilter = ssf
 	if *showListen {
 		app.filter.HideListen = false
 	}

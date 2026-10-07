@@ -1,0 +1,80 @@
+package ui
+
+import (
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"sstui/findings"
+	"sstui/model"
+)
+
+// TestFindingFiltersSelectAffectedSockets runs every per-socket rule on one
+// busy host and checks each finding's Live filter (through the real filter
+// parser) selects exactly the sockets the finding counts.
+func TestFindingFiltersSelectAffectedSockets(t *testing.T) {
+	i := func(v int) *int { return &v }
+	s := func(v string) *string { return &v }
+	sig := func(t model.SignalType, sev int) []model.Signal { return []model.Signal{{Type: t, Severity: sev}} }
+	mk := func(state, la, lp, pa, pp string, sg []model.Signal) *model.Connection {
+		return &model.Connection{Protocol: "tcp", State: state, LocalAddr: la, LocalPort: lp, PeerAddr: pa, PeerPort: pp,
+			Process: s("app"), PID: i(10), Signals: sg}
+	}
+	var conns []*model.Connection
+	conns = append(conns, mk("ESTAB", "10.0.0.1", "50001", "10.0.0.5", "5432", sig(model.SignalZeroWindow, 2)))
+	conns = append(conns, mk("ESTAB", "10.0.0.1", "50002", "10.0.0.5", "5432", sig(model.SignalZeroWindow, 2)))
+	l := mk("LISTEN", "0.0.0.0", "8080", "0.0.0.0", "*", sig(model.SignalListenQueueFull, 2))
+	l.RecvQ, l.SendQ = i(128), i(128)
+	conns = append(conns, l)
+	conns = append(conns, mk("SYN-SENT", "10.0.0.1", "50003", "10.9.9.9", "443", sig(model.SignalSynStall, 1)))
+	conns = append(conns, mk("ESTAB", "10.0.0.1", "50004", "203.0.113.7", "443", sig(model.SignalRTOFiring, 2)))
+	conns = append(conns, mk("ESTAB", "10.0.0.1", "50005", "203.0.113.8", "443", sig(model.SignalReordering, 1)))
+	conns = append(conns, mk("ESTAB", "10.0.0.1", "50006", "203.0.113.9", "443", sig(model.SignalPMTUMismatch, 1)))
+	for p := 0; p < 25; p++ {
+		cw := mk("CLOSE-WAIT", "10.0.0.1", strconv.Itoa(8000+p), "10.0.0.20", strconv.Itoa(40000+p), sig(model.SignalCloseWaitLeak, 1))
+		cw.PID = i(77)
+		conns = append(conns, cw)
+	}
+	for p := 0; p < 5; p++ {
+		conns = append(conns, mk("TIME-WAIT", "10.0.0.1", strconv.Itoa(51000+p), "10.0.0.30", "80", sig(model.SignalTimeWaitStorm, 1)))
+	}
+	// Healthy noise that no filter should pick up.
+	conns = append(conns, mk("ESTAB", "10.0.0.1", "50100", "10.0.0.5", "5432", nil))
+
+	rep := findings.Analyze(findings.Input{Conns: conns})
+	if len(rep.Findings) < 7 {
+		t.Fatalf("expected findings from every rule, got %d", len(rep.Findings))
+	}
+	for _, f := range rep.Findings {
+		if f.Filter == "" {
+			continue
+		}
+		flt := &Filter{HideListen: !f.ShowListen}
+		flt.SetQuery(f.Filter)
+		n := 0
+		for _, c := range conns {
+			if flt.Matches(c) {
+				n++
+			}
+		}
+		if n != f.Count {
+			t.Errorf("%s: filter %q matches %d sockets, finding counts %d", f.ID, f.Filter, n, f.Count)
+		}
+	}
+}
+
+func TestRenderFindingsKeepsSelectionVisible(t *testing.T) {
+	var fs []findings.Finding
+	for n := 0; n < 30; n++ {
+		fs = append(fs, findings.Finding{ID: strconv.Itoa(n), Severity: 1, Title: "finding " + strconv.Itoa(n),
+			Detail: "detail", Evidence: []string{"e"}, Actions: []findings.Action{{Text: "do", Command: "cmd"}}})
+	}
+	out := RenderFindings(findings.Report{Findings: fs}, 25, 100, 15, time.Now())
+	if !strings.Contains(out, "finding 25") {
+		t.Errorf("selected finding should be scrolled into view:\n%s", out)
+	}
+	if lines := strings.Count(out, "\n") + 1; lines > 15 {
+		t.Errorf("rendered %d lines into a 15-line area", lines)
+	}
+}

@@ -9,6 +9,7 @@ import (
 	"sstui/poller"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 var (
@@ -77,7 +78,7 @@ var styleWarnStat = lipgloss.NewStyle().
 // line up with the rows shown in the table. drops is the number of ss records
 // the parser couldn't read on the last poll; when non-zero it gets its own pill
 // so a silent parse regression is visible rather than swallowed.
-func RenderHeader(buf *poller.Buffer, filter *Filter, drops, width int) string {
+func RenderHeader(buf *poller.Buffer, filter *Filter, drops int, findingsPill string, width int) string {
 	snap := buf.GetLatest()
 	if snap == nil {
 		return styleHeader.Render(" sstui | waiting for data...")
@@ -136,6 +137,9 @@ func RenderHeader(buf *poller.Buffer, filter *Filter, drops, width int) string {
 		styleStat.Render(fmt.Sprintf("RX %s", rxRate)),
 		styleStat.Render(ts),
 	}
+	if findingsPill != "" {
+		pills = append([]string{findingsPill}, pills...)
+	}
 	if drops > 0 {
 		pills = append(pills, styleWarnStat.Render(fmt.Sprintf("⚠ %d unparsed", drops)))
 	}
@@ -172,20 +176,31 @@ func fmtBytesPerSec(b float64) string {
 	}
 }
 
-// RenderTabs renders the tab bar.
+// RenderTabs renders the tab bar. It uses roomy padding when the terminal is
+// wide enough, tighter padding when it isn't (9 tabs don't fit 80 columns
+// with the roomy style), and truncates as a last resort so the bar never
+// wraps onto a second line.
 func RenderTabs(current int, width int) string {
-	tabs := []string{"Live", "Detail", "Socket", "Overview", "Top", "Perf", "Events", "System"}
-	var parts []string
-
-	for i, t := range tabs {
-		if i == current {
-			parts = append(parts, styleTabSelected.Render(t))
-		} else {
-			parts = append(parts, styleTab.Render(t))
+	tabs := []string{"Findings", "Live", "Detail", "Socket", "Overview", "Top", "Perf", "Events", "System"}
+	render := func(pad int) string {
+		var parts []string
+		for i, t := range tabs {
+			if i == current {
+				parts = append(parts, styleTabSelected.Padding(0, pad).Render(t))
+			} else {
+				parts = append(parts, styleTab.Padding(0, pad).Render(t))
+			}
 		}
+		return strings.Join(parts, "")
 	}
 
-	content := strings.Join(parts, "")
+	content := render(2)
+	if lipgloss.Width(content) > width {
+		content = render(1)
+	}
+	if lipgloss.Width(content) > width {
+		content = ansi.Truncate(content, width, "")
+	}
 	if pad := width - lipgloss.Width(content); pad > 0 {
 		content += strings.Repeat(" ", pad)
 	}

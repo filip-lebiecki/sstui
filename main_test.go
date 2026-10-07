@@ -13,6 +13,14 @@ import (
 )
 
 // feed sends a message through Update and returns the model as *AppModel.
+// newLiveApp returns an app showing the Live tab (the app itself starts on
+// Findings).
+func newLiveApp() *AppModel {
+	m := NewApp()
+	m.tab = ViewLive
+	return m
+}
+
 func feed(m *AppModel, msg tea.Msg) *AppModel {
 	next, _ := m.Update(msg)
 	return next.(*AppModel)
@@ -34,7 +42,7 @@ func snapWithAddr(addr string) []*model.Connection {
 // keeps the frozen moment pinned, scrubbing renders older history, and resume
 // returns to live.
 func TestPauseScrub(t *testing.T) {
-	m := NewApp()
+	m := newLiveApp()
 	m = feed(m, tea.WindowSizeMsg{Width: 140, Height: 40})
 
 	// Three polls of history, each with a distinguishable local address.
@@ -88,7 +96,7 @@ func TestPauseScrub(t *testing.T) {
 	}
 }
 
-// TestSystemTab verifies the 8 key opens the System tab and that host counters
+// TestSystemTab verifies the 9 key opens the System tab and that host counters
 // with a per-poll delta render (value + Δ/s).
 func TestSystemTab(t *testing.T) {
 	m := NewApp()
@@ -103,9 +111,9 @@ func TestSystemTab(t *testing.T) {
 	m = feed(m, pollResultMsg{conns: snapWithAddr("10.0.0.1"), sys: prev})
 	m = feed(m, pollResultMsg{conns: snapWithAddr("10.0.0.1"), sys: cur})
 
-	m = feed(m, key("8"))
+	m = feed(m, key("9"))
 	if m.tab != ViewSystem {
-		t.Fatalf("key 8 should switch to System tab, got %v", m.tab)
+		t.Fatalf("key 9 should switch to System tab, got %v", m.tab)
 	}
 	v := m.View()
 	if !strings.Contains(v, "Host Network Counters") {
@@ -118,7 +126,7 @@ func TestSystemTab(t *testing.T) {
 
 // TestScrubAutoPauses verifies that scrubbing from a live view enters pause.
 func TestScrubAutoPauses(t *testing.T) {
-	m := NewApp()
+	m := newLiveApp()
 	m = feed(m, tea.WindowSizeMsg{Width: 140, Height: 40})
 	m = feed(m, pollResultMsg{conns: snapWithAddr("10.0.0.1")})
 	m = feed(m, pollResultMsg{conns: snapWithAddr("10.0.0.2")})
@@ -150,7 +158,7 @@ func manyConns(n int, txFor func(i int) int) []*model.Connection {
 // rows clipped off the bottom of the page: every selected row must be drawn.
 func TestTableCursorStaysVisible(t *testing.T) {
 	for _, filtered := range []bool{false, true} {
-		m := NewApp()
+		m := newLiveApp()
 		m = feed(m, tea.WindowSizeMsg{Width: 160, Height: 60})
 		m = feed(m, pollResultMsg{conns: manyConns(200, func(int) int { return 0 })})
 		if filtered { // the filter bar adds a header line
@@ -174,7 +182,7 @@ func TestTableCursorStaysVisible(t *testing.T) {
 // TestTableSelectionFollowsConnection: when a poll re-sorts the rows, the
 // highlight must stay on the same connection, not the same row index.
 func TestTableSelectionFollowsConnection(t *testing.T) {
-	m := NewApp()
+	m := newLiveApp()
 	m = feed(m, tea.WindowSizeMsg{Width: 160, Height: 40})
 	// Sort by TX descending.
 	for i := 0; !strings.Contains(m.table.RenderFooter(), "sort: tx↓"); i++ {
@@ -245,5 +253,32 @@ func TestExportRunsInBackground(t *testing.T) {
 	m = feed(m, cmd())
 	if m.exporting || !strings.HasPrefix(m.statusMsg, "Exported 1 snapshots") {
 		t.Errorf("after completion: exporting=%v status=%q", m.exporting, m.statusMsg)
+	}
+}
+
+// TestFindingsHomeFlow: the app opens on Findings; a zero-window stall shows
+// up there (and as a header pill), and Enter jumps to Live filtered to just
+// the stalled socket.
+func TestFindingsHomeFlow(t *testing.T) {
+	m := NewApp()
+	if m.tab != ViewFindings {
+		t.Fatalf("app should start on the Findings tab")
+	}
+	m = feed(m, tea.WindowSizeMsg{Width: 160, Height: 40})
+	persist, dur := "persist", "2sec"
+	stalled := &model.Connection{Protocol: "tcp", State: "ESTAB",
+		LocalAddr: "10.0.0.1", LocalPort: "50001", PeerAddr: "10.0.0.5", PeerPort: "5432",
+		TimerType: &persist, TimerDur: &dur}
+	healthy := &model.Connection{Protocol: "tcp", State: "ESTAB",
+		LocalAddr: "10.0.0.1", LocalPort: "50002", PeerAddr: "10.0.0.6", PeerPort: "443"}
+	m = feed(m, pollResultMsg{conns: []*model.Connection{stalled, healthy}})
+
+	v := m.View()
+	if !strings.Contains(v, "peer not reading (zero window)") || !strings.Contains(v, "1 crit") {
+		t.Fatalf("Findings should show the zero-window problem and a header pill:\n%s", v)
+	}
+	m = feed(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.tab != ViewLive || m.table.GetFilteredCount() != 1 || m.table.GetSelected().LocalPort != "50001" {
+		t.Errorf("Enter should open Live filtered to the stalled socket (tab=%v, rows=%d)", m.tab, m.table.GetFilteredCount())
 	}
 }

@@ -79,6 +79,8 @@ var knownStates = []string{
 
 func matchPred(key, value string, c *model.Connection) bool {
 	switch key {
+	case "proto":
+		return strings.EqualFold(c.Protocol, value)
 	case "local":
 		return strings.Contains(c.LocalAddr, value)
 	case "peer":

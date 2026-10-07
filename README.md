@@ -9,7 +9,7 @@ Built for triage: tab through running connections, see signals like
 automatically, and drill into the underlying kernel metrics on a single
 key press.
 
-![tabs](https://img.shields.io/badge/tabs-8-blue) ![signals](https://img.shields.io/badge/signals-25-orange) ![ring%20buffer](https://img.shields.io/badge/history-50%20min-green)
+![tabs](https://img.shields.io/badge/tabs-9-blue) ![signals](https://img.shields.io/badge/signals-25-orange) ![ring%20buffer](https://img.shields.io/badge/history-50%20min-green)
 
 ---
 
@@ -52,6 +52,12 @@ user whose connections you want to see, or with sudo to see everyone's.
 
 What you get out of the box:
 
+- **Findings home screen** — the first thing you see: a ranked list of
+  host-level problems ("postgres → 10.0.0.5:5432: 37 connections stalled —
+  peer not reading"), each with the evidence, what it means, and concrete
+  next steps built from this host's own kernel settings (e.g. "backlog is
+  capped by net.core.somaxconn = 4096 → `sysctl -w net.core.somaxconn=8192`").
+  `Enter` jumps to exactly the affected sockets; `c` copies the command.
 - **Live table** of every TCP/UDP socket on the host with sortable columns,
   state-coloured fields, and an at-a-glance signal indicator per row.
 - **Automatic problem detection** through 25 named signals — retransmits,
@@ -191,7 +197,7 @@ sudo setcap cap_net_admin+ep /usr/sbin/ss
 
 ```
 ┌─ sstui ────────────────────── ESTAB 245   LISTEN 38   TIME-WAIT 12 ─┐
-│ Live  Detail  Socket  Overview  Top  Perf  Events  System           │
+│ Findings  Live  Detail  Socket  Overview  Top  Perf  Events  System │
 │                                                                     │
 │ ● TCP  ESTAB     10.0.0.1:443   …  17.2ms  ↑  120 KB/s   chrome  … │
 │ ● TCP  ESTAB     10.0.0.5:5432  …   1.1ms  ↓   55 KB/s   psql    … │
@@ -202,14 +208,51 @@ sudo setcap cap_net_admin+ep /usr/sbin/ss
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-Press `1`–`8` to switch tabs, `Enter` on a row to drill in, `/` to filter,
+Press `1`–`9` to switch tabs, `Enter` on a row to drill in, `/` to filter,
 `?` for the help overlay.
 
 ---
 
 ## Tabs
 
-### 1. Live
+### 1. Findings
+
+The home screen. Every poll, sstui groups per-socket signals and host-wide
+kernel counters into **findings** — one per underlying problem rather than
+one per socket — and ranks them critical first, then by how many sockets
+they affect. The selected finding expands to show:
+
+- **what it means** in one sentence,
+- **evidence** (socket counts, queued bytes, kernel counter rates, the
+  relevant sysctl values, the local process at the other end of a loopback
+  connection),
+- **what to do**, with copy-ready commands sized from this host's settings
+  (`somaxconn`, `tcp_rmem`/`tcp_wmem`, `ip_local_port_range`,
+  `tcp_tw_reuse`, `default_qdisc`, congestion control, …).
+
+`j`/`k` select, `Enter` opens the Live tab filtered to exactly the affected
+sockets, `c` copies the suggested command to the clipboard (OSC 52 — works
+over SSH and in tmux with clipboard passthrough). Each finding shows how
+long it has been active. A pill in the header (`✖ 2 crit · 1 warn`) keeps
+the count visible from every tab.
+
+| Finding | Triggered by | Typical recommendation |
+|---|---|---|
+| Peer not reading | `ZERO_WIN`, grouped by process + peer | names the local receiver if it's on this host; investigate the app, not the network |
+| App not reading fast enough | `RCV_Q` / `DROPS`, per process | find the slow reader; buffer sizes for bursts (UDP doesn't autotune) |
+| Accept queue full | `LISTEN_Q` + `ListenOverflows` | tells apart a `somaxconn` cap from the app's own backlog |
+| Can't connect | `SYN_STALL`, per destination | `nc -vz`, `ip route get`, firewalls |
+| Packet loss (per peer / host-wide) | `RTO`, `NO_ACK`, `LOSS`, `HI_RETRANS`, `RETRANS` | `mtr` for one peer; NIC/CPU checks when many peers lose at once |
+| Reordering, path MTU, latency inflation | `REORDER`, `PMTU`, `RTT_SPIKE` | ECMP/LACP hashing; ICMP/MSS clamping; qdisc / BBR |
+| Window- or buffer-limited throughput | `RWND_LIM`, `SNDBUF_LIM` | BDP estimate vs `tcp_rmem`/`tcp_wmem`, window scaling |
+| Socket leak | `CW_LEAK` | fd count vs limit; the code path missing `close()` |
+| Connection churn / port exhaustion | `TW_STORM`, ephemeral range ≥70% used | pooling/keep-alive, `tcp_tw_reuse`, wider port range |
+| SYN flood / backlog, UDP drops, memory pressure | `SyncookiesSent`, `Udp:RcvbufErrors`, prune/backlog-drop counters | sources of half-open connections, `rmem_max`, `tcp_mem` |
+
+The rules live in `findings/rules.go`; each is a small function over the
+latest snapshot, the host counters and the sysctls.
+
+### 2. Live
 
 Sortable, filterable table of every open connection — protocol, state,
 4-tuple, RTT, queue depths, TX/RX deltas, retransmits, keepalive, process.
@@ -226,7 +269,7 @@ The leftmost column is a single-glyph **signal indicator**:
 Below the table, signal badges show every signal firing on the highlighted
 row.
 
-### 2. Detail
+### 3. Detail
 
 Network-level deep dive for one connection: Identity, Performance,
 Congestion, Throughput, Retransmit. Two-column layout above 100 cols,
@@ -235,14 +278,14 @@ banner** at the top synthesizes the active signals into a one-line,
 plain-English verdict and a suggested next step — root causes (zero window,
 SYN stall) win over downstream symptoms.
 
-### 3. Socket
+### 4. Socket
 
 Kernel-side view of the same connection: Queues (bytes + segs in/out),
 Socket Memory (buffer usage with ratio bars, backlog, **drops**), BBR
 state (when applicable), and **History sparklines** — bar graphs of
 RTT, CWnd, TX, RX, queues, Unacked, Retrans across the full ring buffer.
 
-### 4. Overview
+### 5. Overview
 
 Aggregate views over the whole buffer:
 
@@ -251,7 +294,7 @@ Aggregate views over the whole buffer:
 - **Throughput over time** — TX and RX bars.
 - **State distribution** — current breakdown by TCP state.
 
-### 5. Top
+### 6. Top
 
 Rankings at the current snapshot:
 
@@ -261,7 +304,7 @@ Rankings at the current snapshot:
 - **Top Peer Hosts** by connection count and bytes.
 - **Top TX / RX** — per-connection bytes leaders.
 
-### 6. Perf
+### 7. Perf
 
 Performance / anomaly view. Sections:
 
@@ -280,7 +323,7 @@ Performance / anomaly view. Sections:
 - **Send Backlog** — unacked / cwnd ratios.
 - **Busiest Sockets** — per-poll busy ms and percentage.
 
-### 7. Events
+### 8. Events
 
 Signal-onset log. Every time a connection acquires a warn/crit signal it
 didn't have the prior poll, that's an event. Reverse-chronological,
@@ -290,7 +333,7 @@ list as JSON, `E` as CSV.
 Info-level signals (`IDLE`, `APP_LIM`) are filtered out so the log stays
 focused on real anomalies.
 
-### 8. System
+### 9. System
 
 Host-wide networking counters from `/proc/net/snmp` and `/proc/net/netstat`,
 each shown as a cumulative value plus its per-poll delta as a rate. This is
@@ -307,16 +350,17 @@ Accept queue / SYN, Loss / retransmit, Buffer pressure / OFO, and UDP.
 
 | Key            | Action                                                     |
 |----------------|------------------------------------------------------------|
-| `1`–`8`        | Switch tabs (Live, Detail, Socket, Overview, Top, Perf, Events, System) |
+| `1`–`9`        | Switch tabs (Findings, Live, Detail, Socket, Overview, Top, Perf, Events, System) |
 | `Tab` / `S-Tab`| Next / previous tab                                        |
 | `Space`        | Pause / resume — freeze the Live table for inspection       |
 | `[` / `]`      | Scrub back / forward one snapshot (auto-pauses)             |
 | `{` / `}`      | Scrub back / forward ten snapshots                         |
-| `j` / `↓`      | Next row (Live) / scroll down (Events)                     |
-| `k` / `↑`      | Previous row (Live) / scroll up (Events)                   |
+| `j` / `↓`      | Next finding / row / scroll down (Events)                  |
+| `k` / `↑`      | Previous finding / row / scroll up (Events)                |
 | `g` / `G`      | First / last (or top / bottom on Events)                   |
 | `PgUp`/`PgDn`  | Page scroll on Events                                      |
-| `Enter`        | Open Detail for the highlighted row                        |
+| `Enter`        | Open Detail for the highlighted row (Findings: show the affected sockets in Live) |
+| `c`            | Copy the selected finding's suggested command (Findings)  |
 | `Esc`          | Back to Live (clears selection) / close help / clear filter |
 | `h`            | Cycle sort column / direction in Live                      |
 | `L`            | Toggle hiding LISTEN sockets                               |
@@ -342,6 +386,7 @@ Press `/`, type one or more terms, hit `Enter`:
 | `state=<state>`     | Exact TCP state (`ESTAB`, `LISTEN`, `TIME-WAIT`, ...)|
 | `proc=<substr>`     | Substring match on process name (case-insensitive)   |
 | `pid=<pid>`         | Exact process ID                                     |
+| `proto=<tcp\|udp>`  | Protocol                                             |
 | `signal=<label>`    | Connection has this signal active (e.g. `RETRANS`, `cwnd_collapse`) |
 | bare `<state>`      | Shortcut for `state=…` if it matches a known state   |
 | any other bare term | Treated as `local=<term>`                            |
@@ -380,9 +425,20 @@ A green status line at the bottom confirms the path and row/snapshot count.
 
 ## Common workflows
 
+### "Something's wrong with this box — where do I start?"
+
+1. Launch `sstui` (sudo for full process visibility). It opens on
+   **Findings**.
+2. Read the top finding: its title says what's wrong and where, the
+   bullets say why sstui thinks so, the arrows say what to do.
+3. `c` copies the suggested command; `Enter` shows the affected sockets in
+   Live so you can drill into one (`Enter` again → Detail).
+4. Nothing listed? The checks are summarized on the empty screen — move
+   on to the per-socket views below.
+
 ### "The app is slow — is it the network?"
 
-1. Launch `sstui` (sudo for full process visibility).
+1. Launch `sstui` (sudo for full process visibility) and press `2` for Live.
 2. `/proc=<your-service>` to scope the table.
 3. Sort by RTT (`h` to cycle) — anything > 50 ms is yellow, > 200 ms
    orange.
@@ -392,12 +448,12 @@ A green status line at the bottom confirms the path and row/snapshot count.
    means real packet loss; `RTT_SPIKE` alone means bufferbloat or path
    change; `ZERO_WIN` means the *peer* isn't reading; `RCV_Q` means
    *we* aren't reading.
-6. `3` to switch to **Socket** — the History bar graph shows whether
+6. `4` to switch to **Socket** — the History bar graph shows whether
    this is a momentary spike or a sustained problem.
 
 ### "Are we leaking ephemeral ports?"
 
-1. `6` for **Perf**.
+1. Findings flags exhaustion at ≥70% on its own. For detail, `7` for **Perf**.
 2. Scroll to the **System** section. The "Ephemeral ports" bar shows
    used/total ports inside the kernel's configured ephemeral range,
    coloured green/yellow/orange/red as utilization climbs through 40 /
@@ -405,13 +461,13 @@ A green status line at the bottom confirms the path and row/snapshot count.
 3. If TIME-WAIT count is also climbing fast, that's where your
    ephemeral ports are going. The sparkline next to it shows the
    trajectory; growth in the last ~30 s is shown in parens.
-4. `4` for **Top** → "Top Peer Hosts" / "Top Processes" to find the
+4. `6` for **Top** → "Top Peer Hosts" / "Top Processes" to find the
    source of the churn.
 
 ### "Which connections retransmit the most?"
 
 1. Filter to anomalies: `/signal=RETRANS` (or `signal=HI_RETRANS`).
-2. Or `6` → Perf, scroll to **Cumulative Retransmits** and **Retransmit
+2. Or `7` → Perf, scroll to **Cumulative Retransmits** and **Retransmit
    Rate** for current-poll ranking.
 3. Drill into one with Enter → **Detail** → Retransmit section shows
    total retrans, in-flight retrans, bytes retrans, lost, DSACK dups,
@@ -437,7 +493,7 @@ A green status line at the bottom confirms the path and row/snapshot count.
 
 ### "What happened on this host in the last hour?"
 
-1. `7` for **Events**.
+1. `8` for **Events**.
 2. The list shows every signal onset since launch, newest first.
 3. `G` to jump to the oldest events, `j`/`k` or `PgUp`/`PgDn` to walk
    through.
@@ -817,6 +873,7 @@ Layout:
 
 ```
 classifier/   one-rule-per-block signal classifier
+findings/     host-level findings + recommendations (Findings tab)
 model/        Connection + Signal data types
 parser/       ss(8) tokenizer and subprocess driver
 poller/       ring buffer, delta computation, export (JSON/CSV)

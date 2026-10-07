@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"sstui/classifier"
+	"sstui/findings"
 	"sstui/model"
 	"sstui/poller"
 
@@ -588,23 +589,7 @@ func renderPortExhaustion(snap *poller.Snapshot, width int) string {
 	}
 	size := hi - lo + 1
 
-	// Count distinct local ports in use that fall inside the ephemeral range,
-	// across both TCP and UDP. Ports are 16-bit so the same numeric port on
-	// TCP vs UDP consumes a separate slot — but the kernel allocates from a
-	// shared range, so de-duping by number is the right heuristic for "how
-	// close are we to running out".
-	used := make(map[int]bool)
-	for _, c := range snap.Conns {
-		p, err := strconv.Atoi(c.LocalPort)
-		if err != nil {
-			continue
-		}
-		if p < lo || p > hi {
-			continue
-		}
-		used[p] = true
-	}
-	count := len(used)
+	count := findings.PortsInUse(snap.Conns, lo, hi)
 	pct := float64(count) / float64(size) * 100
 
 	color := lipgloss.Color("#51cf66")

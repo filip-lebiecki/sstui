@@ -9,11 +9,13 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"sstui/findings"
 	"sstui/model"
 	"sstui/parser"
 	"sstui/poller"
 	"sstui/ui"
 
+	"github.com/aymanbagabas/go-osc52/v2"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -23,10 +25,11 @@ type tickMsg struct{}
 
 // pollResultMsg carries the result of an async ss invocation.
 type pollResultMsg struct {
-	conns []*model.Connection
-	drops int             // record lines ss emitted that we couldn't parse
-	sys   *poller.SysStat // host-wide /proc/net counters (nil if unreadable)
-	err   error
+	conns  []*model.Connection
+	drops  int             // record lines ss emitted that we couldn't parse
+	sys    *poller.SysStat // host-wide /proc/net counters (nil if unreadable)
+	sysctl poller.Sysctls  // kernel settings the Findings recommendations reason about
+	err    error
 }
 
 func tickCmd(d time.Duration) tea.Cmd {
@@ -39,15 +42,17 @@ func pollCmd() tea.Cmd {
 	return func() tea.Msg {
 		conns, drops, err := parser.RunSS()
 		sys, _ := poller.ReadSysStat() // best-effort; nil on platforms without /proc/net
-		return pollResultMsg{conns: conns, drops: drops, sys: sys, err: err}
+		return pollResultMsg{conns: conns, drops: drops, sys: sys, sysctl: poller.ReadSysctls(), err: err}
 	}
 }
 
 // ViewMode represents the active tab.
 type ViewMode int
 
+// The order matches the tab bar (ui.RenderTabs) and the 1–9 keys.
 const (
-	ViewLive ViewMode = iota
+	ViewFindings ViewMode = iota
+	ViewLive
 	ViewDetail
 	ViewSocket
 	ViewOverview
@@ -59,7 +64,7 @@ const (
 )
 
 // tabOrder is the cycle order for tab/shift-tab.
-var tabOrder = []ViewMode{ViewLive, ViewDetail, ViewSocket, ViewOverview, ViewTop, ViewPerf, ViewEvents, ViewSystem}
+var tabOrder = []ViewMode{ViewFindings, ViewLive, ViewDetail, ViewSocket, ViewOverview, ViewTop, ViewPerf, ViewEvents, ViewSystem}
 
 func nextTab(cur ViewMode, delta int) ViewMode {
 	idx := 0
@@ -108,6 +113,14 @@ type AppModel struct {
 
 	exporting bool // a background export is running
 
+	// Findings: the latest analysis, the tracker that dates each finding,
+	// and the selection (kept on the same finding across refreshes by ID).
+	sysctl       poller.Sysctls
+	report       findings.Report
+	tracker      findings.Tracker
+	findingSel   int
+	findingSelID string
+
 	// tableSnap is the snapshot whose connections the table currently holds,
 	// so syncTable can skip redundant reloads.
 	tableSnap *poller.Snapshot
@@ -120,7 +133,7 @@ func NewApp() *AppModel {
 		buf:    buf,
 		table:  ui.NewTableModel(sharedFilter, 20),
 		filter: sharedFilter,
-		tab:    ViewLive,
+		tab:    ViewFindings, // the triage home screen
 	}
 }
 
@@ -191,22 +204,8 @@ func (m *AppModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "?":
 			m.showHelp = !m.showHelp
 			return m, nil
-		case "1":
-			m.tab = ViewLive
-		case "2":
-			m.tab = ViewDetail
-		case "3":
-			m.tab = ViewSocket
-		case "4":
-			m.tab = ViewOverview
-		case "5":
-			m.tab = ViewTop
-		case "6":
-			m.tab = ViewPerf
-		case "7":
-			m.tab = ViewEvents
-		case "8":
-			m.tab = ViewSystem
+		case "1", "2", "3", "4", "5", "6", "7", "8", "9":
+			m.tab = tabOrder[msg.String()[0]-'1']
 		case "tab":
 			m.tab = nextTab(m.tab, 1)
 		case "shift+tab":
@@ -229,7 +228,9 @@ func (m *AppModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.tab = ViewFilter
 			return m, nil
 		case "enter":
-			if m.tab == ViewLive {
+			if m.tab == ViewFindings {
+				m.openFinding()
+			} else if m.tab == ViewLive {
 				if conn := m.table.GetSelected(); conn != nil {
 					m.selectedKey = conn.ConnKey()
 				}
@@ -246,7 +247,9 @@ func (m *AppModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.showHelp = false
 			}
 		case "j", "down":
-			if m.tab == ViewEvents {
+			if m.tab == ViewFindings {
+				m.selectFinding(m.findingSel + 1)
+			} else if m.tab == ViewEvents {
 				m.eventsScroll++
 				m.clampEventsScroll()
 			} else {
@@ -254,7 +257,9 @@ func (m *AppModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.syncSelectedKey()
 			}
 		case "k", "up":
-			if m.tab == ViewEvents {
+			if m.tab == ViewFindings {
+				m.selectFinding(m.findingSel - 1)
+			} else if m.tab == ViewEvents {
 				m.eventsScroll--
 				if m.eventsScroll < 0 {
 					m.eventsScroll = 0
@@ -276,18 +281,26 @@ func (m *AppModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		case "g":
-			if m.tab == ViewEvents {
+			if m.tab == ViewFindings {
+				m.selectFinding(0)
+			} else if m.tab == ViewEvents {
 				m.eventsScroll = 0
 			} else {
 				m.table.First()
 				m.syncSelectedKey()
 			}
 		case "G":
-			if m.tab == ViewEvents {
+			if m.tab == ViewFindings {
+				m.selectFinding(len(m.report.Findings) - 1)
+			} else if m.tab == ViewEvents {
 				m.eventsScroll = ui.MaxEventsScroll(m.buf, m.contentHeight())
 			} else {
 				m.table.Last()
 				m.syncSelectedKey()
+			}
+		case "c":
+			if m.tab == ViewFindings {
+				m.copyFindingCommand()
 			}
 		case "h":
 			m.table.CycleSort()
@@ -324,6 +337,9 @@ func (m *AppModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.sysPrev = m.sysCur
 			m.sysCur = msg.sys
 		}
+		if msg.sysctl != nil {
+			m.sysctl = msg.sysctl
+		}
 		// Ingest on full success (even if zero sockets) or on a partial
 		// failure that still returned data; skip only when both queries
 		// failed (nil slice) so the last good snapshot is preserved.
@@ -337,6 +353,7 @@ func (m *AppModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.clampScrub()
 			}
 			m.syncTable()
+			m.refreshFindings()
 		}
 		return m, tickCmd(poller.PollInterval)
 	}
@@ -458,7 +475,7 @@ func (m *AppModel) View() string {
 	var b strings.Builder
 
 	// Header (fixed)
-	b.WriteString(ui.RenderHeader(m.buf, m.filter, m.lastDrops, m.width) + "\n")
+	b.WriteString(ui.RenderHeader(m.buf, m.filter, m.lastDrops, ui.FindingsPill(m.report.Crit(), m.report.Warn()), m.width) + "\n")
 
 	// Tabs (fixed)
 	b.WriteString(ui.RenderTabs(int(m.tab), m.width) + "\n")
@@ -486,6 +503,9 @@ func (m *AppModel) View() string {
 	showTableFooter := false
 
 	switch m.tab {
+	case ViewFindings:
+		content = ui.RenderFindings(m.report, m.findingSel, m.width, ch, time.Now())
+
 	case ViewLive:
 		content = m.table.RenderBody()
 
@@ -523,7 +543,7 @@ func (m *AppModel) View() string {
 		content += "  " + renderFilterInput(m.filterBuf, m.filterCursor) + "\n\n"
 		content += lipgloss.NewStyle().Foreground(lipgloss.Color("#888")).Render(
 			"  Syntax: local=<addr> peer=<addr> sport=<port> dport=<port>\n" +
-				"          state=<state> proc=<name> pid=<pid> signal=<label>\n" +
+				"          state=<state> proc=<name> pid=<pid> signal=<label> proto=tcp|udp\n" +
 				"  Operators: and  or  not  ( )   (space = and)\n" +
 				"  Examples: state=ESTAB local=192.168 dport=443\n" +
 				"            (peer=10.0.0.1 or peer=10.1.0.1) and sport=1234\n" +
@@ -692,6 +712,98 @@ func (m *AppModel) clampEventsScroll() {
 	if m.eventsScroll < 0 {
 		m.eventsScroll = 0
 	}
+}
+
+// refreshFindings re-runs the host analysis on the newest snapshot. Called
+// once per poll (not per frame), so the Findings tab is free to render.
+func (m *AppModel) refreshFindings() {
+	latest := m.buf.GetLatest()
+	if latest == nil {
+		return
+	}
+	rep := findings.Analyze(findings.Input{
+		Conns:    latest.Conns,
+		Sys:      m.sysCur,
+		SysPrev:  m.sysPrev,
+		Sysctl:   m.sysctl,
+		Interval: poller.PollInterval,
+	})
+	m.tracker.Update(rep.Findings, time.Now())
+	m.report = rep
+	// Keep the selection on the same finding even if the ranking shifted.
+	sel := m.findingSel
+	for i, f := range rep.Findings {
+		if f.ID == m.findingSelID {
+			sel = i
+			break
+		}
+	}
+	m.selectFinding(sel)
+}
+
+// selectFinding moves the Findings selection, clamped to the list.
+func (m *AppModel) selectFinding(i int) {
+	n := len(m.report.Findings)
+	m.findingSel = max(0, min(i, n-1))
+	m.findingSelID = ""
+	if n > 0 {
+		m.findingSelID = m.report.Findings[m.findingSel].ID
+	}
+}
+
+func (m *AppModel) selectedFinding() *findings.Finding {
+	if m.findingSel < len(m.report.Findings) {
+		return &m.report.Findings[m.findingSel]
+	}
+	return nil
+}
+
+// openFinding jumps from a finding to the Live tab filtered to exactly the
+// sockets it's about.
+func (m *AppModel) openFinding() {
+	f := m.selectedFinding()
+	if f == nil {
+		return
+	}
+	if f.Filter == "" {
+		m.setStatus("this finding is host-wide — it isn't tied to specific sockets", 4*time.Second)
+		return
+	}
+	m.filter.SetQuery(f.Filter)
+	if f.ShowListen {
+		m.filter.HideListen = false
+	}
+	m.table.InvalidateCache()
+	m.tab = ViewLive
+	m.setStatus("showing sockets for: "+f.Title+"  (Esc clears the filter)", 5*time.Second)
+}
+
+// copyFindingCommand copies the selected finding's suggested command to the
+// clipboard via OSC 52, which works over SSH and (with passthrough) in tmux.
+func (m *AppModel) copyFindingCommand() {
+	f := m.selectedFinding()
+	if f == nil {
+		return
+	}
+	cmd := f.Command()
+	if cmd == "" {
+		m.setStatus("no command to copy for this finding", 3*time.Second)
+		return
+	}
+	seq := osc52.New(cmd)
+	switch {
+	case os.Getenv("TMUX") != "":
+		seq = seq.Tmux()
+	case strings.HasPrefix(os.Getenv("TERM"), "screen"):
+		seq = seq.Screen()
+	}
+	// stderr, not stdout: bubbletea owns stdout for frames. OSC 52 is
+	// invisible, so it doesn't disturb the screen.
+	if _, err := seq.WriteTo(os.Stderr); err != nil {
+		m.setStatus("copy failed: "+err.Error(), 4*time.Second)
+		return
+	}
+	m.setStatus("copied: "+cmd, 4*time.Second)
 }
 
 // exportDoneMsg reports the outcome of a background export.

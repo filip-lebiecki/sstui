@@ -25,11 +25,12 @@ func RenderHelp() string {
 		{"j / ↓", "Next connection"},
 		{"k / ↑", "Previous connection"},
 		{"g / G", "First / last connection"},
-		{"Enter", "View connection detail"},
+		{"Enter", "View connection detail (Findings: show affected sockets)"},
+		{"c", "Copy a finding's suggested command (Findings)"},
 		{"Escape", "Go back / close filter"},
-		{"1-8", "Switch tabs"},
-		{"", "  1 Live  2 Detail  3 Socket  4 Overview"},
-		{"", "  5 Top   6 Perf   7 Events  8 System"},
+		{"1-9", "Switch tabs"},
+		{"", "  1 Findings  2 Live  3 Detail  4 Socket  5 Overview"},
+		{"", "  6 Top  7 Perf  8 Events  9 System"},
 		{"Tab / S-Tab", "Next / prev tab"},
 		{"Space", "Pause / resume (freeze the Live table)"},
 		{"[ / ]", "Scrub back / forward one snapshot (pauses)"},
@@ -57,7 +58,7 @@ func RenderHelp() string {
 	b.WriteString("\n")
 	b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#666")).
 		Render("  Filter syntax: local=<addr> peer=<addr> sport=<port> dport=<port>\n" +
-			"                 state=<state> proc=<name> pid=<pid> signal=<label>\n" +
+			"                 state=<state> proc=<name> pid=<pid> signal=<label> proto=tcp|udp\n" +
 			"  Operators: and  or  not  ( )   (space = and)\n" +
 			"  In filter mode: type to edit, Enter to apply, Escape to cancel"))
 

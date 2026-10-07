@@ -1,13 +1,16 @@
 # sstui
 
-A terminal UI for `ss(8)` that watches every TCP and UDP socket on the
-machine, classifies what's going wrong, and keeps ~50 minutes of history
-so you can answer "what happened" instead of just "what's happening now".
+A terminal UI for `ss(8)` that watches every TCP and UDP socket on a Linux
+host, works out what's going wrong, **tells you what to do about it**, and
+keeps ~50 minutes of history so you can answer "what happened" instead of
+just "what's happening now".
 
-Built for triage: tab through running connections, see signals like
-`RETRANS`, `ZERO_WIN`, `RTO`, `SYN_STALL`, `REORDER` light up
-automatically, and drill into the underlying kernel metrics on a single
-key press.
+Built for triage: it opens on a ranked list of host-level problems
+("postgres → 10.0.0.5:5432: 37 connections stalled — peer not reading"),
+each with its evidence and copy-ready fix commands sized from this host's
+kernel settings. Underneath, 26 per-socket signals like `ZERO_WIN`,
+`NO_ACK`, `RX_LOSS`, `SYN_STALL` and `LISTEN_Q` light up automatically, and
+every kernel metric is one key press away.
 
 ![tabs](https://img.shields.io/badge/tabs-9-blue) ![signals](https://img.shields.io/badge/signals-26-orange) ![ring%20buffer](https://img.shields.io/badge/history-50%20min-green)
 
@@ -67,15 +70,17 @@ What you get out of the box:
 - **50 minutes of history** in memory so you can see *when* something
   went wrong, not just that it's wrong now.
 - **Drill-down detail** with two paired tabs: a network-level view (RTT,
-  CWnd, congestion, retransmits) and a kernel-side view (queues, socket
-  memory, BBR state) with per-connection bar-graph history of RTT, CWnd,
-  TX, RX, queue depths, unacked, retrans.
+  CWnd, congestion, retransmits, inbound out-of-order ratio) and a
+  kernel-side view (queues, socket memory, BBR state) with per-connection
+  bar-graph history of RTT, CWnd, TX, RX, queue depths, unacked, retrans.
 - **Event log** that tells you the *moment* each signal started firing on
   each connection, scrollable and exportable to JSON/CSV.
 - **Filter language** for narrowing by address, port, state, process
-  name, or signal.
-- **Snapshot/buffer export** to JSON (full history) and CSV (current
-  snapshot) for offline analysis with jq, pandas, or a spreadsheet.
+  name, protocol or signal — plus `--ss-filter` to filter inside `ss`
+  itself so non-matching sockets are never collected.
+- **Snapshot/buffer export** to JSON (history) and CSV (current snapshot)
+  for offline analysis with jq, pandas, or a spreadsheet; runs in the
+  background so the UI never freezes.
 
 ---
 
@@ -110,6 +115,7 @@ human-paced triage:
 
 | Capability                                    | `ss` / `netstat` | `sstui`                       |
 |-----------------------------------------------|------------------|-------------------------------|
+| **Ranked findings with fix commands**         | ✗                | ✓ Findings tab                |
 | Snapshot of current sockets                   | ✓                | ✓                             |
 | Per-connection RTT, CWnd, retrans, BBR        | ✓ with `-i`      | ✓ parsed and labelled         |
 | Refreshes automatically                       | `watch ss`       | Built-in, 2 s ticks            |
@@ -133,10 +139,22 @@ signals and history buffer are the differentiator.
 
 ## Install / build
 
+Prebuilt static binaries for Linux amd64 and arm64 are attached to each
+[release](https://github.com/filip-lebiecki/sstui/releases):
+
+```bash
+curl -L -o sstui https://github.com/filip-lebiecki/sstui/releases/latest/download/sstui-linux-amd64
+chmod +x sstui
+sudo ./sstui
+```
+
+Verify downloads with `sha256sum -c SHA256SUMS` (also attached). Or build
+from source:
+
 ```bash
 git clone https://github.com/filip-lebiecki/sstui
 cd sstui
-go build .
+go build -ldflags "-X main.version=$(git describe --tags)" .
 ./sstui
 ```
 
@@ -196,21 +214,30 @@ sudo setcap cap_net_admin+ep /usr/sbin/ss
 
 ## Quick tour
 
+sstui opens on **Findings** (here: a real zero-window stall reproduced on
+loopback):
+
 ```
-┌─ sstui ────────────────────── ESTAB 245   LISTEN 38   TIME-WAIT 12 ─┐
-│ Findings  Live  Detail  Socket  Overview  Top  Perf  Events  System │
-│                                                                     │
-│ ● TCP  ESTAB     10.0.0.1:443   …  17.2ms  ↑  120 KB/s   chrome  … │
-│ ● TCP  ESTAB     10.0.0.5:5432  …   1.1ms  ↓   55 KB/s   psql    … │
-│ ...                                                                 │
-│                                                                     │
-│  RETRANS  RTO  CWND_DROP  ← signal badges for the selected row      │
-│  245 conns | snapshots: 312 | updated: just now                     │
-└─────────────────────────────────────────────────────────────────────┘
+ sstui  ✖ 1 crit · 1 warn   TOTAL 95   ESTAB 16   LISTEN 64   RTT 17.3ms   …
+   Findings    Live    Detail    Socket    Overview    Top    Perf    Events    System
+
+   Findings   ✖ 1 critical  ▲ 1 warning   95 sockets (16 established)
+
+ ▶ ✖ CRIT  python3 (pid 2775135) → 127.0.0.1:47123: 1 connection stalled — peer not reading (zero window)   new
+       The receiver's buffer is full because its application stopped reading, so it
+       advertises a zero window and our data piles up unsent.
+       • 1 socket · 1.7 MB waiting in Send-Q
+       • receiver is python3 (pid 2775135) on this host (Recv-Q 4 KB)
+       → See what its threads are doing
+         $ top -H -p 2775135
+       ⏎ show 1 affected socket in Live  (signal=ZERO_WIN pid=2775135 peer==127.0.0.1 dport=47123)
+
+   ▲ WARN  python3 (pid 2775135) isn't reading fast enough: 1 socket backed up            new
+   [j/k] select   [Enter] show affected sockets in Live   [c] copy command
 ```
 
-Press `1`–`9` to switch tabs, `Enter` on a row to drill in, `/` to filter,
-`?` for the help overlay.
+Press `1`–`9` to switch tabs (`2` is the Live socket table), `Enter` to
+drill in, `/` to filter, `?` for help.
 
 ---
 
@@ -274,11 +301,18 @@ row.
 ### 3. Detail
 
 Network-level deep dive for one connection: Identity, Performance,
-Congestion, Throughput, Retransmit. Two-column layout above 100 cols,
-single column otherwise. Signal badges sit at the bottom. A **diagnosis
-banner** at the top synthesizes the active signals into a one-line,
-plain-English verdict and a suggested next step — root causes (zero window,
-SYN stall) win over downstream symptoms.
+Congestion, Throughput, Retransmit (what *we* send) and, for TCP,
+**Inbound (receiver side)** — data segments received, out-of-order
+arrivals and their ratio per poll and over the connection's life, the
+receiving host's only view of loss on the peer → here path. Two-column
+layout above 100 cols, single column otherwise. Signal badges sit at the
+bottom. A **diagnosis banner** at the top synthesizes the active signals
+into a one-line, plain-English verdict and a suggested next step — root
+causes (zero window, SYN stall) win over downstream symptoms.
+
+When you inspect a connection from an older snapshot (paused/scrubbed, or
+one that has since closed), a note says so: history records summary fields
+only (RTT, cwnd, queues, rates, signals), so the rest reads `-`.
 
 ### 4. Socket
 
@@ -315,13 +349,15 @@ Performance / anomaly view. Sections:
 - **System** — TIME-WAIT growth (count, ~30s delta, sparkline) and
   **ephemeral port exhaustion** (used/total ports in
   `/proc/sys/net/ipv4/ip_local_port_range`).
-- **RTT Inflation** — connections where `rtt/minrtt > 1.5`.
+- **RTT Inflation** — connections where `rtt/minrtt > 1.5` and RTT is
+  at least 10 ms above the minimum (loopback/LAN jitter is ignored).
 - **Slow Connections** — RTT > 50 ms.
 - **Retransmit Rate** — current-poll retrans / sent ratio.
 - **Cumulative Retransmits** — top 10 by total retrans.
 - **Queue Pressure** — non-empty Send-Q / Recv-Q with usage bars vs the
   kernel buffer limits.
-- **Zero Window** — sockets with `snd_wnd == 0` in ESTAB.
+- **Zero Window** — sockets stalled by a peer that stopped reading
+  (`ZERO_WIN`).
 - **Send Backlog** — unacked / cwnd ratios.
 - **Busiest Sockets** — per-poll busy ms and percentage.
 
@@ -332,8 +368,8 @@ didn't have the prior poll, that's an event. Reverse-chronological,
 scrollable with `j`/`k`/`g`/`G`/`PgUp`/`PgDn`. `e` exports the events
 list as JSON, `E` as CSV.
 
-Info-level signals (`IDLE`, `APP_LIM`) are filtered out so the log stays
-focused on real anomalies.
+Info-level signals (`IDLE`, `APP_LIM`, `CWND_LIM`) are filtered out so
+the log stays focused on real anomalies.
 
 ### 9. System
 
@@ -392,7 +428,7 @@ Press `/`, type one or more terms, hit `Enter`:
 | `proto=<tcp\|udp>`  | Protocol                                             |
 | `signal=<label>`    | Connection has this signal active (e.g. `RETRANS`, `cwnd_collapse`) |
 | bare `<state>`      | Shortcut for `state=…` if it matches a known state   |
-| any other bare term | Treated as `local=<term>`                            |
+| any other bare term | Substring match on local address, peer address or process name |
 
 Terms can be combined with the boolean operators `and`, `or`, `not`, and
 grouped with parentheses. A space between terms is an implicit `and`.
@@ -440,11 +476,13 @@ sstui --ss-filter 'sport = :5432'          # just the local Postgres
 
 ## Export
 
-Both modes write to the current working directory with a timestamped name.
+Exports write to the current working directory with a timestamped name.
+They run in the background (the status line says "exporting…" and then
+confirms the path), so even a large ring buffer never freezes the UI.
 
 | Tab + key        | Output                                                 |
 |------------------|--------------------------------------------------------|
-| any tab, `e`     | `./ss-stats-<ts>.json` — entire ring buffer, every field on every connection across every snapshot |
+| any tab, `e`     | `./ss-stats-<ts>.json` — the whole ring buffer: every parsed field for the latest snapshot, the history fields (identity, state, RTT, cwnd, queues, rates, signals) for older ones; empty fields are omitted |
 | any tab, `E`     | `./ss-stats-<ts>.csv` — current snapshot, flat (one row per connection) |
 | Events tab, `e`  | `./ss-events-<ts>.json` — list of signal-onset events  |
 | Events tab, `E`  | `./ss-events-<ts>.csv` — same, flat                    |
@@ -517,9 +555,9 @@ A green status line at the bottom confirms the path and row/snapshot count.
 2. Press `e` — writes `./ss-stats-<ts>.json` with the full ring buffer.
 3. Or `E` for a CSV of the current snapshot.
 4. Attach to the ticket; analyze offline with `jq` / `pandas` /
-   `csvkit`. The exported JSON has every parsed field on every
-   connection in every snapshot — it's roundtrip-able to the same
-   classifier.
+   `csvkit`. The JSON carries every parsed field for the latest snapshot
+   and the history fields (RTT, cwnd, queues, rates, signals) for every
+   earlier one.
 
 ### "What happened on this host in the last hour?"
 
@@ -560,7 +598,7 @@ badge color and in the Live-tab indicator glyph.
 | `DSACK`    | `dsack_spurious`     | `Δdsack_dups > 0` (crit >5)                                                 | `dsack_dups:` delta ✓                  | 1–2      | yellow |
 | `BBR_LOW`  | `bbr_underutil`      | BBR active, not app-limited, sending, `delivery < 0.5×BBR_BW`              | `bbr:BW` `delivery_rate` ✓             | 1        | orange |
 | `REORDER`  | `reordering`         | `Δreord_seen > 0` (crit >50) — sender-detected reordering                   | `reord_seen:` delta ✓                  | 1–2      | orange |
-| `DROPS`    | `socket_drops`       | `Δskmem.d > 0` (crit >10) — kernel dropped data at this socket              | `skmem` `d` delta ✓                     | 1–2      | red    |
+| `DROPS`    | `socket_drops`       | `Δskmem.d > 0` (crit >10) — kernel dropped data at this socket (with `RX_LOSS` and no `RCV_Q`: out-of-order data discarded during loss recovery) | `skmem` `d` delta ✓ | 1–2 | red |
 | `RWND_LIM` | `rwnd_limited`       | sending & `Δrwnd_limited ≥ 25%` of poll (crit ≥75%) — blocked on peer window | `rwnd_limited:` delta ✓               | 1–2      | yellow |
 | `SNDBUF_LIM`| `sndbuf_limited`    | sending & `Δsndbuf_limited ≥ 25%` of poll (crit ≥75%) — blocked on send buffer | `sndbuf_limited:` delta ✓          | 1–2      | yellow |
 | `CW_LEAK`  | `close_wait_leak`    | one process holds ≥20 CLOSE-WAIT sockets (crit ≥50) — fd leak              | per-process CLOSE-WAIT count ✓          | 1–2      | red    |
@@ -571,7 +609,7 @@ badge color and in the Live-tab indicator glyph.
 
 | Signal       | Fires when                                                                  | Severity   | What it means                                                          |
 |--------------|------------------------------------------------------------------------------|------------|------------------------------------------------------------------------|
-| `IDLE`       | ESTAB, both delta byte counters present, both equal to 0                     | info       | Connection is alive but no bytes moved this poll                       |
+| `IDLE`       | ESTAB, no bytes moved either way this poll, nothing waiting in Send-Q        | info       | Connection is alive but quiet (a stalled send queue is not idle)       |
 | `APP_LIM`    | `app_limited` flag set                                                       | info       | TCP could send more; the app isn't producing data fast enough          |
 | `LISTEN_Q`   | LISTEN socket with `RecvQ/SendQ > 0.8` (or RecvQ > 100 when SendQ unknown)   | warn / crit (≥1.0) | Accept queue full — incoming SYNs are being dropped              |
 | `SYN_STALL`  | `SYN-SENT` state with retransmit timer active (`TimerRetrans > 0`)           | warn / crit (≥3) | Handshake stuck — DNS, firewall, or routing problem              |
@@ -585,9 +623,9 @@ badge color and in the Live-tab indicator glyph.
 | `RTO`         | ESTAB, `timer:(on,…)` running, `TimerRetrans ≥ 2`                      | warn / crit (≥4)        | RTO timer doubling — single segment stuck retransmitting   |
 | `LOSS`        | `lost:N > 2`                                                           | warn / crit (>10)       | Kernel-detected packet loss                                |
 | `HI_RETRANS`  | `Δbytes_retrans / Δbytes_sent > 5%`                                    | warn / crit (>20%)      | Current-poll retransmit rate is bad                        |
-| `DSACK`       | `dsack_dups` grew this poll                                            | warn / crit (>5)        | Spurious retransmits — RTO too aggressive                  |
-| `REORDER`     | `reord_seen` grew this poll (sender detected reordering)               | warn / crit (>50)       | Path is reordering packets (often ECMP / LACP / multi-queue hashing). `rcv_ooopack` isn't used: it also grows after plain loss |
-| `DROPS`       | `skmem` drop counter (`d`) grew this poll                             | warn / crit (>10)       | Kernel discarded data at the socket — buffer overran, receiver too slow|
+| `DSACK`       | `dsack_dups` grew this poll                                            | warn / crit (>5)        | Spurious retransmits — the data had arrived (aggressive RTO, or reordering) |
+| `REORDER`     | `reord_seen` grew this poll (sender detected reordering)               | warn / crit (>50)       | Our packets are reordered on the way to the peer (often ECMP / LACP / multi-queue hashing). Loss can inflate this counter too, so the finding warns when the same connections are losing packets |
+| `DROPS`       | `skmem` drop counter (`d`) grew this poll                             | warn / crit (>10)       | Kernel discarded data at the socket — buffer overran, receiver too slow. With `RX_LOSS` and an empty receive queue it's out-of-order data discarded during loss recovery instead, and Findings/Detail say so |
 | `RX_LOSS`     | ≥2% of data segments received this poll arrived after a gap (crit ≥10%; needs ≥100 segments) | warn / crit | **Inbound** loss (or reordering) on the peer → here path. The only loss signal available on the receiving side — the retransmit counters live on the sender. One lost segment makes everything behind it arrive out of order, so the ratio overstates the loss rate; the thresholds account for that |
 
 ### Congestion & flow control
@@ -606,8 +644,8 @@ badge color and in the Live-tab indicator glyph.
 
 | Signal      | Fires when                                          | Severity         | What it means                            |
 |-------------|------------------------------------------------------|------------------|------------------------------------------|
-| `SEND_Q`    | non-LISTEN, `Send-Q > 0`                             | warn / crit (>100) | Bytes queued for transmission           |
-| `RCV_Q`    | non-LISTEN, `Recv-Q > 0`                             | warn / crit (>100) | Bytes queued for the app to read        |
+| `SEND_Q`    | Send-Q ≥ 50% of the send buffer (crit ≥80%) on two consecutive polls; 16 KB / 64 KB when the buffer size is unknown | warn / crit | Data queued faster than the path drains it |
+| `RCV_Q`     | Recv-Q ≥ 50% of the receive buffer (crit ≥80%) on two consecutive polls; same fallback | warn / crit | The local app isn't reading fast enough |
 
 ---
 
@@ -621,7 +659,7 @@ socket creation.
 
 | Field           | ss source            | Notes                                                        |
 |-----------------|----------------------|--------------------------------------------------------------|
-| Protocol        | `tcp` / `udp`        | TCP and UDP polled separately, merged                        |
+| Protocol        | Netid column         | TCP and UDP come from one `ss -atun…` call (falls back to separate queries if that fails) |
 | State           | first column         | UDP rewritten to `UDP_ESTAB` / `UDP_ACTIVE` / `UDP_IDLE`     |
 | Local / Peer    | 4-tuple              | IPv6 bracketed; UDP uses `*:port` for unconnected sockets    |
 | Process / PID / UID | `users:(("name",pid=,fd=))`, `uid:`         |                                                              |
@@ -676,6 +714,7 @@ socket creation.
 | Segs Out / In               | `segs_out:` / `segs_in:` | cum. total segments                       |
 | Data Segs Out / In          | `data_segs_out:` / `data_segs_in:` | cum. data-carrying segments     |
 | Δ Segs Out / In             | (computed)          | Per-poll segments                              |
+| Δ Data Segs In              | (computed)          | Per-poll data segments received — the denominator of the inbound OOO ratio |
 
 ### Retransmits / loss / reordering
 
@@ -748,7 +787,7 @@ ss -atunpeimOH ►│ parser  │──► []*model.Connection
                      ▼
                 ┌─────────┐       ┌─────────────┐
                 │ poller  │──┐    │ classifier  │
-                │ (ring   │  └───►│ (20 rules)  │
+                │ (ring   │  └───►│ (26 signals)│
                 │  buffer)│       └─────────────┘
                 └────┬────┘             │
                      │                  ▼
@@ -756,10 +795,11 @@ ss -atunpeimOH ►│ parser  │──► []*model.Connection
                      ▼
      1500 Snapshots: compact Samples (+ full Conns for the newest)
                      │
-                     ▼
-                ┌─────────┐
-                │   ui    │── bubbletea TUI, 7 tabs
-                └─────────┘
+                     ├──────────────► findings ◄── /proc/net counters + sysctls
+                     ▼                (18 rules, once per poll)
+                ┌─────────┐                │
+                │   ui    │◄───────────────┘
+                └─────────┘  bubbletea TUI, 9 tabs
 ```
 
 - **`parser/`** — runs one `ss` subprocess for TCP+UDP and tokenizes
@@ -774,19 +814,24 @@ ss -atunpeimOH ►│ parser  │──► []*model.Connection
   identity, inline numbers) sorted by key for binary-search lookup, plus
   `stateCounts`. Only the newest snapshot keeps full-detail
   `Connection`s; older ones materialize slim connections on demand.
-- **`classifier/`** — 20 pure rules, run once per connection per poll.
+- **`classifier/`** — pure rules producing 26 signal types, run once per
+  connection per poll (plus aggregate rules for CLOSE-WAIT leaks and
+  TIME-WAIT storms).
   Severity is encoded as `0` (info) / `1` (warn) / `2` (crit). New
   signals are roughly one struct field, one parser case, and a 10-line
   rule here.
+- **`findings/`** — turns signals, host counters and sysctls into ranked
+  host-level findings with evidence and recommendations. Pure: input in,
+  report out, once per poll; a tracker dates each finding.
 - **`ui/`** — pure bubbletea + lipgloss. One file per tab. Reads only
-  from `poller.Buffer`; never mutates state.
+  from `poller.Buffer` and the findings report; never mutates state.
 
 ### Polling cadence
 
-Hardcoded at `PollInterval = 2 * time.Second`, ring at `BufferSize =
-1500`. That gives 50 minutes of history. Changing the constant in
-`poller/poller.go` adjusts both retention and the busy-ratio
-denominator automatically.
+2 s by default, set with `--interval` (minimum 100 ms); the ring holds
+`BufferSize = 1500` snapshots, so the history window is 1500 × interval
+(50 minutes at 2 s). Rates, busy ratios and the window/buffer-limited
+fractions all scale with the interval automatically.
 
 ### Coloring conventions
 
@@ -841,9 +886,16 @@ two screens.
 
 **Q. Why does IDLE fire on connections that are clearly active?**
 It doesn't — on a connection's first snapshot, deltas are unknown, so
-IDLE is suppressed until we have a prior poll to compare against. If
-you're seeing it after the first poll, the connection genuinely moved
-zero bytes that 2 s window.
+IDLE is suppressed until we have a prior poll to compare against, and a
+connection with data stuck in its send queue is never IDLE. If you're
+seeing it after the first poll, the connection genuinely moved zero bytes
+in that interval.
+
+**Q. `c` (copy command) doesn't put anything on my clipboard.**
+It uses OSC 52, which the terminal has to support and allow (most modern
+ones do; some need it enabled). In tmux, set `set -g set-clipboard on`
+(and `allow-passthrough on` for nested sessions). It also works over SSH,
+since the escape sequence travels with the terminal output.
 
 **Q. The same key sometimes does different things.**
 Some keys are tab-aware:
@@ -851,7 +903,8 @@ Some keys are tab-aware:
   Events.
 - `e`/`E` export the ring buffer on most tabs; on Events they export
   the events list itself.
-- `Enter` only acts on Live (opens Detail).
+- `Enter` opens Detail on Live, and on Findings jumps to Live filtered to
+  the finding's sockets. `c` copies a command only on Findings.
 
 **Q. Can I run it remotely?**
 Yes — over SSH like any TUI. Make sure your terminal forwards true
@@ -885,9 +938,10 @@ adding signals stays low-ceremony.
   (sub-RTT phenomena, SACK micro-events) is invisible.
 - **No filter on number ranges** (e.g. "RTT > 100"). Add the term to
   `ui/filter.go` if you want it.
-- **No scroll on tabs other than Events.** Long Detail/Socket content
-  shows a `↓ N more line(s)` indicator but you can't scroll past it
-  yet — make the terminal taller or switch to the paired tab.
+- **No scroll on Detail, Socket, Overview, Top or Perf.** Long content
+  shows a `↓ N more line(s)` indicator but you can't scroll past it yet —
+  make the terminal taller or switch to the paired tab. (Findings keeps the
+  selected finding in view; Events scrolls.)
 - **No persistence across restarts.** The ring buffer is in-memory.
   Use `e` to snapshot before quitting if you want to keep history.
 - **Process names rely on `users:(...)` from `ss`.** Containerised
@@ -895,8 +949,12 @@ adding signals stays low-ceremony.
   the inner process unless you can see PID namespaces.
 - **The signal classifier is heuristic.** Thresholds are tuned for
   general-purpose hosts; loud workloads (CDNs, proxies, databases)
-  may need tweaks. All thresholds live in
-  `classifier/classifier.go` and are one-line edits.
+  may need tweaks. Signal thresholds live in `classifier/classifier.go`,
+  finding rules in `findings/rules.go`; both are one-line edits.
+- **`--ss-filter` narrows the socket-count checks.** With a filter
+  active, findings like ephemeral-port exhaustion or TIME-WAIT storms see
+  only the matching sockets (the Findings tab says so); kernel counters
+  stay host-wide.
 
 ---
 
@@ -921,17 +979,31 @@ go build .
 ./sstui
 ```
 
-Vet / test (no tests yet — contributions welcome):
+Vet / test:
 
 ```bash
 go vet ./...
-go build ./...
+go test -race ./...
+```
+
+Tests cover the parser (against captured `ss` output), classifier rules,
+findings rules (including that every finding's Live filter selects exactly
+its sockets), the ring buffer and history samples, and the app's key flows
+end to end. A few parser tests exercise the real `ss` binary and skip when
+it isn't installed.
+
+Release binaries are built static with the version stamped in:
+
+```bash
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w -X main.version=v1.2.0" -o dist/sstui-linux-amd64 .
 ```
 
 Coding conventions:
 
 - One rule per signal, kept in `classifier/classifier.go`. Add the
-  type + label in `model/signal.go`, the color in `ui/header.go`.
+  type + label in `model/signal.go`, the color in `ui/header.go`. If it
+  describes a host-level problem, add a findings rule in
+  `findings/rules.go` too.
 - Renderers read from `*poller.Buffer` only; never mutate state.
 - Cumulative counters get their delta in `poller.computeDeltas`.
   Non-monotonic values (e.g. `cwnd`) are stashed via `PrevX` fields.

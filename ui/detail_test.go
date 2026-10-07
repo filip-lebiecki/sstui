@@ -26,6 +26,22 @@ func TestDetailInboundOOORatio(t *testing.T) {
 	}
 }
 
+// TestDetailDeliveredCE: the ECN row appears only once the peer has echoed
+// congestion marks.
+func TestDetailDeliveredCE(t *testing.T) {
+	i := func(v int) *int { return &v }
+	c := &model.Connection{Protocol: "tcp", State: "ESTAB",
+		LocalAddr: "10.0.0.1", LocalPort: "443", PeerAddr: "10.0.0.2", PeerPort: "51000",
+		CWnd: i(10), Delivered: i(500), DeliveredCE: i(0)}
+	if out := ansi.Strip(RenderDetail(c, false, poller.NewBuffer(), 140, 60)); strings.Contains(out, "Delivered CE") {
+		t.Errorf("Delivered CE row should be hidden while 0")
+	}
+	c.DeliveredCE = i(12)
+	if out := ansi.Strip(RenderDetail(c, false, poller.NewBuffer(), 140, 60)); !strings.Contains(out, "Delivered CE") {
+		t.Errorf("Delivered CE row missing once non-zero:\n%s", out)
+	}
+}
+
 func TestDetailInboundHiddenForUDP(t *testing.T) {
 	c := &model.Connection{Protocol: "udp", State: "UDP_ESTAB", LocalAddr: "10.0.0.1", LocalPort: "53", PeerAddr: "10.0.0.2", PeerPort: "5353"}
 	if out := ansi.Strip(RenderDetail(c, false, poller.NewBuffer(), 140, 60)); strings.Contains(out, "Inbound") {

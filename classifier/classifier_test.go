@@ -288,7 +288,7 @@ func TestClassifyReorderingUsesReordSeen(t *testing.T) {
 // TestClassifyCWndCollapse: a sharp cwnd cut fires only with loss or ECN
 // marks in the same poll; a cut without them (restart after idle, cwnd
 // validation) and BBR's ProbeRTT drop to 4 packets (cwnd_gain 1) are by
-// design. Without bytes_retrans (old kernel) the cause can't be checked.
+// design. Without bytes_retrans (old kernel) there's no evidence, so no signal.
 func TestClassifyCWndCollapse(t *testing.T) {
 	collapse := func(prev, cur int) *model.Connection {
 		return &model.Connection{Protocol: "tcp", State: "ESTAB", PrevCWnd: ip(prev), CWnd: ip(cur),
@@ -304,7 +304,7 @@ func TestClassifyCWndCollapse(t *testing.T) {
 		{"loss: bytes retransmitted", func() *model.Connection { c := collapse(100, 40); c.DeltaBytesRetrans = ip(7240); return c }(), 1, "100→40 after loss"},
 		{"loss: packets marked lost", func() *model.Connection { c := collapse(100, 20); c.Lost = ip(3); return c }(), 2, "100→20 after loss"},
 		{"ECN marks", func() *model.Connection { c := collapse(100, 40); c.DeltaDeliveredCE = ip(12); return c }(), 1, "100→40 after ECN marks"},
-		{"old kernel, cause unknown", &model.Connection{Protocol: "tcp", State: "ESTAB", PrevCWnd: ip(100), CWnd: ip(40)}, 1, "100→40"},
+		{"old kernel, no evidence", &model.Connection{Protocol: "tcp", State: "ESTAB", PrevCWnd: ip(100), CWnd: ip(40)}, 0, ""},
 		{"BBR ProbeRTT on a lossy path", func() *model.Connection {
 			c := collapse(698, 4)
 			c.BBRCWndGain, c.DeltaBytesRetrans = fl(1), ip(1448)

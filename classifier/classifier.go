@@ -251,22 +251,23 @@ func bbrProbeRTT(c *model.Connection) bool {
 
 // cwndCutCause names the congestion event in this poll that explains a cwnd
 // reduction: "loss" (retransmissions or packets marked lost) or "ECN marks"
-// (ACKs echoing congestion marks). ok is false when the poll shows neither:
+// (ACKs echoing congestion marks). It returns "" when the poll shows neither:
 // the kernel then shrank a window the connection wasn't using, either on
 // restart after idle (tcp_slow_start_after_idle) or while app-limited (cwnd
-// validation), which says nothing about the path. On kernels without
-// bytes_retrans (before 4.19) the evidence isn't visible, so it answers
-// ok with no cause rather than hiding every collapse.
-func cwndCutCause(c *model.Connection) (cause string, ok bool) {
+// validation), which says nothing about the path. Kernels without
+// bytes_retrans (before 4.19) also get "": no evidence, no claim.
+//
+// Only this poll is checked: one loss or CE event cuts cwnd by at most half
+// (cubic 0.7x, DCTCP ≥ 0.5x) and an RTO's cut is instantaneous, so a >50%
+// drop between two polls always includes an event inside the later one.
+func cwndCutCause(c *model.Connection) string {
 	switch {
-	case c.DeltaBytesRetrans == nil:
-		return "", true
-	case *c.DeltaBytesRetrans > 0 || (c.Lost != nil && *c.Lost > 0):
-		return "loss", true
+	case c.DeltaBytesRetrans != nil && *c.DeltaBytesRetrans > 0, c.Lost != nil && *c.Lost > 0:
+		return "loss"
 	case c.DeltaDeliveredCE != nil && *c.DeltaDeliveredCE > 0:
-		return "ECN marks", true
+		return "ECN marks"
 	}
-	return "", false
+	return ""
 }
 
 // fmtSecs renders milliseconds as whole seconds ("12s"), or ms below 1s.
@@ -498,16 +499,13 @@ func Classify(c *model.Connection) []model.Signal {
 	// min RTT, so on a lossy path a poll landing there would look like a collapse.
 	if c.PrevCWnd != nil && c.CWnd != nil && *c.PrevCWnd >= 20 && !bbrProbeRTT(c) {
 		ratio := float64(*c.CWnd) / float64(*c.PrevCWnd)
-		if cause, ok := cwndCutCause(c); ok && ratio < 0.5 {
+		if cause := cwndCutCause(c); cause != "" && ratio < 0.5 {
 			sev := 1
 			if ratio < 0.25 {
 				sev = 2
 			}
-			v := fmt.Sprintf("%d→%d", *c.PrevCWnd, *c.CWnd)
-			if cause != "" {
-				v += " after " + cause
-			}
-			signals = append(signals, model.Signal{Type: model.SignalCWndCollapse, Severity: sev, Value: v})
+			signals = append(signals, model.Signal{Type: model.SignalCWndCollapse, Severity: sev,
+				Value: fmt.Sprintf("%d→%d after %s", *c.PrevCWnd, *c.CWnd, cause)})
 		}
 	}
 

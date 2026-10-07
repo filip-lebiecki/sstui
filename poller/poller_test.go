@@ -176,6 +176,34 @@ func TestFirstLossBurstProducesDelta(t *testing.T) {
 	}
 }
 
+// TestECNCutRaisesCWndDrop: delivered_ce growth becomes a per-poll delta, and
+// a cwnd cut it explains raises CWND_DROP with no retransmits at all.
+func TestECNCutRaisesCWndDrop(t *testing.T) {
+	i := func(v int) *int { return &v }
+	ino := "7"
+	mk := func(cwnd, ce int) []*model.Connection {
+		return []*model.Connection{{Protocol: "tcp", State: "ESTAB", Inode: &ino,
+			LocalAddr: "1.1.1.1", LocalPort: "1", PeerAddr: "2.2.2.2", PeerPort: "2",
+			CWnd: i(cwnd), BytesSent: i(1000), BytesRetrans: i(0), Delivered: i(500), DeliveredCE: i(ce)}}
+	}
+	buf := NewBuffer()
+	buf.AddSnapshot(mk(100, 3))
+	buf.AddSnapshot(mk(40, 15))
+	c := buf.GetLatest().Conns[0]
+	if c.DeltaDeliveredCE == nil || *c.DeltaDeliveredCE != 12 {
+		t.Fatalf("DeltaDeliveredCE = %v, want 12", c.DeltaDeliveredCE)
+	}
+	var got any
+	for _, s := range c.Signals {
+		if s.Type == model.SignalCWndCollapse {
+			got = s.Value
+		}
+	}
+	if got != "100→40 after ECN marks" {
+		t.Errorf("CWND_DROP value = %v, want \"100→40 after ECN marks\"", got)
+	}
+}
+
 // TestSampleRoundTrip: every field the history views read must survive
 // newSample -> Conn. Adding a history field means extending newSample, Conn
 // and this test together.

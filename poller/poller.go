@@ -175,12 +175,16 @@ func NewBuffer() *Buffer {
 	}
 }
 
-// AddSnapshot stores a new snapshot and computes deltas. Delta computation
+// AddSnapshot stores a new snapshot taken now and computes deltas.
+func (b *Buffer) AddSnapshot(conns []*model.Connection) { b.AddSnapshotAt(conns, time.Now()) }
+
+// AddSnapshotAt stores a new snapshot taken at ts (a recording's poll time
+// when replaying) and computes deltas. Delta computation
 // and classification run outside the write lock so concurrent readers
 // (GetLatest, GetAll) aren't blocked while we walk every connection. We
 // only take the lock briefly when reading prev pointers and again to
 // publish the new snapshot.
-func (b *Buffer) AddSnapshot(conns []*model.Connection) {
+func (b *Buffer) AddSnapshotAt(conns []*model.Connection, ts time.Time) {
 	// Compute each connection's key once; ConnKey() then returns the cache.
 	// The conns are still private to this goroutine, so writing is safe.
 	for _, c := range conns {
@@ -237,7 +241,7 @@ func (b *Buffer) AddSnapshot(conns []*model.Connection) {
 	}
 
 	snap := &Snapshot{
-		Timestamp:   time.Now(),
+		Timestamp:   ts,
 		Conns:       conns,
 		samples:     samples,
 		stateCounts: stateCounts,
@@ -254,7 +258,7 @@ func (b *Buffer) AddSnapshot(conns []*model.Connection) {
 	if b.count < BufferSize {
 		b.count++
 	}
-	b.lastUpdate = time.Now()
+	b.lastUpdate = ts
 }
 
 // sameConnection returns false when the previous (key, inode) appears to belong

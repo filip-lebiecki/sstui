@@ -388,7 +388,7 @@ func topBy(counts map[string]int, n int) []string {
 
 // Tracker remembers when each finding first appeared so the UI can say how
 // long a problem has been going on. A finding that disappears is forgotten
-// only after it has been absent for graceMisses consecutive polls, so a
+// only after it has been absent for GraceMisses consecutive polls, so a
 // problem that flickers for a poll keeps its original start time.
 type Tracker struct {
 	seen map[string]*trackState
@@ -399,7 +399,9 @@ type trackState struct {
 	misses int
 }
 
-const graceMisses = 3
+// GraceMisses is how many consecutive polls a finding may be absent before
+// it counts as gone.
+const GraceMisses = 3
 
 // Update stamps Since on each finding (in place) and ages out ones that
 // have been gone for a while.
@@ -423,7 +425,7 @@ func (t *Tracker) Update(fs []Finding, now time.Time) {
 		if present[id] {
 			continue
 		}
-		if st.misses++; st.misses > graceMisses {
+		if st.misses++; st.misses > GraceMisses {
 			delete(t.seen, id)
 		}
 	}

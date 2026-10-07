@@ -27,11 +27,17 @@ var (
 // view by scrolling the list body; the summary line stays pinned.
 //
 // stale, when non-empty, warns that the report is out of date (polling is
-// failing) and is shown under the summary.
-func RenderFindings(rep findings.Report, sel, width, height int, now time.Time, stale string) string {
+// failing) and is shown under the summary. asOf, when non-empty, says which
+// moment the report describes when it isn't the live present (paused, or a
+// replay). now is the time finding ages are measured against.
+func RenderFindings(rep findings.Report, sel, width, height int, now time.Time, stale, asOf string) string {
 	head := renderFindingsSummary(rep) + "\n"
 	// Notes are truncated with an ellipsis so a long filter visibly
 	// continues instead of being clipped silently at the edge.
+	if asOf != "" {
+		head += styleFindTitle.Render(truncate("  ⏱ "+asOf, width)) + "\n"
+		height--
+	}
 	if stale != "" {
 		head += styleFindWarn.Render(truncate("  ⚠ "+stale, width)) + "\n"
 		height--

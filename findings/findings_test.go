@@ -260,7 +260,7 @@ func TestTrackerSinceAndGrace(t *testing.T) {
 		t.Errorf("a brief gap should not reset Since, got %v", fs[0].Since)
 	}
 	// Absent beyond the grace period: forgotten, so it restarts.
-	for i := 0; i <= graceMisses; i++ {
+	for i := 0; i <= GraceMisses; i++ {
 		tr.Update(nil, t0.Add(time.Duration(10+i)*time.Second))
 	}
 	fs = []Finding{{ID: "a"}}

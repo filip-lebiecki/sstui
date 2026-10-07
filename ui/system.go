@@ -48,57 +48,13 @@ func RenderSystem(cur, prev *poller.SysStat, width, height int) string {
 			rateStr))
 	}
 
-	section := func(title string, rows func()) {
-		b.WriteString(styleSectionTitle.Render(" "+title) + "\n")
-		rows()
+	for _, g := range poller.CounterGroups {
+		b.WriteString(styleSectionTitle.Render(" "+g.Title) + "\n")
+		for _, c := range g.Counters {
+			row(c.Label, c.Key, c.Alert)
+		}
 		b.WriteString("\n")
 	}
-
-	section("TCP", func() {
-		row("CurrEstab", "Tcp:CurrEstab", false)
-		row("ActiveOpens", "Tcp:ActiveOpens", false)
-		row("PassiveOpens", "Tcp:PassiveOpens", false)
-		row("InSegs", "Tcp:InSegs", false)
-		row("OutSegs", "Tcp:OutSegs", false)
-		row("RetransSegs", "Tcp:RetransSegs", true)
-		row("AttemptFails", "Tcp:AttemptFails", true)
-		row("EstabResets", "Tcp:EstabResets", true)
-		row("OutRsts", "Tcp:OutRsts", false)
-		row("InErrs", "Tcp:InErrs", true)
-	})
-
-	section("Accept queue / SYN", func() {
-		row("ListenOverflows", "TcpExt:ListenOverflows", true)
-		row("ListenDrops", "TcpExt:ListenDrops", true)
-		row("SyncookiesSent", "TcpExt:SyncookiesSent", true)
-		row("SyncookiesRecv", "TcpExt:SyncookiesRecv", true)
-		row("TCPReqQFullDrop", "TcpExt:TCPReqQFullDrop", true)
-	})
-
-	section("Loss / retransmit", func() {
-		row("TCPSynRetrans", "TcpExt:TCPSynRetrans", false)
-		row("TCPTimeouts", "TcpExt:TCPTimeouts", false)
-		row("TCPLostRetransmit", "TcpExt:TCPLostRetransmit", true)
-		row("TCPFastRetrans", "TcpExt:TCPFastRetrans", false)
-		row("TCPSpuriousRTOs", "TcpExt:TCPSpuriousRTOs", false)
-	})
-
-	section("Buffer pressure / OFO", func() {
-		row("PruneCalled", "TcpExt:PruneCalled", true)
-		row("RcvPruned", "TcpExt:RcvPruned", true)
-		row("OfoPruned", "TcpExt:OfoPruned", true)
-		row("TCPOFOQueue", "TcpExt:TCPOFOQueue", false)
-		row("TCPBacklogDrop", "TcpExt:TCPBacklogDrop", true)
-	})
-
-	section("UDP", func() {
-		row("InDatagrams", "Udp:InDatagrams", false)
-		row("OutDatagrams", "Udp:OutDatagrams", false)
-		row("InErrors", "Udp:InErrors", true)
-		row("RcvbufErrors", "Udp:RcvbufErrors", true)
-		row("SndbufErrors", "Udp:SndbufErrors", true)
-		row("NoPorts", "Udp:NoPorts", false)
-	})
 
 	return b.String()
 }

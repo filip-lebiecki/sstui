@@ -81,7 +81,7 @@ func TestRenderFindingsKeepsSelectionVisible(t *testing.T) {
 		fs = append(fs, findings.Finding{ID: strconv.Itoa(n), Severity: 1, Title: "finding " + strconv.Itoa(n),
 			Detail: "detail", Evidence: []string{"e"}, Actions: []findings.Action{{Text: "do", Command: "cmd"}}})
 	}
-	out := RenderFindings(findings.Report{Findings: fs}, 25, 100, 15, time.Now(), "")
+	out := RenderFindings(findings.Report{Findings: fs}, 25, 100, 15, time.Now(), "", "")
 	if !strings.Contains(out, "finding 25") {
 		t.Errorf("selected finding should be scrolled into view:\n%s", out)
 	}
@@ -96,14 +96,14 @@ func TestRenderFindingsNotRootNote(t *testing.T) {
 		fs = append(fs, findings.Finding{ID: strconv.Itoa(n), Severity: 1, Title: "finding " + strconv.Itoa(n)})
 	}
 	rep := findings.Report{Findings: fs, HiddenProcs: 7, SSFilter: "dport = :443"}
-	out := RenderFindings(rep, 0, 200, 15, time.Now(), "polling failed")
+	out := RenderFindings(rep, 0, 200, 15, time.Now(), "polling failed", "as of 14:02:11 (paused)")
 	if !strings.Contains(out, "process names hidden for 7 sockets") || !strings.Contains(out, "sudo") {
 		t.Errorf("missing not-root note:\n%s", out)
 	}
 	if lines := strings.Count(out, "\n") + 1; lines > 15 {
 		t.Errorf("rendered %d lines into a 15-line area", lines)
 	}
-	if out := RenderFindings(findings.Report{Findings: fs}, 0, 200, 15, time.Now(), ""); strings.Contains(out, "sudo") {
+	if out := RenderFindings(findings.Report{Findings: fs}, 0, 200, 15, time.Now(), "", ""); strings.Contains(out, "sudo") {
 		t.Errorf("note shown with no hidden processes:\n%s", out)
 	}
 }

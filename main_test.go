@@ -9,6 +9,7 @@ import (
 
 	"sstui/model"
 	"sstui/poller"
+	"sstui/session"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -17,7 +18,7 @@ import (
 // newLiveApp returns an app showing the Live tab (the app itself starts on
 // Findings).
 func newLiveApp() *AppModel {
-	m := NewApp()
+	m := NewApp(nil)
 	m.tab = ViewLive
 	return m
 }
@@ -25,6 +26,11 @@ func newLiveApp() *AppModel {
 func feed(m *AppModel, msg tea.Msg) *AppModel {
 	next, _ := m.Update(msg)
 	return next.(*AppModel)
+}
+
+// polled wraps conns as a poll result taken now.
+func polled(conns []*model.Connection) pollResultMsg {
+	return pollResultMsg{poll: &session.Poll{Time: time.Now(), Conns: conns}}
 }
 
 func key(s string) tea.KeyMsg {
@@ -47,9 +53,9 @@ func TestPauseScrub(t *testing.T) {
 	m = feed(m, tea.WindowSizeMsg{Width: 140, Height: 40})
 
 	// Three polls of history, each with a distinguishable local address.
-	m = feed(m, pollResultMsg{conns: snapWithAddr("10.0.0.1")})
-	m = feed(m, pollResultMsg{conns: snapWithAddr("10.0.0.2")})
-	m = feed(m, pollResultMsg{conns: snapWithAddr("10.0.0.3")}) // newest
+	m = feed(m, polled(snapWithAddr("10.0.0.1")))
+	m = feed(m, polled(snapWithAddr("10.0.0.2")))
+	m = feed(m, polled(snapWithAddr("10.0.0.3"))) // newest
 
 	// Live view shows the newest snapshot.
 	if !strings.Contains(m.View(), "10.0.0.3") {
@@ -67,7 +73,7 @@ func TestPauseScrub(t *testing.T) {
 
 	// A new poll arrives while paused: the frozen moment stays pinned (we were
 	// viewing the then-newest 10.0.0.3, which is now one back).
-	m = feed(m, pollResultMsg{conns: snapWithAddr("10.0.0.4")})
+	m = feed(m, polled(snapWithAddr("10.0.0.4")))
 	if m.scrubOffset != 1 {
 		t.Fatalf("scrubOffset should pin to 1 after a poll while paused, got %d", m.scrubOffset)
 	}
@@ -100,7 +106,7 @@ func TestPauseScrub(t *testing.T) {
 // TestSystemTab verifies the 9 key opens the System tab and that host counters
 // with a per-poll delta render (value + Δ/s).
 func TestSystemTab(t *testing.T) {
-	m := NewApp()
+	m := NewApp(nil)
 	m = feed(m, tea.WindowSizeMsg{Width: 140, Height: 40})
 
 	prev := &poller.SysStat{Timestamp: time.Now(), Counters: map[string]int64{
@@ -109,8 +115,8 @@ func TestSystemTab(t *testing.T) {
 	cur := &poller.SysStat{Timestamp: time.Now(), Counters: map[string]int64{
 		"Tcp:RetransSegs": 120, "Tcp:OutSegs": 3000, "Tcp:CurrEstab": 6,
 	}}
-	m = feed(m, pollResultMsg{conns: snapWithAddr("10.0.0.1"), sys: prev})
-	m = feed(m, pollResultMsg{conns: snapWithAddr("10.0.0.1"), sys: cur})
+	m = feed(m, pollResultMsg{poll: &session.Poll{Time: time.Now(), Conns: snapWithAddr("10.0.0.1"), Sys: prev}})
+	m = feed(m, pollResultMsg{poll: &session.Poll{Time: time.Now(), Conns: snapWithAddr("10.0.0.1"), Sys: cur}})
 
 	m = feed(m, key("9"))
 	if m.tab != ViewSystem {
@@ -129,8 +135,8 @@ func TestSystemTab(t *testing.T) {
 func TestScrubAutoPauses(t *testing.T) {
 	m := newLiveApp()
 	m = feed(m, tea.WindowSizeMsg{Width: 140, Height: 40})
-	m = feed(m, pollResultMsg{conns: snapWithAddr("10.0.0.1")})
-	m = feed(m, pollResultMsg{conns: snapWithAddr("10.0.0.2")})
+	m = feed(m, polled(snapWithAddr("10.0.0.1")))
+	m = feed(m, polled(snapWithAddr("10.0.0.2")))
 
 	m = feed(m, key("[")) // scrub back while live
 	if !m.paused {
@@ -161,7 +167,7 @@ func TestTableCursorStaysVisible(t *testing.T) {
 	for _, filtered := range []bool{false, true} {
 		m := newLiveApp()
 		m = feed(m, tea.WindowSizeMsg{Width: 160, Height: 60})
-		m = feed(m, pollResultMsg{conns: manyConns(200, func(int) int { return 0 })})
+		m = feed(m, polled(manyConns(200, func(int) int { return 0 })))
 		if filtered { // the filter bar adds a header line
 			m.filter.SetQuery("state=ESTAB")
 			m.table.InvalidateCache()
@@ -192,13 +198,13 @@ func TestTableSelectionFollowsConnection(t *testing.T) {
 		}
 		m = feed(m, key("h"))
 	}
-	m = feed(m, pollResultMsg{conns: manyConns(10, func(i int) int { return i * 100 })})
+	m = feed(m, polled(manyConns(10, func(i int) int { return i * 100 })))
 	m = feed(m, key("j"))
 	m = feed(m, key("j"))
 	want := m.table.GetSelected().LocalPort
 
 	// Next poll reverses the TX ranking, so the row moves.
-	m = feed(m, pollResultMsg{conns: manyConns(10, func(i int) int { return (10 - i) * 100 })})
+	m = feed(m, polled(manyConns(10, func(i int) int { return (10 - i) * 100 })))
 	if got := m.table.GetSelected().LocalPort; got != want {
 		t.Errorf("selection jumped from port %s to %s after re-sort", want, got)
 	}
@@ -207,7 +213,7 @@ func TestTableSelectionFollowsConnection(t *testing.T) {
 // TestFilterPaste: bracketed paste arrives as one KeyRunes message with the
 // whole text; it must be inserted (newlines flattened), not ignored.
 func TestFilterPaste(t *testing.T) {
-	m := NewApp()
+	m := NewApp(nil)
 	m = feed(m, tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = feed(m, key("/"))
 	m = feed(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("peer=10.0.0.1\n"), Paste: true})
@@ -221,9 +227,9 @@ func TestFilterPaste(t *testing.T) {
 // TestHelpNeverOverflows: on a short terminal the help panel must not push
 // the frame past the terminal height (which scrolls the header away).
 func TestHelpNeverOverflows(t *testing.T) {
-	m := NewApp()
+	m := NewApp(nil)
 	m = feed(m, tea.WindowSizeMsg{Width: 120, Height: 20})
-	m = feed(m, pollResultMsg{conns: snapWithAddr("10.0.0.1")})
+	m = feed(m, polled(snapWithAddr("10.0.0.1")))
 	m = feed(m, key("?"))
 	v := m.View()
 	if n := strings.Count(v, "\n") + 1; n > 20 {
@@ -239,9 +245,9 @@ func TestHelpNeverOverflows(t *testing.T) {
 func TestExportRunsInBackground(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
-	m := NewApp()
+	m := NewApp(nil)
 	m = feed(m, tea.WindowSizeMsg{Width: 120, Height: 40})
-	m = feed(m, pollResultMsg{conns: snapWithAddr("10.0.0.1")})
+	m = feed(m, polled(snapWithAddr("10.0.0.1")))
 
 	next, cmd := m.Update(key("e"))
 	m = next.(*AppModel)
@@ -261,7 +267,7 @@ func TestExportRunsInBackground(t *testing.T) {
 // up there (and as a header pill), and Enter jumps to Live filtered to just
 // the stalled socket.
 func TestFindingsHomeFlow(t *testing.T) {
-	m := NewApp()
+	m := NewApp(nil)
 	if m.tab != ViewFindings {
 		t.Fatalf("app should start on the Findings tab")
 	}
@@ -272,7 +278,7 @@ func TestFindingsHomeFlow(t *testing.T) {
 		TimerType: &persist, TimerDur: &dur}
 	healthy := &model.Connection{Protocol: "tcp", State: "ESTAB",
 		LocalAddr: "10.0.0.1", LocalPort: "50002", PeerAddr: "10.0.0.6", PeerPort: "443"}
-	m = feed(m, pollResultMsg{conns: []*model.Connection{stalled, healthy}})
+	m = feed(m, polled([]*model.Connection{stalled, healthy}))
 
 	v := m.View()
 	if !strings.Contains(v, "peer not reading (zero window)") || !strings.Contains(v, "1 crit") {
@@ -289,7 +295,7 @@ func TestFindingsHomeFlow(t *testing.T) {
 func TestHelpBlocksHiddenNavigation(t *testing.T) {
 	m := newLiveApp()
 	m = feed(m, tea.WindowSizeMsg{Width: 160, Height: 40})
-	m = feed(m, pollResultMsg{conns: manyConns(10, func(int) int { return 0 })})
+	m = feed(m, polled(manyConns(10, func(int) int { return 0 })))
 	before := m.table.GetSelected().LocalPort
 	m = feed(m, key("?"))
 	m = feed(m, key("j"))
@@ -302,11 +308,11 @@ func TestHelpBlocksHiddenNavigation(t *testing.T) {
 // TestFindingsStaleWhenPollingFails: once polls start failing, the Findings
 // tab says its analysis is old instead of silently showing it as current.
 func TestFindingsStaleWhenPollingFails(t *testing.T) {
-	m := NewApp()
+	m := NewApp(nil)
 	m = feed(m, tea.WindowSizeMsg{Width: 160, Height: 40})
-	m = feed(m, pollResultMsg{conns: snapWithAddr("10.0.0.1")})
-	m.reportAt = time.Now().Add(-time.Minute) // pretend the last good poll was a while ago
-	m = feed(m, pollResultMsg{err: errors.New("ss: exit status 1")})
+	m = feed(m, polled(snapWithAddr("10.0.0.1")))
+	m.sess.ReportAt = time.Now().Add(-time.Minute) // pretend the last good poll was a while ago
+	m = feed(m, pollResultMsg{poll: &session.Poll{Time: time.Now(), Err: errors.New("ss: exit status 1")}})
 	if v := m.View(); !strings.Contains(v, "polling is failing") {
 		t.Errorf("Findings should warn that its analysis is stale:\n%s", v)
 	}

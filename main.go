@@ -13,6 +13,7 @@ import (
 	"sstui/model"
 	"sstui/parser"
 	"sstui/poller"
+	"sstui/session"
 	"sstui/ui"
 
 	"github.com/aymanbagabas/go-osc52/v2"
@@ -24,13 +25,11 @@ import (
 // tickMsg fires the next poll.
 type tickMsg struct{}
 
-// pollResultMsg carries the result of an async ss invocation.
+// pollResultMsg carries the result of an async ss invocation. recErr is
+// set when recording the poll (--record) failed.
 type pollResultMsg struct {
-	conns  []*model.Connection
-	drops  int             // record lines ss emitted that we couldn't parse
-	sys    *poller.SysStat // host-wide /proc/net counters (nil if unreadable)
-	sysctl poller.Sysctls  // kernel settings the Findings recommendations reason about
-	err    error
+	poll   *session.Poll
+	recErr error
 }
 
 func tickCmd(d time.Duration) tea.Cmd {
@@ -39,11 +38,16 @@ func tickCmd(d time.Duration) tea.Cmd {
 	})
 }
 
-func pollCmd(f parser.SSFilter) tea.Cmd {
+// pollCmd polls in the background and, with rec set, records the poll
+// there too, so encoding and compressing a large poll never stalls the UI.
+// It records before the UI ingests the poll, which annotates the sockets.
+func pollCmd(f parser.SSFilter, rec *session.Recorder) tea.Cmd {
 	return func() tea.Msg {
-		conns, drops, err := parser.RunSS(f)
-		sys, _ := poller.ReadSysStat() // best-effort; nil on platforms without /proc/net
-		return pollResultMsg{conns: conns, drops: drops, sys: sys, sysctl: poller.ReadSysctls(), err: err}
+		msg := pollResultMsg{poll: session.PollLive(f)}
+		if rec != nil {
+			msg.recErr = rec.Write(msg.poll)
+		}
+		return msg
 	}
 }
 
@@ -123,8 +127,6 @@ type AppModel struct {
 	filter        *ui.Filter
 	tab           ViewMode
 	showHelp      bool
-	lastError     error
-	lastDrops     int // unparsed ss records from the most recent poll
 	filterMode    bool
 	filterBuf     string
 	filterCursor  int      // byte offset of the edit cursor within filterBuf
@@ -135,10 +137,15 @@ type AppModel struct {
 	statusExpiry  time.Time
 	eventsScroll  int
 
-	// Host-wide /proc/net counters: current read plus the previous one, so the
-	// System tab can show per-poll deltas.
-	sysCur  *poller.SysStat
-	sysPrev *poller.SysStat
+	// sess owns the history buffer, host counters and findings analysis
+	// (shared with the headless commands); buf is sess.Buf.
+	sess *session.Session
+
+	// rec, when set, records every poll to a file (--record).
+	rec *session.Recorder
+	// replay names the recording being replayed; "" when live. A replay
+	// never polls: the whole recording is loaded up front.
+	replay string
 
 	// Pause / time-travel scrub. When paused, the Live table renders a frozen
 	// snapshot `scrubOffset` polls back from newest instead of the live one.
@@ -149,33 +156,28 @@ type AppModel struct {
 
 	exporting bool // a background export is running
 
-	// Findings: the latest analysis, the tracker that dates each finding,
-	// and the selection (kept on the same finding across refreshes by ID).
-	sysctl       poller.Sysctls
-	report       findings.Report
-	tracker      findings.Tracker
+	// Findings selection, kept on the same finding across refreshes by ID.
 	findingSel   int
 	findingSelID string
-	reportAt     time.Time // when the report was last refreshed
 
 	// ssFilter is passed to ss itself (--ss-filter): non-matching sockets
 	// are never collected. Fixed for the session.
 	ssFilter parser.SSFilter
-
-	// unprivileged is set when not running as root, so findings can say
-	// why process names are missing. Fixed for the session.
-	unprivileged bool
 
 	// tableSnap is the snapshot whose connections the table currently holds,
 	// so syncTable can skip redundant reloads.
 	tableSnap *poller.Snapshot
 }
 
-func NewApp() *AppModel {
-	buf := poller.NewBuffer()
+// NewApp returns the TUI over sess (nil for a fresh live session).
+func NewApp(sess *session.Session) *AppModel {
+	if sess == nil {
+		sess = session.New("", false)
+	}
 	sharedFilter := &ui.Filter{HideListen: true}
 	return &AppModel{
-		buf:    buf,
+		sess:   sess,
+		buf:    sess.Buf,
 		table:  ui.NewTableModel(sharedFilter, 20),
 		filter: sharedFilter,
 		tab:    ViewFindings, // the triage home screen
@@ -183,9 +185,12 @@ func NewApp() *AppModel {
 }
 
 func (m *AppModel) Init() tea.Cmd {
+	if m.replay != "" {
+		return tea.WindowSize()
+	}
 	return tea.Batch(
 		tea.WindowSize(),
-		pollCmd(m.ssFilter),
+		pollCmd(m.ssFilter, m.rec),
 	)
 }
 
@@ -341,7 +346,8 @@ func (m *AppModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "G":
 			if m.tab == ViewFindings {
-				m.selectFinding(len(m.report.Findings) - 1)
+				rep, _ := m.shownReport()
+				m.selectFinding(len(rep.Findings) - 1)
 			} else if m.tab == ViewEvents {
 				m.eventsScroll = ui.MaxEventsScroll(m.buf, m.contentHeight())
 			} else {
@@ -371,7 +377,7 @@ func (m *AppModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tickMsg:
-		return m, pollCmd(m.ssFilter)
+		return m, pollCmd(m.ssFilter, m.rec)
 
 	case exportDoneMsg:
 		m.exporting = false
@@ -379,22 +385,12 @@ func (m *AppModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case pollResultMsg:
-		m.lastError = msg.err
-		m.lastDrops = msg.drops
-		// Roll host counters forward only on a fresh read, so the System tab's
-		// deltas always compare two real consecutive samples.
-		if msg.sys != nil {
-			m.sysPrev = m.sysCur
-			m.sysCur = msg.sys
+		if msg.recErr != nil && m.rec != nil {
+			m.rec.Close()
+			m.rec = nil
+			m.setStatus("recording stopped: "+msg.recErr.Error(), 10*time.Second)
 		}
-		if msg.sysctl != nil {
-			m.sysctl = msg.sysctl
-		}
-		// Ingest on full success (even if zero sockets) or on a partial
-		// failure that still returned data; skip only when both queries
-		// failed (nil slice) so the last good snapshot is preserved.
-		if msg.err == nil || len(msg.conns) > 0 {
-			m.buf.AddSnapshot(msg.conns)
+		if m.sess.Ingest(msg.poll) {
 			if m.paused {
 				// The new snapshot shifted "newest" by one; bump the offset so
 				// the frozen view stays pinned to the same absolute moment as
@@ -403,7 +399,7 @@ func (m *AppModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.clampScrub()
 			}
 			m.syncTable()
-			m.refreshFindings()
+			m.reselectFinding()
 		}
 		return m, tickCmd(poller.PollInterval)
 	}
@@ -525,7 +521,8 @@ func (m *AppModel) View() string {
 	var b strings.Builder
 
 	// Header (fixed)
-	b.WriteString(ui.RenderHeader(m.buf, m.filter, m.lastDrops, ui.FindingsPill(m.report.Crit(), m.report.Warn()), m.width) + "\n")
+	rep, repAt := m.shownReport()
+	b.WriteString(ui.RenderHeader(m.buf, m.filter, m.sess.LastDrops, ui.FindingsPill(rep.Crit(), rep.Warn()), m.width) + "\n")
 
 	// Tabs (fixed)
 	b.WriteString(ui.RenderTabs(tabNames, tabIndex(m.tab), m.width) + "\n")
@@ -554,7 +551,7 @@ func (m *AppModel) View() string {
 
 	switch m.tab {
 	case ViewFindings:
-		content = ui.RenderFindings(m.report, m.findingSel, m.width, ch, time.Now(), m.findingsStaleNote())
+		content = ui.RenderFindings(rep, m.findingSel, m.width, ch, repAt, m.findingsStaleNote(), m.findingsAsOf())
 
 	case ViewLive:
 		content = m.table.RenderBody()
@@ -586,7 +583,7 @@ func (m *AppModel) View() string {
 		content = ui.RenderEvents(m.buf, m.width, ch, m.eventsScroll)
 
 	case ViewSystem:
-		content = ui.RenderSystem(m.sysCur, m.sysPrev, m.width, ch)
+		content = ui.RenderSystem(m.sess.SysCur, m.sess.SysPrev, m.width, ch)
 
 	case ViewFilter:
 		content = "\n  Filter connections:\n\n"
@@ -712,6 +709,7 @@ func (m *AppModel) togglePause() {
 	m.paused = !m.paused
 	m.scrubOffset = 0
 	m.syncTable()
+	m.reselectFinding()
 }
 
 // scrub moves the frozen view by delta polls (positive = further back in time)
@@ -724,6 +722,7 @@ func (m *AppModel) scrub(delta int) {
 	m.scrubOffset += delta
 	m.clampScrub()
 	m.syncTable()
+	m.reselectFinding()
 }
 
 func (m *AppModel) renderFilterText() string {
@@ -764,26 +763,28 @@ func (m *AppModel) clampEventsScroll() {
 	}
 }
 
-// refreshFindings re-runs the host analysis on the newest snapshot. Called
-// once per poll (not per frame), so the Findings tab is free to render.
-func (m *AppModel) refreshFindings() {
-	latest := m.buf.GetLatest()
-	if latest == nil {
-		return
+// shownReport returns the findings for the moment on screen: the scrubbed
+// snapshot's while paused, otherwise the newest poll's. at is the time to
+// measure how long each finding has been active against.
+func (m *AppModel) shownReport() (rep findings.Report, at time.Time) {
+	if m.paused {
+		if snap := m.viewSnapshot(); snap != nil {
+			if rep, ok := m.sess.ReportFor(snap.Timestamp); ok {
+				return rep, snap.Timestamp
+			}
+		}
 	}
-	rep := findings.Analyze(findings.Input{
-		Conns:        latest.Conns,
-		Sys:          m.sysCur,
-		SysPrev:      m.sysPrev,
-		Sysctl:       m.sysctl,
-		Interval:     poller.PollInterval,
-		SSFilter:     m.ssFilter.String(),
-		Unprivileged: m.unprivileged,
-	})
-	m.tracker.Update(rep.Findings, time.Now())
-	m.report = rep
-	m.reportAt = time.Now()
-	// Keep the selection on the same finding even if the ranking shifted.
+	if m.replay != "" {
+		return m.sess.Report, m.sess.ReportAt
+	}
+	return m.sess.Report, time.Now()
+}
+
+// reselectFinding keeps the Findings selection on the same finding after
+// the shown report changes (a new poll, or scrubbing), even if the ranking
+// shifted.
+func (m *AppModel) reselectFinding() {
+	rep, _ := m.shownReport()
 	sel := m.findingSel
 	for i, f := range rep.Findings {
 		if f.ID == m.findingSelID {
@@ -794,28 +795,45 @@ func (m *AppModel) refreshFindings() {
 	m.selectFinding(sel)
 }
 
+// findingsAsOf says which moment the Findings tab shows when it isn't the
+// live present: a scrubbed snapshot, or the end of a replayed recording.
+func (m *AppModel) findingsAsOf() string {
+	switch {
+	case m.paused:
+		if snap := m.viewSnapshot(); snap != nil {
+			return "as of " + snap.Timestamp.Format("15:04:05") + " (paused · [ ] step through time · space resumes)"
+		}
+	case m.replay != "" && !m.sess.ReportAt.IsZero():
+		return "as of " + m.sess.ReportAt.Format("15:04:05") + ", the end of the recording · [ ] step back through it"
+	}
+	return ""
+}
+
 // findingsStaleNote explains when the Findings report is out of date because
 // polling is failing (the report is only refreshed on a successful poll).
 func (m *AppModel) findingsStaleNote() string {
-	if m.lastError == nil || m.reportAt.IsZero() || time.Since(m.reportAt) < 2*poller.PollInterval {
+	at := m.sess.ReportAt
+	if m.replay != "" || m.sess.LastErr == nil || at.IsZero() || time.Since(at) < 2*poller.PollInterval {
 		return ""
 	}
-	return fmt.Sprintf("analysis is from %s — polling is failing: %v", m.reportAt.Format("15:04:05"), m.lastError)
+	return fmt.Sprintf("analysis is from %s — polling is failing: %v", at.Format("15:04:05"), m.sess.LastErr)
 }
 
 // selectFinding moves the Findings selection, clamped to the list.
 func (m *AppModel) selectFinding(i int) {
-	n := len(m.report.Findings)
+	rep, _ := m.shownReport()
+	n := len(rep.Findings)
 	m.findingSel = max(0, min(i, n-1))
 	m.findingSelID = ""
 	if n > 0 {
-		m.findingSelID = m.report.Findings[m.findingSel].ID
+		m.findingSelID = rep.Findings[m.findingSel].ID
 	}
 }
 
 func (m *AppModel) selectedFinding() *findings.Finding {
-	if m.findingSel < len(m.report.Findings) {
-		return &m.report.Findings[m.findingSel]
+	rep, _ := m.shownReport()
+	if m.findingSel < len(rep.Findings) {
+		return &rep.Findings[m.findingSel]
 	}
 	return nil
 }
@@ -949,13 +967,13 @@ func (m *AppModel) renderFooter() string {
 			Padding(0, 1).
 			Render(m.statusMsg)
 	}
-	if m.lastError != nil {
+	if m.sess.LastErr != nil && m.replay == "" {
 		return lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#000")).
 			Background(lipgloss.Color("#ff6b6b")).
 			Bold(true).
 			Padding(0, 1).
-			Render("ss error: " + m.lastError.Error() + "  (data may be stale)")
+			Render("ss error: " + m.sess.LastErr.Error() + "  (data may be stale)")
 	}
 	snap := m.buf.GetLatest()
 	total := 0
@@ -970,9 +988,19 @@ func (m *AppModel) renderFooter() string {
 		parts = append(parts, fmt.Sprintf("%d matched", filtered))
 	}
 	parts = append(parts, fmt.Sprintf("snapshots: %d", m.buf.Count()))
-	parts = append(parts, "updated: "+ui.RenderTimeAgo(m.buf.LastUpdate()))
-	if m.ssFilter.Active() {
-		parts = append(parts, "ss filter: "+m.ssFilter.String())
+	if m.replay != "" {
+		parts = append(parts, "replay: "+m.replay)
+		if first := m.buf.SnapshotFromEnd(m.buf.Count() - 1); first != nil {
+			parts = append(parts, first.Timestamp.Format("2006-01-02 15:04:05")+" – "+snap.Timestamp.Format("15:04:05"))
+		}
+	} else {
+		parts = append(parts, "updated: "+ui.RenderTimeAgo(m.buf.LastUpdate()))
+	}
+	if m.rec != nil {
+		parts = append(parts, "● recording")
+	}
+	if m.sess.SSFilter != "" {
+		parts = append(parts, "ss filter: "+m.sess.SSFilter)
 	}
 
 	// Truncate with an ellipsis so a long --ss-filter visibly continues
@@ -1001,53 +1029,91 @@ func renderFilterInput(buf string, pos int) string {
 var version = "dev"
 
 func main() {
-	var (
-		interval   = flag.Duration("interval", poller.PollInterval, "poll cadence (e.g. 1s, 500ms); minimum 100ms")
-		filterExpr = flag.String("filter", "", "initial filter expression (same syntax as the `/` prompt)")
-		showListen = flag.Bool("show-listen", false, "show LISTEN sockets at startup (hidden by default)")
-		resolve    = flag.Bool("resolve", false, "resolve peer addresses to hostnames (reverse DNS) at startup")
-		ssFilter   = flag.String("ss-filter", "", "filter passed to ss itself, e.g. 'dport = :443' or 'state established ( dst 10.0.0.0/8 )'; non-matching sockets aren't collected at all (see ss(8) FILTER)")
-		showVer    = flag.Bool("version", false, "print version and exit")
-	)
-	flag.Parse()
-
-	if *showVer {
-		fmt.Printf("sstui %s\n", version)
-		return
+	if len(os.Args) > 1 {
+		if cmd, ok := subcommands[os.Args[1]]; ok {
+			os.Exit(cmd(os.Args[2:]))
+		}
 	}
+	os.Exit(runTUI(os.Args[1:]))
+}
 
-	if *interval < 100*time.Millisecond {
-		fmt.Fprintf(os.Stderr, "interval too small (%s); minimum is 100ms\n", *interval)
-		os.Exit(2)
-	}
-	poller.SetInterval(*interval)
+// tuiFlags are the display options shared by the live TUI and replay.
+type tuiFlags struct {
+	filterExpr *string
+	showListen *bool
+	resolve    *bool
+}
 
-	ssf, err := parser.ParseSSFilter(*ssFilter)
-	if err == nil {
-		err = parser.CheckSSFilter(ssf)
+func addTUIFlags(fs *flag.FlagSet) tuiFlags {
+	return tuiFlags{
+		filterExpr: fs.String("filter", "", "initial filter expression (same syntax as the `/` prompt)"),
+		showListen: fs.Bool("show-listen", false, "show LISTEN sockets at startup (hidden by default)"),
+		resolve:    fs.Bool("resolve", false, "resolve peer addresses to hostnames (reverse DNS) at startup"),
 	}
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(2)
-	}
+}
 
-	app := NewApp()
-	app.ssFilter = ssf
-	app.unprivileged = os.Geteuid() != 0
-	if *showListen {
+// apply sets the display options on the app.
+func (t tuiFlags) apply(app *AppModel) {
+	if *t.showListen {
 		app.filter.HideListen = false
 	}
-	if *resolve {
+	if *t.resolve {
 		ui.SetResolveDNS(true)
 	}
-	if *filterExpr != "" {
-		app.filter.SetQuery(*filterExpr)
+	if *t.filterExpr != "" {
+		app.filter.SetQuery(*t.filterExpr)
 		app.table.InvalidateCache()
+	}
+}
+
+// runTUI runs the interactive TUI on the live host.
+func runTUI(args []string) int {
+	fs := flag.NewFlagSet("sstui", flag.ContinueOnError)
+	fs.Usage = func() { usage(fs) }
+	live := addLiveFlags(fs)
+	disp := addTUIFlags(fs)
+	record := fs.String("record", "", "also record every poll to `FILE` (gzip if it ends in .gz) for replay or report later")
+	showVer := fs.Bool("version", false, "print version and exit")
+	rest, err := parseArgs(fs, args)
+	if err != nil {
+		return parseExit(err, 2)
+	}
+	if *showVer {
+		fmt.Printf("sstui %s\n", version)
+		return 0
+	}
+	if len(rest) > 0 {
+		fmt.Fprintf(os.Stderr, "sstui: unexpected argument %q (commands: check, record, replay, report)\n", rest[0])
+		return 2
+	}
+	ssf, err := live.setup()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+
+	app := NewApp(session.New(ssf.String(), os.Geteuid() != 0))
+	app.ssFilter = ssf
+	disp.apply(app)
+	if *record != "" {
+		rec, err := session.Create(*record, session.NewHeader(version, ssf.String(), app.sess.Unprivileged))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "sstui:", err)
+			return 1
+		}
+		app.rec = rec
+		defer func() {
+			if app.rec != nil {
+				app.rec.Close()
+				fmt.Fprintf(os.Stderr, "recorded to %s (replay with: sstui replay %s)\n", *record, *record)
+			}
+		}()
 	}
 
 	p := tea.NewProgram(app, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
+	return 0
 }

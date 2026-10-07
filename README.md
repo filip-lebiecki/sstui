@@ -28,15 +28,16 @@ every kernel metric is one key press away.
 8. [Keybindings](#keybindings)
 9. [Filtering](#filtering)
 10. [Export](#export)
-11. [Common workflows](#common-workflows)
-12. [Signals reference](#signals-reference)
-13. [Metrics reference](#metrics-reference)
-14. [Performance footprint](#performance-footprint)
-15. [Troubleshooting / FAQ](#troubleshooting--faq)
-16. [Limitations](#limitations)
-17. [Architecture](#architecture)
-18. [Development](#development)
-19. [License](#license)
+11. [Headless: check, record, replay, report](#headless-check-record-replay-report)
+12. [Common workflows](#common-workflows)
+13. [Signals reference](#signals-reference)
+14. [Metrics reference](#metrics-reference)
+15. [Performance footprint](#performance-footprint)
+16. [Troubleshooting / FAQ](#troubleshooting--faq)
+17. [Limitations](#limitations)
+18. [Architecture](#architecture)
+19. [Development](#development)
+20. [License](#license)
 
 ---
 
@@ -83,6 +84,11 @@ What you get out of the box:
 - **Snapshot/buffer export** to JSON (history) and CSV (current snapshot)
   for offline analysis with jq, pandas, or a spreadsheet; runs in the
   background so the UI never freezes.
+- **Headless mode** with the same analysis: `sstui check` for scripts and
+  monitoring (Nagios-style exit codes, text or JSON), `sstui record` /
+  `sstui replay` to capture a host and step through it later on another
+  machine, and `sstui report` for a markdown incident summary to paste
+  into a ticket.
 
 ---
 
@@ -127,7 +133,8 @@ human-paced triage:
 | **Time-series view** per connection           | ✗                | ✓ bar-graph sparklines        |
 | **Event log** of signal onsets                | ✗                | ✓ Events tab                  |
 | **Filter by signal / process / address**      | ✗                | ✓                             |
-| **Export** for offline analysis               | redirect output  | ✓ JSON / CSV                  |
+| **Export** for offline analysis               | redirect output  | ✓ JSON / CSV, record + replay |
+| **Scriptable health check** (exit codes, JSON) | ✗               | ✓ `sstui check`               |
 | **System-wide rollups** (`/proc/net` counters, overflows, port exhaustion) | ✗  | ✓ System tab                |
 
 Compared to `iftop` / `nethogs` / `bmon`: those are byte-rate views.
@@ -174,11 +181,16 @@ Command-line flags:
 | `--show-listen`  | off     | Show LISTEN sockets at startup (hidden by default).      |
 | `--resolve`      | off     | Resolve peer/local addresses to hostnames (reverse DNS). |
 | `--ss-filter`    | (none)  | Filter passed to `ss` itself, e.g. `--ss-filter 'dport = :443'`. Non-matching sockets are never collected — see [Filtering at the source](#filtering-at-the-source). |
+| `--record FILE`  | (none)  | Also record every poll to `FILE` while you watch (gzip if it ends in `.gz`); open it later with `sstui replay FILE`. |
 | `--version`      |         | Print version and exit.                                  |
 
 ```bash
 ./sstui --interval 1s --filter 'proc=nginx or dport=443' --show-listen
 ```
+
+Without the TUI, `sstui check`, `record`, `replay` and `report` run the
+same analysis from scripts — see
+[Headless](#headless-check-record-replay-report).
 
 Requirements:
 
@@ -267,7 +279,9 @@ they affect. The selected finding expands to show:
 sockets, `c` copies the suggested command to the clipboard (OSC 52 — works
 over SSH and in tmux with clipboard passthrough). Each finding shows how
 long it has been active. A pill in the header (`✖ 2 crit · 1 warn`) keeps
-the count visible from every tab.
+the count visible from every tab. While paused (`Space`, or scrubbing with
+`[` `]`), Findings and the pill show that moment rather than the present,
+so you can step back to see what was wrong when.
 
 | Finding | Triggered by | Typical recommendation |
 |---|---|---|
@@ -395,7 +409,7 @@ Accept queue / SYN, Loss / retransmit, Buffer pressure / OFO, and UDP.
 |----------------|------------------------------------------------------------|
 | `1`–`9`        | Switch tabs (Findings, Live, Detail, Socket, Overview, Top, Perf, Events, System) |
 | `Tab` / `S-Tab`| Next / previous tab                                        |
-| `Space`        | Pause / resume — freeze the Live table for inspection       |
+| `Space`        | Pause / resume — freeze the Live table and Findings for inspection |
 | `[` / `]`      | Scrub back / forward one snapshot (auto-pauses)             |
 | `{` / `}`      | Scrub back / forward ten snapshots                         |
 | `j` / `↓`      | Next finding / row / scroll down (Events)                  |
@@ -496,6 +510,66 @@ A green status line at the bottom confirms the path and row/snapshot count.
 
 ---
 
+## Headless: check, record, replay, report
+
+The same analysis runs without the TUI. Each command takes `-h`, and flags
+can go before or after the file name.
+
+```bash
+sudo sstui check                      # watch 4s, print findings, exit 0/1/2/3
+sudo sstui check --json --duration 10s
+sudo sstui record -o web-1.jsonl.gz   # until Ctrl-C (or --duration 30m)
+sstui replay web-1.jsonl.gz           # step through it in the TUI, anywhere
+sstui report web-1.jsonl.gz -o incident.md
+sudo sstui report --duration 1m       # watch live for a minute, then write the report
+```
+
+| Command | What it does |
+|---|---|
+| `check [FILE]` | Watches the host for `--duration` (default 4s, so there are deltas to compare), or analyses a recording, then prints each finding with its evidence and next steps. A finding counts if it showed up in any poll; each one says whether it was still active at the end. `--json` prints one JSON document instead. |
+| `record` | Saves every poll to a file (default `sstui-HOST-TIME.jsonl.gz`) until Ctrl-C, SIGTERM, the SSH session dropping, or `--duration`. Prints findings as they appear and clear. `sstui --record FILE` records while you use the TUI. |
+| `replay FILE` | Opens a recording in the TUI at its end. `[` `]` (or `{` `}` ×10) step through it, and every tab, Findings included, shows that moment. Keeps the last 1500 polls of a longer recording. |
+| `report [FILE]` | Writes markdown: a summary table of every finding (first seen, last seen, how often, still active?), each finding in full with commands, the host counters that moved, the sockets at the end, and the kernel settings. Analyses a recording, or watches live for `--duration` (default 30s). `-o FILE` writes to a file. |
+
+**Exit codes** (`check`) follow the Nagios plugin convention, so it drops
+into monitoring agents and cron as is: `0` OK, `1` warning, `2` critical,
+`3` unknown (bad arguments, `ss` failing, an unreadable recording). The
+first line is a one-line verdict:
+
+```
+CRITICAL: 1 critical — web-1, 4s (3 polls), 812 sockets (640 established), host retransmits 0.12%
+
+✖ CRIT  nginx (pid 812) → 10.0.0.5:5432: 37 connections stalled — peer not reading (zero window)
+        active · seen in 3 of 3 polls, 14:02:07–14:02:11
+        The receiver's buffer is full because its application stopped reading, …
+        • 37 sockets · 41.2 MB waiting in Send-Q
+        → See what its threads are doing
+          $ top -H -p 812
+        sockets: sstui --filter 'signal=ZERO_WIN pid=812 peer==10.0.0.5 dport=5432'
+```
+
+Colour is used only on a terminal, and text is wrapped only to a
+terminal's width, so redirected output stays one line per item for
+`grep` and logs.
+
+**Recordings** are JSON lines: a header (host, kernel, sstui version, poll
+interval, `--ss-filter`, whether it ran as root), then one line per poll
+with the parsed sockets, the `/proc/net` counters, and the kernel settings
+whenever they change. Deltas, signals and findings aren't stored; replay
+recomputes them, so a newer sstui reads an old recording with its newer
+rules. Names ending in `.gz` are gzip-compressed (roughly 100–200 KB per
+1000 sockets per poll); either way `zcat | jq` works. Each poll is flushed
+as it's written, so a recorder killed with `kill -9` still leaves every
+complete poll readable (sstui notes that the file wasn't closed). Files
+are created mode `0600`: a recording made with sudo names every socket's
+process, which `ss` hides from other users.
+
+A finding's "sockets" hint for a recording is a replay command
+(`sstui replay --filter '…' FILE`), not the live TUI, which would show
+the sockets of whatever machine you run it on.
+
+---
+
 ## Common workflows
 
 ### "Something's wrong with this box — where do I start?"
@@ -556,13 +630,23 @@ A green status line at the bottom confirms the path and row/snapshot count.
 
 ### "Capture state for a bug report"
 
-1. Get to the right state in the UI.
-2. Press `e` — writes `./ss-stats-<ts>.json` with the full ring buffer.
-3. Or `E` for a CSV of the current snapshot.
-4. Attach to the ticket; analyze offline with `jq` / `pandas` /
-   `csvkit`. The JSON carries every parsed field for the latest snapshot
-   and the history fields (RTT, cwnd, queues, rates, signals) for every
-   earlier one.
+1. `sudo sstui record -o incident.jsonl.gz` on the server while the
+   problem happens (or `sudo sstui --record incident.jsonl.gz` to watch at
+   the same time). Ctrl-C when you have it.
+2. `sstui report incident.jsonl.gz -o incident.md` and paste the markdown
+   into the ticket; attach the recording.
+3. Whoever picks it up runs `sstui replay incident.jsonl.gz` on their own
+   machine and steps through the incident in the TUI.
+4. For spreadsheets or pandas, `e` / `E` in the TUI still export the ring
+   buffer as JSON or the current snapshot as CSV.
+
+### "Alert me when this box has a network problem"
+
+```bash
+# cron, a monitoring agent, or a health check: exit 2 means critical
+sudo sstui check --duration 10s || logger -t sstui "network check: exit $?"
+sudo sstui check --json | jq '.findings[] | select(.active) | .title'
+```
 
 ### "What happened on this host in the last hour?"
 
@@ -828,6 +912,13 @@ ss -atunpeimOH ►│ parser  │──► []*model.Connection
 - **`findings/`** — turns signals, host counters and sysctls into ranked
   host-level findings with evidence and recommendations. Pure: input in,
   report out, once per poll; a tracker dates each finding.
+- **`session/`** — the pipeline the TUI and the headless commands share:
+  `Ingest` takes a poll (live, or read back from a recording), adds it to
+  the ring buffer, rolls the host counters, runs the findings and keeps
+  each snapshot's report so a paused view shows that moment. Also the
+  recording format (`Recorder` / `Reader`) and the `Timeline` that
+  summarises findings across a window for `check` and `report`.
+- **`headless/`** — renders a timeline as text, JSON or markdown.
 - **`ui/`** — pure bubbletea + lipgloss. One file per tab. Reads only
   from `poller.Buffer` and the findings report; never mutates state.
 
@@ -921,9 +1012,14 @@ colors (`TERM=xterm-256color` or better; modern SSH clients usually do
 this fine).
 
 **Q. Can I record a session and replay it?**
-Press `e` to dump the entire ring buffer as JSON. There's no replay UI
-yet, but the JSON has every field — feeding it back into a future
-replay mode is straightforward (the classifier is deterministic).
+Yes: `sudo sstui record -o FILE` (or `sstui --record FILE` while you
+watch), then `sstui replay FILE` on any machine, or `sstui report FILE`
+for a markdown summary. See [Headless](#headless-check-record-replay-report).
+
+**Q. Replay says the recording "wasn't closed cleanly".**
+The recorder was killed before it could finish the file (`kill -9`, OOM,
+power loss). Ctrl-C, SIGTERM and a dropped SSH session all close it
+properly. Every poll written before that point is still read.
 
 **Q. How do I add a new signal?**
 1. Add the constant + label to `model/signal.go`.
@@ -977,8 +1073,11 @@ findings/     host-level findings + recommendations (Findings tab)
 model/        Connection + Signal data types
 parser/       ss(8) tokenizer and subprocess driver
 poller/       ring buffer, delta computation, export (JSON/CSV)
+session/      poll → buffer → findings pipeline, recordings, timelines
+headless/     check / report output (text, JSON, markdown)
 ui/           bubbletea views, one file per tab
 main.go       AppModel: keybinds, scroll state, render dispatch
+commands.go   check / record / replay / report subcommands
 ```
 
 Build & run:
@@ -997,14 +1096,15 @@ go test -race ./...
 
 Tests cover the parser (against captured `ss` output), classifier rules,
 findings rules (including that every finding's Live filter selects exactly
-its sockets), the ring buffer and history samples, and the app's key flows
-end to end. A few parser tests exercise the real `ss` binary and skip when
-it isn't installed.
+its sockets), the ring buffer and history samples, recordings (round trip,
+files cut off mid-write), the check/report output, and the app's key flows
+end to end, including replaying a recording. A few parser tests exercise
+the real `ss` binary and skip when it isn't installed.
 
 Release binaries are built static with the version stamped in:
 
 ```bash
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w -X main.version=v1.2.0" -o dist/sstui-linux-amd64 .
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w -X main.version=v1.2.1" -o dist/sstui-linux-amd64 .
 ```
 
 Coding conventions:
@@ -1027,8 +1127,6 @@ Contributions especially welcome for:
 - Scrolling in Detail / Socket / Overview / Top / Perf.
 - More golden-file parser tests against captured ss output from
   different iproute2 / kernel versions.
-- A replay mode that takes the exported JSON and feeds it through the
-  classifier.
 
 ---
 

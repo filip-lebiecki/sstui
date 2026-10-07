@@ -65,6 +65,9 @@ type Input struct {
 	// (ephemeral ports, TIME-WAIT storms, CLOSE-WAIT leaks) see a partial
 	// picture; the report carries it so the UI can say so.
 	SSFilter string
+	// Unprivileged is set when sstui isn't running as root: ss then only
+	// reports process names for the current user's sockets.
+	Unprivileged bool
 }
 
 // Report is the result of one analysis pass.
@@ -78,6 +81,9 @@ type Report struct {
 	// SSFilter echoes Input.SSFilter: when non-empty, socket-based findings
 	// cover only sockets matching it (host counters stay host-wide).
 	SSFilter string
+	// HiddenProcs counts sockets whose owning process ss couldn't name
+	// because sstui isn't root (0 when running as root).
+	HiddenProcs int
 }
 
 // Crit and Warn count findings by severity.
@@ -113,6 +119,9 @@ func Analyze(in Input) Report {
 	for _, c := range in.Conns {
 		if c.State == "ESTAB" {
 			rep.Estab++
+		}
+		if in.Unprivileged && procHidden(c) {
+			rep.HiddenProcs++
 		}
 	}
 	if pct, ok := a.retransPct(); ok {
@@ -237,9 +246,20 @@ func endpoint(addr, port string) string {
 	return addr + ":" + port
 }
 
-// procLabel names the process owning c ("nginx (pid 812)").
-func procLabel(c *model.Connection) string {
+// procHidden reports whether c has no process info although some process
+// holds it open. Sockets with no file (inode 0: TIME-WAIT, SYN-RECV, and
+// orphans the app already closed) belong to no process, even for root.
+func procHidden(c *model.Connection) bool {
+	return c.Process == nil && c.Inode != nil && *c.Inode != "0"
+}
+
+// procLabel names the process owning c ("nginx (pid 812)"). Without root,
+// other users' sockets have no process info, so the label says how to get it.
+func (a *analysis) procLabel(c *model.Connection) string {
 	if c.Process == nil {
+		if a.in.Unprivileged && procHidden(c) {
+			return "unknown process (run with sudo to see it)"
+		}
 		return "unknown process"
 	}
 	if c.PID != nil {

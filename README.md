@@ -50,8 +50,10 @@ sparklines — is rendered from that buffer. Hit `Space` to freeze the Live
 table and `[` / `]` to scrub back and forward through that history, so you
 can replay exactly how a connection went bad instead of only seeing "now".
 
-There's no agent, no daemon, no setuid binary. Just `ss`. Run it as the
-user whose connections you want to see, or with sudo to see everyone's.
+There's no agent, no daemon, no setuid binary. Just `ss`. Without root you
+still see every socket, but only your own sockets show which process owns
+them. **Run it with `sudo` to see process names for every socket** (see
+[Permissions](#permissions-what-you-see-and-as-whom)).
 
 What you get out of the box:
 
@@ -155,8 +157,13 @@ from source:
 git clone https://github.com/filip-lebiecki/sstui
 cd sstui
 go build -ldflags "-X main.version=$(git describe --tags)" .
-./sstui
+sudo ./sstui
 ```
+
+> **Run it with `sudo`.** It works as a normal user, but then `ss` can only
+> name the process for sockets you own. Other users' sockets (nginx,
+> postgres, …) show `-` in the Process column, and findings call the owner
+> "unknown process". The Findings tab tells you how many sockets that hides.
 
 Command-line flags:
 
@@ -191,24 +198,22 @@ RHEL/Fedora: `dnf install iproute`.
 `ss` is the only privileged operation sstui performs, and sstui doesn't
 elevate on its own.
 
-- **Run as your user**: you see all sockets system-wide, but the
-  `users:(("process",pid=,fd=))` block — process name and PID — is
-  only populated for sockets your user owns. Other users' sockets show
-  `Process: -` and no PID.
-- **Run as root (or via `sudo sstui`)**: process names and PIDs are
-  shown for every socket. Inode-based connection tracking is also more
-  reliable, which improves the 4-tuple-reuse detection.
+- **Run as your user**: you see all sockets system-wide, with full TCP
+  metrics, but the `users:(("process",pid=,fd=))` block (process name and
+  PID) is only filled in for sockets your user owns. Other users' sockets
+  show `Process: -` and no PID, findings name their owner as "unknown
+  process (run with sudo to see it)", and the Findings tab shows a
+  "not root: process names hidden for N sockets" note.
+- **Run as root (`sudo sstui`)**: process names and PIDs are shown for
+  every socket. This is the recommended way to run it.
 - **No CAP_NET_ADMIN required.** sstui doesn't touch netlink directly,
   doesn't open raw sockets, doesn't load BPF.
 
-If you can't or don't want to run as root, an alternative is granting
-`ss` the `cap_net_admin` file capability:
-
-```bash
-sudo setcap cap_net_admin+ep /usr/sbin/ss
-```
-
-…which makes process info visible without sudo. Verify with `getcap`.
+Why root: `ss` finds a socket's process by reading every `/proc/<pid>/fd`
+directory, and the kernel only lets you read another user's with
+`CAP_SYS_PTRACE`. Giving `ss` that capability (`setcap`) would let any
+local user inspect every process's open files, and a package update
+silently removes it, so `sudo` is the better option.
 
 ---
 
@@ -865,8 +870,12 @@ snapshot is independent, so shrinking the ring is safe.
 ## Troubleshooting / FAQ
 
 **Q. Process names are missing for half my connections.**
-Run as root (or `sudo sstui`), or grant `ss` `cap_net_admin` (see
-[Permissions](#permissions-what-you-see-and-as-whom)).
+You're not running as root, so `ss` can only name the process for your own
+sockets. Run `sudo sstui` (see
+[Permissions](#permissions-what-you-see-and-as-whom)). Some sockets
+never have a process, even as root: TIME-WAIT, SYN-RECV, and connections
+the app has already closed that the kernel is still finishing (FIN-WAIT,
+LAST-ACK). sstui doesn't count those as hidden.
 
 **Q. The footer shows `ss error: ... (data may be stale)` in red.**
 `ss` failed this poll. The previous snapshot is still visible, but it's

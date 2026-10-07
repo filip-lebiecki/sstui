@@ -51,7 +51,7 @@ func ruleZeroWindow(a *analysis) {
 		f := Finding{
 			ID:       "zero_window|" + g.key,
 			Severity: 2,
-			Title:    fmt.Sprintf("%s → %s: %s stalled — peer not reading (zero window)", procLabel(c0), peer, plural(len(g.conns), "connection")),
+			Title:    fmt.Sprintf("%s → %s: %s stalled — peer not reading (zero window)", a.procLabel(c0), peer, plural(len(g.conns), "connection")),
 			Detail:   "The receiver's buffer is full because its application stopped reading, so it advertises a zero window and our data piles up unsent.",
 			Evidence: []string{fmt.Sprintf("%s · %s waiting in Send-Q", plural(len(g.conns), "socket"), humanBytes(float64(queued)))},
 			Filter:   filterJoin("signal=ZERO_WIN", procFilter(c0), "peer=="+c0.PeerAddr, "dport="+c0.PeerPort),
@@ -61,8 +61,8 @@ func ruleZeroWindow(a *analysis) {
 			f.Evidence = append(f.Evidence, fmt.Sprint(s.Value))
 		}
 		if rcv := a.localPeer(c0); rcv != nil {
-			f.Evidence = append(f.Evidence, fmt.Sprintf("receiver is %s on this host (Recv-Q %s)", procLabel(rcv), humanBytes(float64(deref(rcv.RecvQ)))))
-			f.Actions = append(f.Actions, Action{Text: fmt.Sprintf("Find out why %s stopped reading: a blocked or deadlocked thread, a GC pause, or CPU starvation", procLabel(rcv))})
+			f.Evidence = append(f.Evidence, fmt.Sprintf("receiver is %s on this host (Recv-Q %s)", a.procLabel(rcv), humanBytes(float64(deref(rcv.RecvQ)))))
+			f.Actions = append(f.Actions, Action{Text: fmt.Sprintf("Find out why %s stopped reading: a blocked or deadlocked thread, a GC pause, or CPU starvation", a.procLabel(rcv))})
 			if rcv.PID != nil {
 				f.Actions = append(f.Actions, Action{Text: "See what its threads are doing", Command: fmt.Sprintf("top -H -p %d", *rcv.PID)})
 			}
@@ -101,7 +101,7 @@ func ruleRecvBacklog(a *analysis) {
 		f := Finding{
 			ID:       "recv_backlog|" + g.key,
 			Severity: g.sev,
-			Title:    fmt.Sprintf("%s isn't reading fast enough: %s backed up", procLabel(c0), plural(len(g.conns), "socket")),
+			Title:    fmt.Sprintf("%s isn't reading fast enough: %s backed up", a.procLabel(c0), plural(len(g.conns), "socket")),
 			Detail:   "Data arrives faster than the application reads it; once a socket's receive buffer fills, the kernel drops (UDP) or throttles (TCP) the sender.",
 			Evidence: []string{fmt.Sprintf("%s waiting in Recv-Q", humanBytes(float64(queued)))},
 			// Same exclusion as the grouping: DROPS counts here unless it
@@ -163,7 +163,7 @@ func ruleListenQueue(a *analysis) {
 		f := Finding{
 			ID:         "listen_queue|" + g.key,
 			Severity:   g.sev,
-			Title:      fmt.Sprintf("Accept queue full on :%s (%s) — new connections are being dropped", c0.LocalPort, procLabel(c0)),
+			Title:      fmt.Sprintf("Accept queue full on :%s (%s) — new connections are being dropped", c0.LocalPort, a.procLabel(c0)),
 			Detail:     "Clients complete the handshake but the application isn't calling accept() fast enough, so the kernel drops new SYNs or ACKs once the queue is full.",
 			Evidence:   []string{fmt.Sprintf("queue %d / %d", rq, sq)},
 			Filter:     filterJoin("state=LISTEN", "sport="+c0.LocalPort),
@@ -183,7 +183,7 @@ func ruleListenQueue(a *analysis) {
 			})
 		case ok:
 			f.Evidence = append(f.Evidence, fmt.Sprintf("the app asked for a backlog of %d (somaxconn %d isn't the limit)", sq, somax))
-			f.Actions = append(f.Actions, Action{Text: fmt.Sprintf("Raise the backlog in %s's config — e.g. nginx `listen … backlog=4096`, or the listen() argument", procLabel(c0))})
+			f.Actions = append(f.Actions, Action{Text: fmt.Sprintf("Raise the backlog in %s's config — e.g. nginx `listen … backlog=4096`, or the listen() argument", a.procLabel(c0))})
 		}
 		f.Actions = append(f.Actions, Action{Text: "A longer queue only buys time: the real fix is accepting faster (more workers, a non-blocking accept loop)"})
 		if c0.PID != nil {
@@ -203,7 +203,7 @@ func ruleSynStall(a *analysis) {
 		procs := map[string]int{}
 		for _, c := range g.conns {
 			maxTries = max(maxTries, deref(c.TimerRetrans))
-			procs[procLabel(c)]++
+			procs[a.procLabel(c)]++
 		}
 		a.add(Finding{
 			ID:       "syn_stall|" + g.key,
@@ -577,7 +577,7 @@ func ruleSndbufLimited(a *analysis) {
 		f := Finding{
 			ID:       "sndbuf|" + g.key,
 			Severity: g.sev,
-			Title:    fmt.Sprintf("%s: throughput capped by the local send buffer", procLabel(c0)),
+			Title:    fmt.Sprintf("%s: throughput capped by the local send buffer", a.procLabel(c0)),
 			Detail:   "The network could take more, but the socket's send buffer is too small to keep enough data in flight for this path.",
 			Filter:   filterJoin(procFilter(c0), "signal=SNDBUF_LIM"),
 			Count:    len(g.conns),
@@ -603,7 +603,7 @@ func ruleSndbufLimited(a *analysis) {
 			})
 		}
 		wmax, _ := a.in.Sysctl.Int("net.core.wmem_max")
-		f.Actions = append(f.Actions, Action{Text: fmt.Sprintf("If %s sets SO_SNDBUF itself, autotuning is off — remove it or raise it (also capped by net.core.wmem_max = %s)", procLabel(c0), humanBytes(float64(wmax)))})
+		f.Actions = append(f.Actions, Action{Text: fmt.Sprintf("If %s sets SO_SNDBUF itself, autotuning is off — remove it or raise it (also capped by net.core.wmem_max = %s)", a.procLabel(c0), humanBytes(float64(wmax)))})
 		a.add(f)
 	}
 }
@@ -620,7 +620,7 @@ func ruleCloseWaitLeak(a *analysis) {
 		f := Finding{
 			ID:       "close_wait|" + g.key,
 			Severity: g.sev,
-			Title:    fmt.Sprintf("%s is leaking sockets: %d stuck in CLOSE-WAIT", procLabel(c0), len(g.conns)),
+			Title:    fmt.Sprintf("%s is leaking sockets: %d stuck in CLOSE-WAIT", a.procLabel(c0), len(g.conns)),
 			Detail:   "The peers hung up, but the application never called close(). Each socket holds a file descriptor until the process runs out.",
 			Evidence: []string{"peers: " + strings.Join(topBy(peers, 3), ", ")},
 			Actions: []Action{
@@ -800,7 +800,7 @@ func ruleListenOverflowHost(a *analysis) {
 		if i == 3 {
 			break
 		}
-		names = append(names, fmt.Sprintf(":%s %s (%d/%d)", l.c.LocalPort, procLabel(l.c), deref(l.c.RecvQ), deref(l.c.SendQ)))
+		names = append(names, fmt.Sprintf(":%s %s (%d/%d)", l.c.LocalPort, a.procLabel(l.c), deref(l.c.RecvQ), deref(l.c.SendQ)))
 	}
 	if len(names) > 0 {
 		f.Evidence = append(f.Evidence, "fullest listeners: "+strings.Join(names, ", "))

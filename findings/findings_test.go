@@ -378,3 +378,34 @@ func TestReorderingDirectionAndLossCaveat(t *testing.T) {
 		t.Errorf("evidence = %q", f.Evidence)
 	}
 }
+
+func TestUnprivilegedSaysHowToSeeProcesses(t *testing.T) {
+	withIno := func(c *model.Connection, ino string) *model.Connection { c.Inode = sp(ino); return c }
+	owned := withIno(conn("ESTAB", "10.0.0.1", "8080", "10.0.0.9", "5003"), "103")
+	owned.Process, owned.PID = sp("nginx"), ip(812)
+	conns := []*model.Connection{
+		withIno(conn("CLOSE-WAIT", "10.0.0.1", "8080", "10.0.0.9", "5000", sig(model.SignalCloseWaitLeak, 1)), "100"),
+		withIno(conn("ESTAB", "10.0.0.1", "8080", "10.0.0.9", "5001"), "101"),
+		// No file, so no process even for root: TIME-WAIT and an orphan.
+		withIno(conn("TIME-WAIT", "10.0.0.1", "8080", "10.0.0.9", "5002"), "0"),
+		withIno(conn("FIN-WAIT-2", "10.0.0.1", "8080", "10.0.0.9", "5004"), "0"),
+		owned,
+	}
+
+	rep := Analyze(Input{Conns: conns, Unprivileged: true})
+	if rep.HiddenProcs != 2 {
+		t.Errorf("HiddenProcs = %d, want 2 (CLOSE-WAIT + ESTAB without a process)", rep.HiddenProcs)
+	}
+	f := byID(rep, "close_wait|")
+	if f == nil || !strings.Contains(f.Title, "run with sudo") {
+		t.Fatalf("unprivileged CLOSE-WAIT title should say to run with sudo, got %+v", f)
+	}
+
+	rep = Analyze(Input{Conns: conns})
+	if rep.HiddenProcs != 0 {
+		t.Errorf("as root HiddenProcs = %d, want 0", rep.HiddenProcs)
+	}
+	if f := byID(rep, "close_wait|"); f == nil || strings.Contains(f.Title, "sudo") {
+		t.Errorf("as root the title shouldn't mention sudo, got %+v", f)
+	}
+}

@@ -89,3 +89,21 @@ func TestRenderFindingsKeepsSelectionVisible(t *testing.T) {
 		t.Errorf("rendered %d lines into a 15-line area", lines)
 	}
 }
+
+func TestRenderFindingsNotRootNote(t *testing.T) {
+	var fs []findings.Finding
+	for n := 0; n < 30; n++ {
+		fs = append(fs, findings.Finding{ID: strconv.Itoa(n), Severity: 1, Title: "finding " + strconv.Itoa(n)})
+	}
+	rep := findings.Report{Findings: fs, HiddenProcs: 7, SSFilter: "dport = :443"}
+	out := RenderFindings(rep, 0, 200, 15, time.Now(), "polling failed")
+	if !strings.Contains(out, "process names hidden for 7 sockets") || !strings.Contains(out, "sudo") {
+		t.Errorf("missing not-root note:\n%s", out)
+	}
+	if lines := strings.Count(out, "\n") + 1; lines > 15 {
+		t.Errorf("rendered %d lines into a 15-line area", lines)
+	}
+	if out := RenderFindings(findings.Report{Findings: fs}, 0, 200, 15, time.Now(), ""); strings.Contains(out, "sudo") {
+		t.Errorf("note shown with no hidden processes:\n%s", out)
+	}
+}

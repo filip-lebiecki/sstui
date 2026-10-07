@@ -41,6 +41,12 @@ func RenderFindings(rep findings.Report, sel, width, height int, now time.Time, 
 		height--
 	}
 
+	if rep.HiddenProcs > 0 {
+		head += styleFindDim.Render(truncate(fmt.Sprintf("  not root: process names hidden for %d %s owned by other users — run with sudo to see them",
+			rep.HiddenProcs, pluralWord(rep.HiddenProcs, "socket")), width)) + "\n"
+		height--
+	}
+
 	if len(rep.Findings) == 0 {
 		return head + "\n" + renderNoFindings(rep, width)
 	}

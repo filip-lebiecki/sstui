@@ -162,6 +162,10 @@ type AppModel struct {
 	// are never collected. Fixed for the session.
 	ssFilter parser.SSFilter
 
+	// unprivileged is set when not running as root, so findings can say
+	// why process names are missing. Fixed for the session.
+	unprivileged bool
+
 	// tableSnap is the snapshot whose connections the table currently holds,
 	// so syncTable can skip redundant reloads.
 	tableSnap *poller.Snapshot
@@ -768,12 +772,13 @@ func (m *AppModel) refreshFindings() {
 		return
 	}
 	rep := findings.Analyze(findings.Input{
-		Conns:    latest.Conns,
-		Sys:      m.sysCur,
-		SysPrev:  m.sysPrev,
-		Sysctl:   m.sysctl,
-		Interval: poller.PollInterval,
-		SSFilter: m.ssFilter.String(),
+		Conns:        latest.Conns,
+		Sys:          m.sysCur,
+		SysPrev:      m.sysPrev,
+		Sysctl:       m.sysctl,
+		Interval:     poller.PollInterval,
+		SSFilter:     m.ssFilter.String(),
+		Unprivileged: m.unprivileged,
 	})
 	m.tracker.Update(rep.Findings, time.Now())
 	m.report = rep
@@ -1028,6 +1033,7 @@ func main() {
 
 	app := NewApp()
 	app.ssFilter = ssf
+	app.unprivileged = os.Geteuid() != 0
 	if *showListen {
 		app.filter.HideListen = false
 	}

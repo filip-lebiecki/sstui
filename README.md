@@ -1099,12 +1099,15 @@ go build .
 ./sstui
 ```
 
-Vet / test:
+Checks (run before committing):
 
 ```bash
-go vet ./...
-go test -race ./...
+scripts/check.sh
 ```
+
+It runs gofmt, `go mod tidy`, `go vet`, staticcheck (pinned version,
+fetched on first use) and `go test -race ./...`, and stops at the first
+failure. There is no hosted CI; this script is the gate.
 
 Tests cover the parser (against captured `ss` output), classifier rules,
 findings rules (including that every finding's Live filter selects exactly

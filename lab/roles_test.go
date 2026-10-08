@@ -35,6 +35,7 @@ const roleEnv = "SSTUI_LAB_ROLE"
 //	slowaccept ADDR N MS      listen with an accept queue of N, accept (and close)
 //	                          one connection every MS ms
 //	burst ADDR N MS           every MS ms, open N connections at once, then close them
+//	upload ADDR SIZE N        N loops each opening a connection, sending SIZE bytes, closing
 //	churn ADDR N              N loops opening a connection and closing it at once,
 //	                          as a client without connection reuse does
 //	udpsink ADDR KBPS         receive UDP datagrams, reading KBPS kilobytes/s
@@ -173,6 +174,22 @@ func runRole(args []string) error {
 			wg.Wait()
 			time.Sleep(time.Duration(num(3)) * time.Millisecond)
 		}
+	case "upload":
+		size, n := num(2), num(3)
+		for range n {
+			go func() {
+				buf := make([]byte, size)
+				for {
+					c, err := dial(arg(1))
+					if err != nil {
+						continue
+					}
+					c.Write(buf)
+					c.Close()
+				}
+			}()
+		}
+		sleepForever()
 	case "churn":
 		for range num(2) {
 			go func() {

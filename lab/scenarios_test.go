@@ -435,3 +435,18 @@ func TestPMTUBlackHoleLocal(t *testing.T) {
 	r.expect(t, "pmtu_blackhole_local", "critical")
 	r.expectNone(t, "pmtu_blackhole") // not six separate per-peer findings
 }
+
+// TestShortConnectionLoss: this host's link loses 3% of what it sends while
+// it uploads 200 KB at a time over fresh connections, eight at once. Each
+// connection lasts well under a second, too short for any one of them to
+// show steady loss, but the host as a whole keeps retransmitting. (The
+// churn also leaves hundreds of sockets in TIME-WAIT, which is reported too,
+// rightly.)
+func TestShortConnectionLoss(t *testing.T) {
+	l := newLab(t)
+	l.path(wan, wan)
+	l.lossyNIC(l.a, "3%")
+	l.start(l.b, "sink", addrB+port)
+	l.start(l.a, "upload", addrB+port, "200000", "8")
+	l.recordAndCheck(l.a, lossRecord).expect(t, "retrans_host", "warning")
+}

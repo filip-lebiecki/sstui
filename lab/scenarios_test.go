@@ -319,3 +319,18 @@ func TestSlowReader(t *testing.T) {
 	server.expect(t, "recv_backlog", "critical") // a full TCP receive queue
 	client.expect(t, "rwnd", "warning")
 }
+
+// TestSmallReceiveBuffer: the receiver reads everything at once, but its
+// receive buffer is capped at 128 KB (tcp_rmem), too small for a 100 Mbit/s,
+// 40 ms path (a bandwidth-delay product of 500 KB): the window holds the
+// sender to a few MB/s while the link sits mostly idle.
+func TestSmallReceiveBuffer(t *testing.T) {
+	l := newLab(t)
+	l.path(wan, wan)
+	l.sysctl(l.b, "net.ipv4.tcp_rmem=4096 131072 131072")
+	l.start(l.b, "sink", addrB+port)
+	l.start(l.a, "send", addrB+port)
+	client, server := l.recordBoth(8 * time.Second)
+	client.expect(t, "rwnd", "warning")
+	server.expectNone(t, "recv_backlog") // the reader keeps up
+}

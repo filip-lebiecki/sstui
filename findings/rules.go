@@ -489,12 +489,18 @@ func retransRateEvidence(a *analysis) []string {
 // windowRetransEvidence is the host-wide retransmit count behind
 // ruleRetransHost's verdict, over the same window.
 func windowRetransEvidence(a *analysis) []string {
-	out, ok := a.in.Sys.Delta(a.in.SysWindow, "Tcp:OutSegs")
+	ss := a.in.SysSlots
+	if len(ss) < 2 {
+		return nil
+	}
+	out, ok := ss[len(ss)-1].Delta(ss[0], "Tcp:OutSegs")
 	if !ok || out <= 0 {
 		return nil
 	}
-	re, _ := a.in.Sys.Delta(a.in.SysWindow, "Tcp:RetransSegs")
-	return []string{fmt.Sprintf("host-wide: %d of %d TCP segments retransmitted over the last %s", re, out, poller.SlotWindow().Round(time.Second))}
+	re, _ := ss[len(ss)-1].Delta(ss[0], "Tcp:RetransSegs")
+	_, steady, slots, _ := a.windowRetransPct()
+	return []string{fmt.Sprintf("host-wide: %d of %d TCP segments retransmitted over the last %s, in %d of %d slots",
+		re, out, poller.SlotWindow().Round(time.Second), steady, slots)}
 }
 
 func localLossActions() []Action {
@@ -1236,14 +1242,18 @@ func ruleUDPRcvbufHost(a *analysis) {
 }
 
 // ruleRetransHost: high host-wide TCP retransmit rate, over the last
-// poller.SlotWindow rather than one poll: a slow-start overshoot or a burst
-// of requests can resend a large share of one poll's segments on a healthy
-// host. Skipped only when the host-wide loss finding already covers it: a
-// single lossy peer doesn't explain a high rate across the whole host.
+// poller.SlotWindow rather than one poll, and steady: retransmits in at
+// least half of its ~2 s slots, as PATH_LOSS judges one connection. A
+// slow-start overshoot resends a large share of a second's segments on a
+// healthy host (BBR's startup: 1 in 13 segments, all in the first slot,
+// none after, enough to lift a 12 s rate past 2% now and then); loss that
+// no single connection explains keeps showing up. Skipped only when the
+// host-wide loss finding already covers it: a single lossy peer doesn't
+// explain a high rate across the whole host.
 func ruleRetransHost(a *analysis) {
-	pct, ok := a.windowRetransPct()
-	if !ok {
-		return // too little history or traffic for a meaningful rate
+	pct, steady, slots, ok := a.windowRetransPct()
+	if !ok || steady*2 < slots {
+		return // too little history or traffic, or a one-off burst
 	}
 	sev := 0
 	switch {

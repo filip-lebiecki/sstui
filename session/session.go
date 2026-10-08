@@ -69,13 +69,31 @@ type timedSys struct {
 	sys *poller.SysStat
 }
 
-// sysWindow returns the host counters from about poller.SlotWindow ago, or nil
-// while the history is shorter than that.
-func (s *Session) sysWindow(now time.Time) *poller.SysStat {
-	if len(s.sysHist) == 0 || now.Sub(s.sysHist[0].at) < poller.SlotWindow() {
+// sysSlots returns the host counters at the boundaries of slots at least
+// model.SendSlotMin long covering the last poller.SlotWindow, oldest first
+// and ending with the latest (a short tail merges into the slot before it),
+// or nil while the history is shorter than the window.
+func (s *Session) sysSlots(now time.Time) []*poller.SysStat {
+	if len(s.sysHist) < 2 || now.Sub(s.sysHist[0].at) < poller.SlotWindow() {
 		return nil
 	}
-	return s.sysHist[0].sys
+	bounds := []timedSys{s.sysHist[0]}
+	for _, h := range s.sysHist[1:] {
+		if h.at.Sub(bounds[len(bounds)-1].at) >= model.SendSlotMin {
+			bounds = append(bounds, h)
+		}
+	}
+	if latest := s.sysHist[len(s.sysHist)-1]; bounds[len(bounds)-1].sys != latest.sys {
+		if len(bounds) > 1 {
+			bounds = bounds[:len(bounds)-1] // merge the short tail
+		}
+		bounds = append(bounds, latest)
+	}
+	out := make([]*poller.SysStat, len(bounds))
+	for i, b := range bounds {
+		out[i] = b.sys
+	}
+	return out
 }
 
 type timedReport struct {
@@ -115,7 +133,7 @@ func (s *Session) Ingest(p *Poll) bool {
 		Conns:        s.Buf.GetLatest().Conns,
 		Sys:          s.SysCur,
 		SysPrev:      s.SysPrev,
-		SysWindow:    s.sysWindow(p.Time),
+		SysSlots:     s.sysSlots(p.Time),
 		Sysctl:       s.Sysctl,
 		Interval:     poller.PollInterval,
 		SSFilter:     s.SSFilter,

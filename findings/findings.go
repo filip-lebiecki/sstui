@@ -58,12 +58,13 @@ func (f *Finding) Command() string {
 type Input struct {
 	Conns        []*model.Connection // latest full-detail snapshot
 	Sys, SysPrev *poller.SysStat     // host counters, current and previous poll
-	// SysWindow is the host counters from about poller.SlotWindow ago, for
-	// rates that shouldn't swing with one poll; nil until that much history
-	// exists.
-	SysWindow *poller.SysStat
-	Sysctl    poller.Sysctls
-	Interval  time.Duration // poll interval, to turn counter deltas into rates
+	// SysSlots are the host counters at the boundaries of ~2 s slots over
+	// the last poller.SlotWindow, oldest first and ending with the latest,
+	// for rates that shouldn't swing with one poll; nil until that much
+	// history exists.
+	SysSlots []*poller.SysStat
+	Sysctl   poller.Sysctls
+	Interval time.Duration // poll interval, to turn counter deltas into rates
 	// SSFilter is the ss filter expression in effect ("" for none). When
 	// set, Conns is only the matching subset, so socket-count checks
 	// (ephemeral ports, TIME-WAIT storms, CLOSE-WAIT leaks) see a partial
@@ -145,9 +146,20 @@ func (a *analysis) retransPct() (float64, bool) {
 	return retransPct(a.in.Sys, a.in.SysPrev)
 }
 
-// windowRetransPct is retransPct over Input.SysWindow rather than one poll.
-func (a *analysis) windowRetransPct() (float64, bool) {
-	return retransPct(a.in.Sys, a.in.SysWindow)
+// windowRetransPct is retransPct over Input.SysSlots rather than one poll,
+// with how many of its slots retransmitted anything.
+func (a *analysis) windowRetransPct() (pct float64, steady, slots int, ok bool) {
+	ss := a.in.SysSlots
+	if len(ss) < 2 {
+		return 0, 0, 0, false
+	}
+	pct, ok = retransPct(ss[len(ss)-1], ss[0])
+	for i := 1; i < len(ss); i++ {
+		if re, _ := ss[i].Delta(ss[i-1], "Tcp:RetransSegs"); re > 0 {
+			steady++
+		}
+	}
+	return pct, steady, len(ss) - 1, ok
 }
 
 func retransPct(cur, since *poller.SysStat) (float64, bool) {

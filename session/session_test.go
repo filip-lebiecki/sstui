@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -223,5 +224,46 @@ func TestTimeline(t *testing.T) {
 	c := r[1]
 	if c.Worst != 2 || c.Polls != 2 || c.Finding.Title != "crit, now milder" || !c.First.Equal(at(0)) || !c.Last.Equal(at(1)) {
 		t.Errorf("crit occurrence = %+v", c)
+	}
+}
+
+// TestSysSlots: the host counters reach findings as the boundaries of ≥2 s
+// slots over the last ~12 s, ending with the latest poll; nothing before
+// the history spans the window.
+func TestSysSlots(t *testing.T) {
+	poller.SetInterval(500 * time.Millisecond)
+	defer poller.SetInterval(2 * time.Second)
+	s := New("", false)
+	stat := func(i int) *poller.SysStat {
+		return &poller.SysStat{Counters: map[string]int64{"Tcp:OutSegs": int64(i)}}
+	}
+	ms := func(i int) time.Time { return t0.Add(time.Duration(i) * 500 * time.Millisecond) }
+	for i := 0; i < 24; i++ { // 11.5 s: short of the 12 s window
+		s.Ingest(&Poll{Time: ms(i), Sys: stat(i)})
+	}
+	if got := s.sysSlots(ms(23)); got != nil {
+		t.Fatalf("history shorter than the window: want no slots, got %d", len(got))
+	}
+	for i := 24; i < 30; i++ { // up to 14.5 s
+		s.Ingest(&Poll{Time: ms(i), Sys: stat(i)})
+	}
+	bounds := func(now time.Time) []int64 {
+		var polls []int64
+		for _, g := range s.sysSlots(now) {
+			polls = append(polls, g.Counters["Tcp:OutSegs"])
+		}
+		return polls
+	}
+	// The history starts at the last poll at least 12 s old (poll 5, at
+	// 2.5 s), with a boundary every 2 s (4 polls) from there.
+	if got, want := bounds(ms(29)), []int64{5, 9, 13, 17, 21, 25, 29}; !slices.Equal(got, want) {
+		t.Errorf("slot boundaries at polls %v, want %v", got, want)
+	}
+	// A late poll 0.25 s after poll 29 ends the window; the short tail
+	// merges into the slot before it.
+	late := ms(29).Add(250 * time.Millisecond)
+	s.Ingest(&Poll{Time: late, Sys: stat(999)})
+	if got, want := bounds(late), []int64{5, 9, 13, 17, 21, 25, 999}; !slices.Equal(got, want) {
+		t.Errorf("slot boundaries at polls %v, want %v", got, want)
 	}
 }

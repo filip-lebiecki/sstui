@@ -66,7 +66,7 @@ What you get out of the box:
   `Enter` jumps to exactly the affected sockets; `c` copies the command.
 - **Live table** of every TCP/UDP socket on the host with sortable columns,
   state-coloured fields, and an at-a-glance signal indicator per row.
-- **Automatic problem detection** through 25 named signals — retransmits,
+- **Automatic problem detection** through 26 named signals — retransmits,
   RTO storms, zero-window stalls, listen-queue overflow, ephemeral port
   exhaustion, packet reordering, CWnd collapse, and
   more. Each is tunable in one place (`classifier/classifier.go`).

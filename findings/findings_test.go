@@ -291,16 +291,16 @@ func TestRetransHostNeedsTraffic(t *testing.T) {
 	sys, prev := sysPair(
 		map[string]int64{"Tcp:OutSegs": 0, "Tcp:RetransSegs": 0},
 		map[string]int64{"Tcp:OutSegs": 10000, "Tcp:RetransSegs": 500})
-	r := Analyze(Input{Sys: sys, SysPrev: prev, SysWindow: prev, Interval: 2 * time.Second})
+	r := Analyze(Input{Sys: sys, SysPrev: prev, SysSlots: []*poller.SysStat{prev, sys}, Interval: 2 * time.Second})
 	if f := byID(r, "retrans_host"); f == nil || f.Severity != 1 || r.RetransPct != 5 {
 		t.Errorf("5%% retransmits over 10k segs should warn: %+v (pct %.1f)", f, r.RetransPct)
-	} else if !hasText(f.Evidence, "500 of 10000 TCP segments retransmitted over the last 12s") {
+	} else if !hasText(f.Evidence, "500 of 10000 TCP segments retransmitted over the last 12s, in 1 of 1 slots") {
 		t.Errorf("evidence should cover the same window as the verdict: %q", f.Evidence)
 	}
 	sys, prev = sysPair(
 		map[string]int64{"Tcp:OutSegs": 0, "Tcp:RetransSegs": 0},
 		map[string]int64{"Tcp:OutSegs": 100, "Tcp:RetransSegs": 50})
-	if byID(Analyze(Input{Sys: sys, SysPrev: prev, SysWindow: prev, Interval: 2 * time.Second}), "retrans_host") != nil {
+	if byID(Analyze(Input{Sys: sys, SysPrev: prev, SysSlots: []*poller.SysStat{prev, sys}, Interval: 2 * time.Second}), "retrans_host") != nil {
 		t.Errorf("100 segments is too little traffic for a host-wide verdict")
 	}
 }
@@ -559,7 +559,7 @@ func TestRetransHostJudgedOverWindow(t *testing.T) {
 	window := &poller.SysStat{Counters: map[string]int64{"Tcp:OutSegs": 0, "Tcp:RetransSegs": 0}}
 	prev := &poller.SysStat{Counters: map[string]int64{"Tcp:OutSegs": 95_000, "Tcp:RetransSegs": 100}}
 	sys := &poller.SysStat{Counters: map[string]int64{"Tcp:OutSegs": 100_000, "Tcp:RetransSegs": 1100}}
-	r := Analyze(Input{Sys: sys, SysPrev: prev, SysWindow: window, Interval: 2 * time.Second})
+	r := Analyze(Input{Sys: sys, SysPrev: prev, SysSlots: []*poller.SysStat{window, prev, sys}, Interval: 2 * time.Second})
 	if r.RetransPct != 20 {
 		t.Fatalf("last poll's rate = %.1f, want 20", r.RetransPct)
 	}
@@ -571,13 +571,43 @@ func TestRetransHostJudgedOverWindow(t *testing.T) {
 	}
 }
 
+// TestRetransHostNeedsSteadyLoss: BBR's startup in the lab resent 1176 of
+// its first 15k segments and nothing after, which a 12 s rate can count as
+// 2% or more; loss that keeps coming (every slot) is the host problem.
+func TestRetransHostNeedsSteadyLoss(t *testing.T) {
+	slots := func(retrans ...int64) []*poller.SysStat {
+		var out, re int64
+		ss := []*poller.SysStat{{Counters: map[string]int64{"Tcp:OutSegs": 0, "Tcp:RetransSegs": 0}}}
+		for _, r := range retrans {
+			out, re = out+8_000, re+r
+			ss = append(ss, &poller.SysStat{Counters: map[string]int64{"Tcp:OutSegs": out, "Tcp:RetransSegs": re}})
+		}
+		return ss
+	}
+	for _, tt := range []struct {
+		name string
+		ss   []*poller.SysStat
+		want bool
+	}{
+		{"startup burst, then nothing", slots(1176, 0, 0, 0, 0, 0), false},
+		{"every slot", slots(200, 200, 200, 200, 200, 200), true},
+		{"half the slots", slots(400, 0, 400, 0, 400, 0), true},
+	} {
+		n := len(tt.ss)
+		r := Analyze(Input{Sys: tt.ss[n-1], SysPrev: tt.ss[n-2], SysSlots: tt.ss, Interval: 2 * time.Second})
+		if got := byID(r, "retrans_host") != nil; got != tt.want {
+			t.Errorf("%s: retrans_host %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}
+
 // One lossy peer doesn't explain a high retransmit rate across the host.
 func TestRetransHostNotHiddenByOnePeer(t *testing.T) {
 	sys, prev := sysPair(
 		map[string]int64{"Tcp:OutSegs": 0, "Tcp:RetransSegs": 0},
 		map[string]int64{"Tcp:OutSegs": 20000, "Tcp:RetransSegs": 2400})
 	c := conn("ESTAB", "10.0.0.1", "1", "203.0.113.9", "443", sig(model.SignalRTOFiring, 2))
-	r := Analyze(Input{Conns: []*model.Connection{c}, Sys: sys, SysPrev: prev, SysWindow: prev, Interval: 2 * time.Second})
+	r := Analyze(Input{Conns: []*model.Connection{c}, Sys: sys, SysPrev: prev, SysSlots: []*poller.SysStat{prev, sys}, Interval: 2 * time.Second})
 	if byID(r, "loss|") == nil || byID(r, "retrans_host") == nil {
 		t.Errorf("want both the per-peer loss and the host-wide 12%% finding: %+v", r.Findings)
 	}

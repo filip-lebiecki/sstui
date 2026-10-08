@@ -521,6 +521,19 @@ func TestDropsExplainedByInboundLoss(t *testing.T) {
 			t.Errorf("%s: got %v, want %v", name, got, tc.want)
 		}
 	}
+
+	// No buffer-drop counter moved on the host: the drops were TCP's own
+	// checks (PAWS, duplicates), not memory filling during recovery, and
+	// Classify labels them once, as that.
+	none := false
+	c := &model.Connection{Signals: []model.Signal{drops}, DeltaRcvOOOPack: ip(30), HostBufferDrops: &none}
+	if DropsExplainedByInboundLoss(c) {
+		t.Errorf("drops with gaps but no buffer drops on the host: not loss-recovery discards")
+	}
+	c = &model.Connection{Protocol: "tcp", State: "ESTAB", DeltaSkmemD: ip(3), DeltaDataSegsIn: ip(400), DeltaRcvOOOPack: ip(30), HostBufferDrops: &none}
+	if s, ok := sigByType(Classify(c), model.SignalSocketDrops); !ok || s.Severity != 0 || s.Value != "3 by TCP's checks (PAWS, duplicates), none for want of buffer" {
+		t.Errorf("want one label, TCP's checks: %+v", s)
+	}
 }
 
 // TestPathLoss: steady loss with no queue building is path loss; bursty loss,

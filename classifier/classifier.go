@@ -82,6 +82,9 @@ func DropsExplainedByInboundLoss(c *model.Connection) bool {
 	if c.DeltaRcvOOOPack == nil || *c.DeltaRcvOOOPack == 0 {
 		return false
 	}
+	if c.HostBufferDrops != nil && !*c.HostBufferDrops {
+		return false // TCP's own discards (PAWS, duplicates), not memory: Classify says so
+	}
 	var drops, rcvQ bool
 	for _, s := range c.Signals {
 		switch s.Type {
@@ -944,7 +947,7 @@ func Classify(c *model.Connection) []model.Signal {
 		signals = append(signals, model.Signal{Type: model.SignalInboundLoss, Severity: sev, Value: v})
 	}
 
-	if DropsExplainedByInboundLoss(&model.Connection{Signals: signals, DeltaRcvOOOPack: c.DeltaRcvOOOPack}) {
+	if DropsExplainedByInboundLoss(&model.Connection{Signals: signals, DeltaRcvOOOPack: c.DeltaRcvOOOPack, HostBufferDrops: c.HostBufferDrops}) {
 		for i := range signals {
 			if signals[i].Type == model.SignalSocketDrops {
 				signals[i].Severity = 0

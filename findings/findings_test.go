@@ -347,6 +347,30 @@ func TestRecvBacklogTCPBufferAdvice(t *testing.T) {
 	}
 }
 
+// TestSndbufLimitedCause: a full buffer below tcp_wmem max means the app
+// fixed its size (SO_SNDBUF); one at the max needs a higher max.
+func TestSndbufLimitedCause(t *testing.T) {
+	wmem := poller.Sysctls{"net.ipv4.tcp_wmem": "4096 16384 4194304", "net.core.wmem_max": "212992"}
+	mk := func(tb int) *model.Connection {
+		c := conn("ESTAB", "10.0.0.1", "40000", "10.0.0.2", "5001", model.Signal{Type: model.SignalSndbufLimited, Severity: 1, Value: "buffer full, all 70 KB in flight"})
+		c.Process, c.PID, c.SendQ, c.SkmemTB, c.RTT = sp("uploader"), ip(5), ip(72_000), ip(tb), fp(40)
+		return c
+	}
+	f := byID(Analyze(Input{Conns: []*model.Connection{mk(131_072)}, Sysctl: wmem}), "sndbuf|")
+	if f == nil || !hasText(f.Evidence, "caps a connection at ≈1.7 MB/s") || !hasText(f.Evidence, "not at tcp_wmem max") || hasCommand(f, "tcp_wmem") {
+		t.Errorf("buffer below the max: want SO_SNDBUF named, no tcp_wmem advice: %+v", f)
+	}
+	f = byID(Analyze(Input{Conns: []*model.Connection{mk(4_194_304)}, Sysctl: wmem}), "sndbuf|")
+	if f == nil || !hasCommand(f, `tcp_wmem="4096 16384 8388608"`) {
+		t.Errorf("buffer at the max: want the tcp_wmem advice: %+v", f)
+	}
+	// SO_SNDBUF can exceed tcp_wmem max; raising the max wouldn't touch it.
+	f = byID(Analyze(Input{Conns: []*model.Connection{mk(8_388_608)}, Sysctl: wmem}), "sndbuf|")
+	if f == nil || hasCommand(f, "tcp_wmem") {
+		t.Errorf("buffer above the max: want SO_SNDBUF named, no tcp_wmem advice: %+v", f)
+	}
+}
+
 // TestRwndLimitedCause: a remote receiver could be a slow reader or a small
 // buffer, so the finding names both; a receiver on this host shows which.
 func TestRwndLimitedCause(t *testing.T) {

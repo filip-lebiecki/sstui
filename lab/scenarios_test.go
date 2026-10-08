@@ -334,3 +334,15 @@ func TestSmallReceiveBuffer(t *testing.T) {
 	client.expect(t, "rwnd", "warning")
 	server.expectNone(t, "recv_backlog") // the reader keeps up
 }
+
+// TestSmallSendBuffer: the sending application sets SO_SNDBUF to 64 KB,
+// which also turns off the kernel's send-buffer autotuning. The buffer holds
+// less than the path's 500 KB bandwidth-delay product, so the sender stalls
+// on its own buffer.
+func TestSmallSendBuffer(t *testing.T) {
+	l := newLab(t)
+	l.path(wan, wan)
+	l.start(l.b, "sink", addrB+port)
+	l.start(l.a, "sndbuf", addrB+port, "65536")
+	l.recordAndCheck(l.a, 8*time.Second).expect(t, "sndbuf", "warning")
+}

@@ -23,6 +23,8 @@ const roleEnv = "SSTUI_LAB_ROLE"
 //	sink ADDR                 accept connections, read everything, close on EOF
 //	send ADDR [N [CC]]        N connections (default 1) writing as fast as they can,
 //	                          with congestion control CC (default: the system's)
+//	sndbuf ADDR BYTES         one connection with SO_SNDBUF set to BYTES (which turns
+//	                          off send-buffer autotuning), writing as fast as it can
 //	stall ADDR                accept connections and never read (zero window)
 //	slowsink ADDR KBPS        accept connections and read each at KBPS kilobytes/s
 //	backlog ADDR N            listen with an accept queue of N, never accept
@@ -76,6 +78,20 @@ func runRole(args []string) error {
 			}()
 		}
 		return <-errc
+	case "sndbuf":
+		c, err := dial(arg(1))
+		if err != nil {
+			return err
+		}
+		if err := c.(*net.TCPConn).SetWriteBuffer(num(2)); err != nil {
+			return err
+		}
+		buf := make([]byte, 64<<10)
+		for {
+			if _, err := c.Write(buf); err != nil {
+				return err
+			}
+		}
 	case "slowsink":
 		rate := num(2) * 1000
 		return serve(arg(1), func(c net.Conn) {

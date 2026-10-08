@@ -703,15 +703,6 @@ func ruleRTTInflation(a *analysis) {
 	}
 }
 
-// bdpBytes estimates a connection's bandwidth-delay product from its delivery
-// rate and RTT: the in-flight data needed to keep the path full.
-func bdpBytes(c *model.Connection) (float64, bool) {
-	if c.DeliveryRate == nil || c.RTT == nil || *c.DeliveryRate <= 0 {
-		return 0, false
-	}
-	return float64(*c.DeliveryRate) / 8 * *c.RTT / 1000, true
-}
-
 // ruleRwndLimited: throughput capped by the receiver's advertised window.
 // From the sending end a receive buffer too small for the path and a slow
 // reader (whose full buffer leaves little window) look the same, so the
@@ -784,6 +775,11 @@ func ruleRwndLimited(a *analysis) {
 }
 
 // ruleSndbufLimited: throughput capped by our own send buffer, per process.
+// Autotuning grows a send buffer up to exactly tcp_wmem max, so a full one
+// at any other size is held there: the application set SO_SNDBUF, which
+// turns autotuning off (and can exceed tcp_wmem max). One at the max needs a
+// higher max. (The delivery
+// rate isn't evidence: under the cap it's the buffer divided by the RTT.)
 func ruleSndbufLimited(a *analysis) {
 	for _, g := range a.groupBySignal(procKey, model.SignalSndbufLimited) {
 		c0 := g.conns[0]
@@ -795,28 +791,32 @@ func ruleSndbufLimited(a *analysis) {
 			Filter:   filterJoin(procFilter(c0), "signal=SNDBUF_LIM"),
 			Count:    len(g.conns),
 		}
-		bdp, haveBDP := 0.0, false
-		for _, c := range g.conns {
-			if b, ok := bdpBytes(c); ok && b > bdp {
-				bdp, haveBDP = b, true
-			}
+		if s, ok := signalOf(c0, model.SignalSndbufLimited); ok {
+			f.Evidence = append(f.Evidence, fmt.Sprintf("blocked on the send buffer: %v", s.Value))
 		}
-		if haveBDP {
-			f.Evidence = append(f.Evidence, fmt.Sprintf("path needs ≈%s in flight (delivery rate × RTT)", humanBytes(bdp)))
-		}
-		if v := a.in.Sysctl.Ints("net.ipv4.tcp_wmem"); len(v) == 3 {
-			target := float64(v[2]) * 2
-			if haveBDP {
-				target = max(target, bdp*2)
+		if c0.SendQ != nil && c0.RTT != nil && *c0.RTT > 0 {
+			flight := *c0.SendQ // the send queue holds what's in flight, plus anything unsent
+			if c0.Unacked != nil && c0.MSS != nil {
+				flight = min(flight, *c0.Unacked**c0.MSS)
 			}
-			f.Evidence = append(f.Evidence, fmt.Sprintf("tcp_wmem max is %s", humanBytes(float64(v[2]))))
-			f.Actions = append(f.Actions, Action{
-				Text:    "Let autotuning grow send buffers further",
-				Command: fmt.Sprintf(`sysctl -w net.ipv4.tcp_wmem="%d %d %d"`, v[0], v[1], roundUpMB(target)),
-			})
+			f.Evidence = append(f.Evidence, fmt.Sprintf("≈%s in flight; at %.0f ms RTT that caps a connection at ≈%s/s",
+				humanBytes(float64(flight)), *c0.RTT, humanBytes(float64(flight)/(*c0.RTT/1000))))
 		}
 		wmax, _ := a.in.Sysctl.Int("net.core.wmem_max")
-		f.Actions = append(f.Actions, Action{Text: fmt.Sprintf("If %s sets SO_SNDBUF itself, autotuning is off — remove it or raise it (also capped by net.core.wmem_max = %s)", a.procLabel(c0), humanBytes(float64(wmax)))})
+		setByApp := fmt.Sprintf("If %s sets SO_SNDBUF itself, autotuning is off — remove it or raise it (also capped by net.core.wmem_max = %s)", a.procLabel(c0), humanBytes(float64(wmax)))
+		v := a.in.Sysctl.Ints("net.ipv4.tcp_wmem")
+		switch {
+		case len(v) == 3 && c0.SkmemTB != nil && *c0.SkmemTB != v[2]:
+			f.Evidence = append(f.Evidence, fmt.Sprintf("the buffer (%s) is full but not at tcp_wmem max (%s), where autotuning would take it", humanBytes(float64(*c0.SkmemTB)), humanBytes(float64(v[2]))))
+			f.Actions = append(f.Actions, Action{Text: fmt.Sprintf("%s most likely sets SO_SNDBUF, which turns autotuning off — remove it or raise it (capped by net.core.wmem_max = %s)", a.procLabel(c0), humanBytes(float64(wmax)))})
+		case len(v) == 3:
+			f.Evidence = append(f.Evidence, fmt.Sprintf("the buffer has grown to tcp_wmem max (%s)", humanBytes(float64(v[2]))))
+			f.Actions = append(f.Actions,
+				Action{Text: "Let autotuning grow send buffers further", Command: fmt.Sprintf(`sysctl -w net.ipv4.tcp_wmem="%d %d %d"`, v[0], v[1], roundUpMB(float64(v[2])*2))},
+				Action{Text: setByApp})
+		default:
+			f.Actions = append(f.Actions, Action{Text: setByApp})
+		}
 		a.add(f)
 	}
 }

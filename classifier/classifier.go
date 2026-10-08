@@ -426,6 +426,29 @@ func limitedLevel(deltaMS *float64) (int, float64) {
 	return 0, frac
 }
 
+// sendBufferCaps reports whether a sender's own send buffer holds back its
+// flight, which the kernel's sndbuf_limited time misses: with a small
+// SO_SNDBUF each ACK frees space the app refills at once, so the kernel
+// counts that as busy sending (8-32% "sndbuf limited" in the lab, with the
+// connection at a seventh of the path's rate) and flags it app-limited. The
+// structure tells instead, on this poll and the previous one: the buffer is
+// full (Send-Q at 40% of tb or more; like the receive side, the rest pays
+// per-packet overhead), everything queued is already in flight (nothing
+// waits unsent), and neither the congestion window (under 80% used) nor the
+// peer's window holds the flight back. A cwnd-limited bulk sender keeps
+// data waiting unsent; an app with little to send never fills the buffer.
+func sendBufferCaps(c *model.Connection) bool {
+	if c.SendQ == nil || c.PrevSendQ == nil || c.SkmemTB == nil || *c.SkmemTB <= 0 ||
+		c.Unacked == nil || c.MSS == nil || c.CWnd == nil || *c.CWnd <= 0 {
+		return false
+	}
+	full := func(q int) bool { return float64(q) >= 0.4*float64(*c.SkmemTB) }
+	flight := *c.Unacked * *c.MSS
+	rwndRoom := c.SndWnd == nil || flight+2**c.MSS < *c.SndWnd
+	return full(*c.SendQ) && full(*c.PrevSendQ) && *c.SendQ <= flight+2**c.MSS &&
+		float64(*c.Unacked) <= 0.8*float64(*c.CWnd) && rwndRoom
+}
+
 // IsZeroWindow reports whether the peer is advertising a zero receive window.
 // ss omits snd_wnd entirely when it is 0, so the absent field can't be told
 // apart from an old kernel that doesn't report it. A reported snd_wnd wins;
@@ -688,6 +711,9 @@ func Classify(c *model.Connection) []model.Signal {
 		if sev, frac := limitedSeverity(c.DeltaSndbufLimitedMS, c.PrevDeltaSndbufLimitedMS); sev > 0 {
 			signals = append(signals, model.Signal{Type: model.SignalSndbufLimited, Severity: sev,
 				Value: fmt.Sprintf("%.0f%% of poll", frac*100)})
+		} else if sendBufferCaps(c) {
+			signals = append(signals, model.Signal{Type: model.SignalSndbufLimited, Severity: 1,
+				Value: fmt.Sprintf("buffer full, all %d KB in flight", *c.SendQ/1024)})
 		}
 	}
 

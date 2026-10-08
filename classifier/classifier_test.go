@@ -586,3 +586,36 @@ func TestRecvQueuePressure(t *testing.T) {
 		}
 	}
 }
+
+// TestSendBufferCaps: a full send buffer with everything in flight and room
+// in both windows is SNDBUF_LIM even when the kernel's sndbuf_limited time
+// is low (TestSmallSendBuffer in the lab); a cwnd-limited sender with data
+// waiting, an app with little to send, or a peer's window holding the flight
+// back isn't.
+func TestSendBufferCaps(t *testing.T) {
+	// The lab's small-SO_SNDBUF sender: 128 KB buffer, ~72 KB queued, all of
+	// it in flight (50 segments), cwnd 112.
+	capped := func() *model.Connection {
+		return &model.Connection{Protocol: "tcp", State: "ESTAB", DeltaBytesSent: ip(900_000),
+			SendQ: ip(72_400), PrevSendQ: ip(70_000), SkmemTB: ip(131_072),
+			Unacked: ip(50), MSS: ip(1448), CWnd: ip(112), SndWnd: ip(485_376)}
+	}
+	for _, tt := range []struct {
+		name string
+		mod  func(*model.Connection)
+		want bool
+	}{
+		{"buffer full, all in flight", func(*model.Connection) {}, true},
+		{"cwnd-limited, data waiting", func(c *model.Connection) { c.SendQ, c.Unacked = ip(734_000), ip(112) }, false},
+		{"little to send", func(c *model.Connection) { c.SendQ, c.Unacked = ip(20_000), ip(14) }, false},
+		{"peer's window is the limit", func(c *model.Connection) { c.SndWnd = ip(73_000) }, false},
+		{"full for one poll only", func(c *model.Connection) { c.PrevSendQ = ip(10_000) }, false},
+		{"not sending", func(c *model.Connection) { c.DeltaBytesSent = ip(0) }, false},
+	} {
+		c := capped()
+		tt.mod(c)
+		if _, got := sigByType(Classify(c), model.SignalSndbufLimited); got != tt.want {
+			t.Errorf("%s: SNDBUF_LIM %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}

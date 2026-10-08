@@ -57,7 +57,7 @@ func diagnose(c *model.Connection) Diagnosis {
 		{model.SignalRwndLimited, "Throughput limited by the receiver's window",
 			"the receiver's buffer is too small for the path, or the app there reads slowly — the bottleneck is at that end, not the network"},
 		{model.SignalSndbufLimited, "Throughput limited by the local send buffer",
-			"raise SO_SNDBUF or the app isn't writing fast enough"},
+			"the app has more to send, but the socket's buffer is too small for the path: an app-set SO_SNDBUF or a low tcp_wmem max"},
 		{model.SignalRTOFiring, "Retransmission timeout firing repeatedly",
 			"heavy loss or an unresponsive peer — the RTO is backing off"},
 		{model.SignalPeerNoAck, "Peer stopped acknowledging data",

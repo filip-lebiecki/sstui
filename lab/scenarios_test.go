@@ -418,3 +418,20 @@ func TestInboundLossOnLocalLink(t *testing.T) {
 	r.expect(t, "rx_loss_local", "warning")
 	r.expectNone(t, "rx_loss") // not six separate per-peer findings
 }
+
+// TestPMTUBlackHoleLocal: this host's link MTU is misconfigured (1500 here,
+// 1400 at the other end), so its full-sized packets vanish toward every
+// peer. Connections to six servers (addresses) hang right after their
+// handshakes, which points at this host's MTU rather than one path.
+func TestPMTUBlackHoleLocal(t *testing.T) {
+	l := newLab(t)
+	l.path(wan, wan)
+	l.mismatchedMTU(1400)
+	l.start(l.b, "sink", port)
+	for _, addr := range l.moreAddrs(l.b, 6) {
+		l.start(l.a, "send", addr+port)
+	}
+	r := l.recordAndCheck(l.a, 10*time.Second)
+	r.expect(t, "pmtu_blackhole_local", "critical")
+	r.expectNone(t, "pmtu_blackhole") // not six separate per-peer findings
+}

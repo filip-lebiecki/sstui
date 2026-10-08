@@ -373,9 +373,12 @@ func rulePMTUBlackHole(a *analysis) {
 			Title:    fmt.Sprintf("Connections to %d different peers hang right after the handshake — likely this host's MTU", len(groups)),
 			Detail:   detail + " With this many unrelated peers, suspect this host: an interface (VPN, tunnel, container network) whose MTU is larger than what its path carries.",
 			Evidence: []string{blackHoleEvidence(conns)},
-			Actions:  append([]Action{{Text: "Compare the interfaces' MTUs with what the underlying network carries", Command: "ip link"}}, fixes...),
-			Filter:   sigFilter(model.SignalRTOFiring, model.SignalPeerNoAck),
-			Count:    len(conns),
+			Actions: append([]Action{{
+				Text:    "Compare the interfaces' MTUs with what the network under them carries, and lower the one that's too large (ip link set dev IFACE mtu N); a mismatch on one link drops oversized frames without any ICMP",
+				Command: "ip link",
+			}}, fixes...),
+			Filter: sigFilter(model.SignalRTOFiring, model.SignalPeerNoAck),
+			Count:  len(conns),
 		})
 		return
 	}

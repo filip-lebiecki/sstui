@@ -230,6 +230,20 @@ func (l *lab) narrowLink(mtu int) {
 	l.sh("ip", "-n", l.r, "link", "set", "tob", "mtu", strconv.Itoa(mtu))
 }
 
+// mismatchedMTU makes the router's end of a's link silently discard what
+// a sends in packets over mtu bytes while a's end still says 1500: a link
+// MTU misconfigured on one side (a VPN or container interface, say).
+// Oversized frames vanish on arrival, before any router could answer with
+// ICMP. (Lowering the router's veth MTU instead makes a's own transmit
+// fail, which TCP sees as a local error and gives up on within seconds; a
+// real NIC can't know the other end's MTU.)
+func (l *lab) mismatchedMTU(mtu int) {
+	l.t.Helper()
+	l.sh("tc", "-n", l.r, "qdisc", "add", "dev", "toa", "ingress")
+	l.sh("tc", "-n", l.r, "filter", "add", "dev", "toa", "ingress", "protocol", "ip",
+		"basic", "match", fmt.Sprintf("cmp(u16 at 2 layer network gt %d)", mtu), "action", "drop")
+}
+
 // dropICMP discards every ICMP packet arriving at namespace ns, like a
 // firewall that filters ICMP wholesale.
 func (l *lab) dropICMP(ns string) {

@@ -492,3 +492,22 @@ func TestHealthyLateJoiner(t *testing.T) {
 	client.expectClean(t)
 	server.expectClean(t)
 }
+
+// TestPMTUBlackHoleMidConnection: a bulk upload and a chatty connection of
+// small messages run to one server; 3 s in, the path changes to one that
+// carries only 1400 bytes with ICMP filtered (a route change into a tunnel).
+// The upload, which got data through before, hangs; the small messages
+// keep getting through.
+func TestPMTUBlackHoleMidConnection(t *testing.T) {
+	l := newLab(t)
+	l.path(wan, wan)
+	l.start(l.b, "sink", addrB+port)
+	l.start(l.b, "reqserver", addrB+":5002", "200")
+	l.start(l.a, "send", addrB+port)
+	l.start(l.a, "reqclient", addrB+":5002", "200", "1")
+	time.Sleep(3 * time.Second)
+	l.narrowLink(1400)
+	l.dropICMP(l.a)
+	r := l.recordAndCheck(l.a, 10*time.Second)
+	r.expectTitle(t, "loss", "stall while others to it get through")
+}

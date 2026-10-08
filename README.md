@@ -291,6 +291,7 @@ so you can step back to see what was wrong when.
 | Can't connect | `SYN_STALL`, per destination | `nc -vz`, `ip route get`, firewalls |
 | Packet loss (per peer / host-wide) | `PATH_LOSS`, `RTO`, `NO_ACK` | `mtr` for one peer; NIC/CPU checks when many peers lose at once |
 | Path MTU black hole | `RTO` / `NO_ACK` on connections with nothing acknowledged since the handshake, segments over 536 bytes | a ping of full-sized packets with DF set; `tcp_mtu_probing`; let ICMP "fragmentation needed" through or clamp the MSS |
+| Selective stall (MTU black hole mid-connection, or one broken ECMP/LAG path) | connections stuck (3+ consecutive RTOs, nothing acked for 3 s) while another connection to the same peer gets data acknowledged | the DF ping, `tracepath`; `tcp_mtu_probing` |
 | Inbound loss (per peer / host-wide) | `RX_LOSS` | path back toward the peer (loss is often asymmetric); RX drops / ring size when many peers are affected |
 | Reordering, path MTU, latency inflation | `REORDER`, `PMTU`, `RTT_SPIKE` | ECMP/LACP hashing; ICMP/MSS clamping; qdisc / BBR |
 | Window- or buffer-limited throughput | `RWND_LIM`, `SNDBUF_LIM`, `RCVBUF_LIM` | slow reader or small buffer at the receiver (its Recv-Q tells; named outright when the receiver is local), `tcp_rmem`, window scaling; for the send buffer, an app-set `SO_SNDBUF` (full but below `tcp_wmem` max) vs a `tcp_wmem` max that's too low |

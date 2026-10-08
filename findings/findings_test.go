@@ -462,6 +462,47 @@ func TestListenOverflowHostBacklogAdvice(t *testing.T) {
 	}
 }
 
+// TestSelectiveStall: a connection stalled on RTO while another to the same
+// peer gets data acknowledged isn't plain loss (TestPMTUBlackHoleMidConnection
+// in the lab: an MTU black hole that began mid-connection). Both stalled, or
+// a still-moving lossy connection, is.
+func TestSelectiveStall(t *testing.T) {
+	stalled := conn("ESTAB", "10.0.0.1", "40000", "10.0.0.2", "5001", sig(model.SignalRTOFiring, 2), sig(model.SignalPeerNoAck, 2))
+	stalled.Delivered, stalled.MSS, stalled.TimerRetrans, stalled.LastAck = ip(23056), ip(1448), ip(4), ip(5445)
+	chatty := conn("ESTAB", "10.0.0.1", "40001", "10.0.0.2", "5002")
+	chatty.DeltaBytesAcked = ip(13)
+	ctl := poller.Sysctls{"net.ipv4.tcp_mtu_probing": "0"}
+
+	f := byID(Analyze(Input{Conns: []*model.Connection{stalled, chatty}, Sysctl: ctl}), "loss|10.0.0.2")
+	if f == nil || !strings.Contains(f.Title, "stall while others to it get through") ||
+		!hasText(f.Evidence, "1 other connection to 10.0.0.2 had data acknowledged") ||
+		!hasCommand(f, "ping -M do -c 3 -s 1472 10.0.0.2") || !hasCommand(f, "tcp_mtu_probing=1") {
+		t.Errorf("stall beside a working sibling: want the selective-stall finding: %+v", f)
+	}
+
+	other := conn("ESTAB", "10.0.9.1", "40003", "10.0.0.2", "5002") // another uplink
+	other.DeltaBytesAcked = ip(13)
+	chatty.DeltaBytesAcked = ip(0) // the sibling gets nothing through either
+	if f := byID(Analyze(Input{Conns: []*model.Connection{stalled, chatty, other}}), "loss|10.0.0.2"); f == nil || strings.Contains(f.Title, "others to it get through") {
+		t.Errorf("working only from another local address: want plain loss: %+v", f)
+	}
+	if f := byID(Analyze(Input{Conns: []*model.Connection{stalled, chatty}}), "loss|10.0.0.2"); f == nil || strings.Contains(f.Title, "others to it get through") {
+		t.Errorf("no working sibling: want plain loss: %+v", f)
+	}
+
+	lossy := conn("ESTAB", "10.0.0.1", "40002", "10.0.0.2", "5001", sig(model.SignalPathLoss, 1))
+	chatty.DeltaBytesAcked = ip(13)
+	if f := byID(Analyze(Input{Conns: []*model.Connection{lossy, chatty}}), "loss|10.0.0.2"); f == nil || strings.Contains(f.Title, "others to it get through") {
+		t.Errorf("a lossy connection still moving data: want plain loss: %+v", f)
+	}
+
+	// A loss episode: two RTOs, acked a second ago. Plain loss.
+	stalled.TimerRetrans, stalled.LastAck = ip(2), ip(1200)
+	if f := byID(Analyze(Input{Conns: []*model.Connection{stalled, chatty}}), "loss|10.0.0.2"); f == nil || strings.Contains(f.Title, "others to it get through") {
+		t.Errorf("a short RTO episode: want plain loss: %+v", f)
+	}
+}
+
 // TestRwndLimitedCause: a remote receiver could be a slow reader or a small
 // buffer, so the finding names both; a receiver on this host shows which.
 func TestRwndLimitedCause(t *testing.T) {

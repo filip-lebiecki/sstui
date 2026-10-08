@@ -429,6 +429,18 @@ func (r *report) expect(t *testing.T, k, severity string) {
 	t.Errorf("%s: want a %s finding at %s or worse; got %s", r.side, k, severity, r.kinds())
 }
 
+// expectTitle fails unless a finding of this kind was reported with title
+// containing text, for kinds whose title tells two diagnoses apart.
+func (r *report) expectTitle(t *testing.T, k, text string) {
+	t.Helper()
+	for _, f := range r.Findings {
+		if kind(f.ID) == k && strings.Contains(f.Title, text) {
+			return
+		}
+	}
+	t.Errorf("%s: want a %s finding titled \"…%s…\"; got %s", r.side, k, text, r.kinds())
+}
+
 // expectNone fails if a finding of this kind was reported.
 func (r *report) expectNone(t *testing.T, k string) {
 	t.Helper()

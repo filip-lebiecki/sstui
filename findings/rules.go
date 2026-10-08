@@ -319,6 +319,9 @@ func rulePathLoss(a *analysis) {
 		return
 	}
 	for _, g := range groups {
+		if a.selectiveStall(g) {
+			continue
+		}
 		detail := "Connections to this destination are stalling on lost packets."
 		if anySignal(g.conns, model.SignalPathLoss) {
 			detail = "Data to this destination is retransmitted steadily without a queue building up, so it isn't the loss TCP causes while filling a link: a lossy link or device on the path, or a bottleneck with a very small buffer."
@@ -420,6 +423,62 @@ func pingDF(peer string, c *model.Connection) string {
 		return fmt.Sprintf("ping -6 -M do -c 3 -s %d %s", mtu-48, peer)
 	}
 	return fmt.Sprintf("ping -M do -c 3 -s %d %s", mtu-28, peer)
+}
+
+// selectiveStall reports a peer group whose connections all stall while
+// another connection to the same peer had data acknowledged in the last
+// poll: the host answers, so the path works, but drops what these send.
+// Stalled means hard stuck, not a loss episode: the same segment
+// retransmitted at least three times in a row (at 3% random loss about 1 in
+// 37,000) and nothing acknowledged for 3 s, so random loss hitting one of
+// several connections to a peer stays plain loss. That's full-sized packets (a path MTU black hole that began
+// mid-connection, after a route change into a tunnel with ICMP filtered;
+// HungAfterHandshake only catches one from the start) or this flow's route
+// alone (a broken ECMP or link-aggregation member). Adds the finding and
+// returns true; false leaves the group to the plain loss finding.
+func (a *analysis) selectiveStall(g *group) bool {
+	for _, c := range g.conns {
+		if deref(c.TimerRetrans) < 3 || c.LastAck == nil || *c.LastAck < 3000 {
+			return false // still moving data, or not stuck long: loss
+		}
+	}
+	// A sibling proves the path only if it leaves from the same local
+	// address (a multi-homed host's other uplink may route differently).
+	local := map[string]bool{}
+	for _, c := range g.conns {
+		local[c.LocalAddr] = true
+	}
+	working := 0
+	for _, c := range a.in.Conns {
+		if c.State == "ESTAB" && c.PeerAddr == g.key && local[c.LocalAddr] && !slices.Contains(g.conns, c) &&
+			c.DeltaBytesAcked != nil && *c.DeltaBytesAcked > 0 {
+			working++
+		}
+	}
+	if working == 0 {
+		return false
+	}
+	f := Finding{
+		ID:       "loss|" + g.key,
+		Severity: g.sev,
+		Title:    fmt.Sprintf("Connections to %s stall while others to it get through", g.key),
+		Detail:   "The host answers on other connections, so the path works, but it drops what these send: full-sized packets (a path MTU black hole, e.g. after a route change into a tunnel or VPN with ICMP filtered), or this flow's route alone (a broken link in an ECMP or link-aggregation group).",
+		Evidence: []string{
+			lossEvidence(g.conns),
+			fmt.Sprintf("%s to %s had data acknowledged in the last poll", plural(working, "other connection"), g.key),
+		},
+		Actions: []Action{
+			{Text: "Check whether full-sized packets get through (unfragmented; payload = path MTU minus headers)", Command: pingDF(g.key, g.conns[0])},
+			{Text: "See where the path goes", Command: "tracepath -n " + g.key},
+		},
+		Filter: filterJoin("peer=="+g.key, sigFilter(lossSignals...)),
+		Count:  len(g.conns),
+	}
+	if v, ok := a.in.Sysctl.Int("net.ipv4.tcp_mtu_probing"); ok && v == 0 {
+		f.Actions = append(f.Actions, Action{Text: "If it's the MTU: let TCP find a packet size that gets through by itself", Command: "sysctl -w net.ipv4.tcp_mtu_probing=1"})
+	}
+	a.add(f)
+	return true
 }
 
 // manyPeers reports whether a problem seen toward n distinct peers is

@@ -474,9 +474,12 @@ func Classify(c *model.Connection) []model.Signal {
 		return signals
 	}
 
-	// SYN-SENT with the retransmission timer running and at least one retry
-	// means the handshake is stalled — DNS/firewall/route problem.
-	if c.State == "SYN-SENT" && c.TimerRetrans != nil && *c.TimerRetrans > 0 {
+	// SYN-SENT still retrying means the handshake is stalled: DNS, firewall
+	// or routing. One retry isn't enough: on a path that loses a packet now
+	// and then, a lost SYN or SYN-ACK costs one retry (after 1 s) and the
+	// connection goes through. A second retry means ~3 s without an answer;
+	// a third, ~7 s (SYN backoff doubles from 1 s).
+	if c.State == "SYN-SENT" && c.TimerRetrans != nil && *c.TimerRetrans >= 2 {
 		sev := 1
 		if *c.TimerRetrans >= 3 {
 			sev = 2
@@ -484,12 +487,14 @@ func Classify(c *model.Connection) []model.Signal {
 		signals = append(signals, model.Signal{Type: model.SignalSynStall, Severity: sev, Value: *c.TimerRetrans})
 	}
 
+	// RETRANS, LOSS, HI_RETRANS, CWND_DROP and (for TCP) SEND_Q describe one
+	// poll and are info-level context: a few segments lost and resent, a
+	// window cut, a full send buffer are all normal while TCP fills a link
+	// (the scenario lab's healthy controls raise every one of them). Loss
+	// that matters is PATH_LOSS, judged over seconds, and a sender held back
+	// shows as ZERO_WIN, RWND_LIM, SNDBUF_LIM or NO_ACK.
 	if v := c.RetransNow; v != nil && *v > 3 {
-		sev := 1
-		if *v > 10 {
-			sev = 2
-		}
-		signals = append(signals, model.Signal{Type: model.SignalRetransInFlight, Severity: sev, Value: *v})
+		signals = append(signals, model.Signal{Type: model.SignalRetransInFlight, Severity: 0, Value: *v})
 	}
 
 	// app_limited is a state, not a fault — surface as info only.
@@ -517,12 +522,8 @@ func Classify(c *model.Connection) []model.Signal {
 		signals = append(signals, model.Signal{Type: model.SignalZeroWindow, Severity: 2, Value: v})
 	}
 
-	if v := c.Lost; v != nil && *v > 2 {
-		sev := 1
-		if *v > 10 {
-			sev = 2
-		}
-		signals = append(signals, model.Signal{Type: model.SignalCongestionLoss, Severity: sev, Value: *v})
+	if v := c.Lost; v != nil && *v > 2 { // info: see RETRANS above
+		signals = append(signals, model.Signal{Type: model.SignalCongestionLoss, Severity: 0, Value: *v})
 	}
 
 	// Real PMTU problem: path MTU below our advertised MSS.
@@ -544,8 +545,11 @@ func Classify(c *model.Connection) []model.Signal {
 		}
 	}
 
-	if sev := queuePressure(c.SendQ, c.PrevSendQ, c.SkmemTB); sev > 0 {
-		signals = append(signals, model.Signal{Type: model.SignalSendBufferPressure, Severity: sev, Value: *c.SendQ})
+	// A TCP send queue filling up is an application writing faster than the
+	// path drains: info (see RETRANS above). A UDP one, kept at warn above,
+	// means this host can't put packets out as fast as the app sends.
+	if queuePressure(c.SendQ, c.PrevSendQ, c.SkmemTB) > 0 {
+		signals = append(signals, model.Signal{Type: model.SignalSendBufferPressure, Severity: 0, Value: *c.SendQ})
 	}
 
 	if sev := queuePressure(c.RecvQ, c.PrevRecvQ, c.SkmemRB); sev > 0 {
@@ -558,13 +562,8 @@ func Classify(c *model.Connection) []model.Signal {
 	}
 
 	if c.DeltaBytesRetrans != nil && c.DeltaBytesSent != nil && *c.DeltaBytesSent > 0 {
-		rate := float64(*c.DeltaBytesRetrans) / float64(*c.DeltaBytesSent)
-		if rate > 0.05 {
-			sev := 1
-			if rate > 0.2 {
-				sev = 2
-			}
-			signals = append(signals, model.Signal{Type: model.SignalHighRetransRate, Severity: sev, Value: rate})
+		if rate := float64(*c.DeltaBytesRetrans) / float64(*c.DeltaBytesSent); rate > 0.05 { // info: see RETRANS
+			signals = append(signals, model.Signal{Type: model.SignalHighRetransRate, Severity: 0, Value: rate})
 		}
 	}
 
@@ -637,16 +636,13 @@ func Classify(c *model.Connection) []model.Signal {
 	// every ~10s it deliberately cuts cwnd to 4 packets for ~200ms to re-measure
 	// min RTT, so on a lossy path a poll landing there would look like a collapse.
 	//
-	// "Sharply" means deeper than one halving: below half the previous window
-	// (crit below a quarter), with half and quarter rounded down the way Reno
-	// rounds its halving, so a single 41→20 cut never fires.
+	// "Sharply" means deeper than one halving: below half the previous window,
+	// rounded down the way Reno rounds its halving, so a single 41→20 cut
+	// never fires. Info-level context (see RETRANS above): slow start
+	// overshooting a link cuts the window like this on healthy traffic.
 	if c.PrevCWnd != nil && c.CWnd != nil && *c.PrevCWnd >= 20 && !bbrProbeRTT(c) {
 		if cause := cwndCutCause(c); cause != "" && *c.CWnd < *c.PrevCWnd/2 {
-			sev := 1
-			if *c.CWnd < *c.PrevCWnd/4 {
-				sev = 2
-			}
-			signals = append(signals, model.Signal{Type: model.SignalCWndCollapse, Severity: sev,
+			signals = append(signals, model.Signal{Type: model.SignalCWndCollapse, Severity: 0,
 				Value: fmt.Sprintf("%d→%d after %s", *c.PrevCWnd, *c.CWnd, cause)})
 		}
 	}

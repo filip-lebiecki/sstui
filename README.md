@@ -287,7 +287,7 @@ so you can step back to see what was wrong when.
 |---|---|---|
 | Peer not reading | `ZERO_WIN`, grouped by process + peer | names the local receiver if it's on this host; investigate the app, not the network |
 | App not reading fast enough | `RCV_Q` / `DROPS` on non-listening sockets, per process | find the slow reader; buffer sizes for bursts (UDP doesn't autotune) |
-| Accept queue full or overflowing | `LISTEN_Q`, or `DROPS` on the listener (bursts that overflow between polls), + `ListenOverflows` | names the listener; tells apart a `somaxconn` cap from the app's own backlog |
+| Accept queue full or overflowing | `LISTEN_Q`, or `DROPS` on the listener (bursts that overflow between polls) when the host counted `ListenOverflows` / `ListenDrops` | names the listener; tells apart a `somaxconn` cap from the app's own backlog |
 | Can't connect | `SYN_STALL`, per destination | `nc -vz`, `ip route get`, firewalls |
 | Packet loss (per peer / host-wide) | `PATH_LOSS`, `RTO`, `NO_ACK` | `mtr` for one peer; NIC/CPU checks when many peers lose at once |
 | Inbound loss (per peer / host-wide) | `RX_LOSS` | path back toward the peer (loss is often asymmetric); RX drops / ring size when many peers are affected |
@@ -683,22 +683,22 @@ badge color and in the Live-tab indicator glyph.
 
 | Label      | Type const           | Fires when                                                                 | Inputs (parsed?)                       | Severity | Color  |
 |------------|----------------------|----------------------------------------------------------------------------|----------------------------------------|----------|--------|
-| `RETRANS`  | `retrans_in_flight`  | `retrans_now > 3` (crit >10)                                               | `retrans:N/M` ✓                        | 1–2      | red    |
+| `RETRANS`  | `retrans_in_flight`  | `retrans_now > 3`                                                          | `retrans:N/M` ✓                        | 0 (info) | red    |
 | `APP_LIM`  | `app_limited`        | `app_limited` flag set                                                      | `app_limited` ✓                        | 0 (info) | green  |
 | `IDLE`     | `idle`               | ESTAB & no bytes moved this poll                                            | computed deltas ✓                      | 0 (info) | gray   |
 | `ZERO_WIN` | `zero_window`        | ESTAB with the persist (zero-window probe) timer armed, or `snd_wnd:0`     | `timer:(persist,…)` ✓ (`ss` omits `snd_wnd` when 0) | 2 | red |
-| `LOSS`     | `congestion_loss`    | `lost > 2` (crit >10)                                                       | `lost:` ✓                              | 1–2      | red    |
+| `LOSS`     | `congestion_loss`    | `lost > 2`                                                                  | `lost:` ✓                              | 0 (info) | red    |
 | `PMTU`     | `pmtu_mismatch`      | `pmtu < advmss+40`                                                          | `pmtu:` `advmss:` ✓                    | 1        | orange |
 | `RTT_SPIKE`| `rtt_spike`          | `rtt/minrtt > 5` (crit >15) and `rtt − minrtt ≥ 10ms`                       | `rtt:` `minrtt:` ✓                     | 1–2      | orange |
-| `SEND_Q`   | `send_buffer_pressure` | Send-Q ≥ 50% of send buffer (crit ≥80%), sustained 2 polls; 16K/64K abs fallback | column + `skmem` `tb` ✓        | 1–2      | yellow |
+| `SEND_Q`   | `send_buffer_pressure` | Send-Q ≥ 50% of send buffer (crit ≥80%), sustained 2 polls; 16K/64K abs fallback | column + `skmem` `tb` ✓        | UDP 1–2, TCP 0 (info) | yellow |
 | `RCV_Q`    | `recv_buffer_pressure` | Recv-Q ≥ 50% of recv buffer (crit ≥80%), sustained 2 polls; 16K/64K abs fallback | column + `skmem` `rb` ✓        | 1–2      | yellow |
-| `HI_RETRANS`| `high_retrans_rate` | `retrans/sent > 5%` (crit >20%)                                            | deltas of `bytes_sent`/`bytes_retrans` ✓ | 1–2    | red    |
+| `HI_RETRANS`| `high_retrans_rate` | `retrans/sent > 5%` this poll                                              | deltas of `bytes_sent`/`bytes_retrans` ✓ | 0 (info) | red  |
 | `CWND_LIM` | `cwnd_limited`       | `unacked > 0.8·cwnd` && `> 10` (using its full window — healthy bulk transfer) | `unacked:` `cwnd:` ✓                | 0 (info) | gray   |
 | `LISTEN_Q` | `listen_queue_full`  | LISTEN `RecvQ/SendQ > 0.8` (crit ≥1.0)                                      | `RecvQ/SendQ` column ✓                 | 1–2      | red    |
 | `RTO`      | `rto_firing`         | ESTAB, timer on, `TimerRetrans ≥ 2` (crit ≥4)                               | `timer:` `TimerRetrans` ✓              | 1–2      | red    |
-| `SYN_STALL`| `syn_stall`          | SYN-SENT, `TimerRetrans > 0` (crit ≥3)                                      | `state`, `TimerRetrans` ✓              | 1–2      | orange |
+| `SYN_STALL`| `syn_stall`          | SYN-SENT, `TimerRetrans ≥ 2` (crit ≥3)                                      | `state`, `TimerRetrans` ✓              | 1–2      | orange |
 | `NO_ACK`   | `peer_no_ack`        | data outstanding on two consecutive polls and nothing ACKed in between (crit if no ACK ≥10s) | `unacked:` `bytes_acked:` delta, `lastack:` ✓ | 1–2 | red |
-| `CWND_DROP`| `cwnd_collapse`      | `CWnd < ⌊PrevCWnd/2⌋` (crit `< ⌊PrevCWnd/4⌋`), prev ≥ 20, with loss or ECN marks the same poll, not BBR ProbeRTT | `cwnd:` + prev poll `cwnd`, `bytes_retrans:` delta, `lost:`, `delivered_ce:` delta ✓ | 1–2      | orange |
+| `CWND_DROP`| `cwnd_collapse`      | `CWnd < ⌊PrevCWnd/2⌋`, prev ≥ 20, with loss or ECN marks the same poll, not BBR ProbeRTT | `cwnd:` + prev poll `cwnd`, `bytes_retrans:` delta, `lost:`, `delivered_ce:` delta ✓ | 0 (info) | orange |
 | `DSACK`    | `dsack_spurious`     | `Δdsack_dups > 0` (crit >5)                                                 | `dsack_dups:` delta ✓                  | 1–2      | yellow |
 | `REORDER`  | `reordering`         | over the last ~12 s: reordering events in at least half of the 2 s slots and ≥0.1% of segments (crit ≥5%); not under `PATH_LOSS` | `reord_seen:` `bytes_sent:` deltas, `mss:` ✓ | 1–2 | orange |
 | `DROPS`    | `socket_drops`       | `Δskmem.d > 0` (crit >10) — kernel dropped data at this socket (with `RX_LOSS` and no `RCV_Q`: out-of-order data discarded during loss recovery) | `skmem` `d` delta ✓ | 1–2 | red |
@@ -716,7 +716,7 @@ badge color and in the Live-tab indicator glyph.
 | `IDLE`       | ESTAB, no bytes moved either way this poll, nothing waiting in Send-Q        | info       | Connection is alive but quiet (a stalled send queue is not idle)       |
 | `APP_LIM`    | `app_limited` flag set                                                       | info       | TCP could send more; the app isn't producing data fast enough          |
 | `LISTEN_Q`   | LISTEN socket with `RecvQ/SendQ > 0.8` (or RecvQ > 100 when SendQ unknown)   | warn / crit (≥1.0) | Accept queue full — incoming SYNs are being dropped              |
-| `SYN_STALL`  | `SYN-SENT` state with retransmit timer active (`TimerRetrans > 0`)           | warn / crit (≥3) | Handshake stuck — DNS, firewall, or routing problem              |
+| `SYN_STALL`  | `SYN-SENT` still retrying: `TimerRetrans ≥ 2` (~3 s without an answer)      | warn / crit (≥3) | Handshake stuck — DNS, firewall, or routing problem. One retry is a lost SYN or SYN-ACK on a lossy path, and the connection usually goes through |
 | `NO_ACK`     | Data outstanding across a whole poll with no bytes ACKed                     | warn / crit (≥10s) | Peer hung, or the path / a middlebox is black-holing packets   |
 
 ### Loss & retransmission signals
@@ -724,13 +724,13 @@ badge color and in the Live-tab indicator glyph.
 | Signal        | Fires when                                                            | Severity                | What it means                                              |
 |---------------|-----------------------------------------------------------------------|-------------------------|------------------------------------------------------------|
 | `PATH_LOSS`   | Over the last ~12 s (or four polls if slower): ≥0.05% of bytes retransmitted, in at least half of the 2 s slots, and the median RTT while sending within max(4 ms, 10% of min RTT) of its minimum. BBR skips the RTT test | warn / crit (≥1%) | **Steady loss on the path**, not the loss TCP causes itself while filling a link: that comes in bursts (slow start, request bursts) or from a flow that fills the bottleneck queue (RTT climbs while it sends). Drives the loss finding. A bottleneck whose buffer is only a few ms deep drops before the queue shows, so several flows saturating one can look the same; the finding names both causes |
-| `RETRANS`     | `retrans:N/M` first field > 3                                          | warn / crit (>10)       | Segments currently being retransmitted in flight           |
+| `RETRANS`     | `retrans:N/M` first field > 3                                          | info                    | Segments being retransmitted right now. Context: normal for a moment while TCP fills a link; `PATH_LOSS` judges loss |
 | `RTO`         | ESTAB, `timer:(on,…)` running, `TimerRetrans ≥ 2`                      | warn / crit (≥4)        | RTO timer doubling — single segment stuck retransmitting   |
-| `LOSS`        | `lost:N > 2`                                                           | warn / crit (>10)       | Kernel-detected packet loss                                |
-| `HI_RETRANS`  | `Δbytes_retrans / Δbytes_sent > 5%`                                    | warn / crit (>20%)      | This poll's retransmit rate is high. Context only: a burst like this is normal during slow start, so findings rely on `PATH_LOSS` |
+| `LOSS`        | `lost:N > 2`                                                           | info                    | Segments the kernel currently considers lost. Context, like `RETRANS` |
+| `HI_RETRANS`  | `Δbytes_retrans / Δbytes_sent > 5%`                                    | info                    | This poll's retransmit rate is high. Context only: a burst like this is normal during slow start, so findings rely on `PATH_LOSS` |
 | `DSACK`       | `dsack_dups` grew this poll                                            | warn / crit (>5)        | Spurious retransmits — the data had arrived (aggressive RTO, or reordering) |
 | `REORDER`     | Over the last ~12 s: `reord_seen` grew in at least half of the 2 s slots, by ≥0.1% of the segments sent; not evaluated while `PATH_LOSS` fires | warn / crit (≥5%) | Our packets are reordered on the way to the peer (often ECMP / LACP / multi-queue hashing). The counter also ticks now and then during loss recovery or request bursts, and steadily under steady loss, so one-off events and lossy connections don't count |
-| `DROPS`       | `skmem` drop counter (`d`) grew this poll                             | warn / crit (>10)       | Kernel discarded data at the socket — buffer overran, receiver too slow. On a listening socket it counts refused connection attempts instead (accept or SYN queue overflow), reported with the accept-queue finding. With `RX_LOSS` and an empty receive queue it's out-of-order data discarded during loss recovery instead, and Findings/Detail say so |
+| `DROPS`       | `skmem` drop counter (`d`) grew this poll                             | warn / crit (>10)       | Kernel discarded data at the socket — buffer overran, receiver too slow. On a listening socket it counts refused connection attempts (accept or SYN queue overflow) or stray handshake segments instead; the accept-queue finding reports it when the host's `ListenOverflows` / `ListenDrops` counters say connections were refused. With `RX_LOSS` and an empty receive queue it's out-of-order data discarded during loss recovery instead, and Findings/Detail say so |
 | `RX_LOSS`     | ≥2% of data segments received this poll arrived after a gap (crit ≥10%; needs ≥100 segments) | warn / crit | **Inbound** loss (or reordering) on the peer → here path. The only loss signal available on the receiving side — the retransmit counters live on the sender. One lost segment makes everything behind it arrive out of order, so the ratio overstates the loss rate; the thresholds account for that |
 
 ### Congestion & flow control
@@ -738,7 +738,7 @@ badge color and in the Live-tab indicator glyph.
 | Signal        | Fires when                                                       | Severity         | What it means                                                       |
 |---------------|------------------------------------------------------------------|------------------|---------------------------------------------------------------------|
 | `ZERO_WIN`    | ESTAB, persist timer armed (or `snd_wnd:0`)                      | crit             | Peer's receive window is closed — peer not reading                  |
-| `CWND_DROP`   | `CWnd` below half of `PrevCWnd`, rounded down (prev ≥ 20), with retransmits, lost packets or new ECN marks the same poll; not BBR ProbeRTT | warn / crit (below a quarter) | Loss or ECN congestion marks cut the congestion window sharply. Cuts without them (restart after idle, an app-limited window trimmed) are ignored |
+| `CWND_DROP`   | `CWnd` below half of `PrevCWnd`, rounded down (prev ≥ 20), with retransmits, lost packets or new ECN marks the same poll; not BBR ProbeRTT | info | Loss or ECN congestion marks cut the congestion window sharply. Context: slow start overshooting a link does this on healthy traffic. Cuts without them (restart after idle, an app-limited window trimmed) are ignored |
 | `CWND_LIM`    | `unacked > 0.8 × cwnd` and `unacked > 10`                        | info             | Using its full congestion window — normal for a bulk transfer       |
 | `PMTU`        | `pmtu < advmss + 40`                                             | warn             | Path MTU smaller than our advertised MSS                            |
 | `RTT_SPIKE`   | `rtt / minrtt > 5` and ≥10ms above min                            | warn / crit (>15) | Latency spike vs the connection's baseline                         |
@@ -747,7 +747,7 @@ badge color and in the Live-tab indicator glyph.
 
 | Signal      | Fires when                                          | Severity         | What it means                            |
 |-------------|------------------------------------------------------|------------------|------------------------------------------|
-| `SEND_Q`    | Send-Q ≥ 50% of the send buffer (crit ≥80%) on two consecutive polls; 16 KB / 64 KB when the buffer size is unknown | warn / crit | Data queued faster than the path drains it |
+| `SEND_Q`    | Send-Q ≥ 50% of the send buffer (crit ≥80%) on two consecutive polls; 16 KB / 64 KB when the buffer size is unknown | UDP warn / crit; TCP info | Data queued faster than it drains. For TCP that's an app writing faster than the path: normal for bulk transfers (a blocked sender shows as `ZERO_WIN`, `RWND_LIM`, `SNDBUF_LIM`). For UDP the host can't put packets out as fast as the app sends |
 | `RCV_Q`     | Recv-Q ≥ 50% of the receive buffer (crit ≥80%) on two consecutive polls; same fallback | warn / crit | The local app isn't reading fast enough |
 
 ---

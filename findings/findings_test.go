@@ -179,10 +179,12 @@ func sysPair(prev, cur map[string]int64) (*poller.SysStat, *poller.SysStat) {
 	return &poller.SysStat{Counters: cur}, &poller.SysStat{Counters: prev}
 }
 
-// A listener's drops are connection attempts it turned away: they belong to
-// that listener's accept-queue finding (even when the queue isn't full at the
-// moment of the poll), not to "isn't reading fast enough", and the host-wide
-// overflow finding folds into it.
+// A listener's drops belong to that listener's accept-queue finding (even
+// when the queue isn't full at the moment of the poll), never to "isn't
+// reading fast enough", and the host-wide overflow finding folds into it.
+// The host counters say what the drops were: accept-queue overflows,
+// other refusals (ListenDrops only), or neither (stray handshake segments
+// discarded, e.g. under packet loss), which isn't reported.
 func TestListenerDropsAreAcceptQueueOverflow(t *testing.T) {
 	sys, prev := sysPair(map[string]int64{"TcpExt:ListenOverflows": 0}, map[string]int64{"TcpExt:ListenOverflows": 20})
 	lst := conn("LISTEN", "0.0.0.0", "80", "0.0.0.0", "*", sig(model.SignalSocketDrops, 2))
@@ -201,9 +203,16 @@ func TestListenerDropsAreAcceptQueueOverflow(t *testing.T) {
 		t.Errorf("the host-wide overflow finding should fold into the listener's")
 	}
 
-	// Without accept-queue overflows the drops aren't blamed on accept().
-	if f := byID(Analyze(Input{Conns: []*model.Connection{lst}}), "listen_queue|"); f == nil || !strings.Contains(f.Title, "is dropping connection attempts") {
-		t.Errorf("drops without ListenOverflows shouldn't claim the accept queue overflowed: %+v", f)
+	// Refusals without accept-queue overflows aren't blamed on accept().
+	sys, prev = sysPair(map[string]int64{"TcpExt:ListenDrops": 0, "TcpExt:ListenOverflows": 0},
+		map[string]int64{"TcpExt:ListenDrops": 20, "TcpExt:ListenOverflows": 0})
+	r = Analyze(Input{Conns: []*model.Connection{lst}, Sys: sys, SysPrev: prev, Interval: 2 * time.Second})
+	if f := byID(r, "listen_queue|"); f == nil || !strings.Contains(f.Title, "is dropping connection attempts") {
+		t.Errorf("ListenDrops without ListenOverflows shouldn't claim the accept queue overflowed: %+v", r.Findings)
+	}
+	// Neither counter: stray segments discarded at the listener, not a problem.
+	if r := Analyze(Input{Conns: []*model.Connection{lst}}); byID(r, "listen_queue|") != nil || byID(r, "recv_backlog|") != nil {
+		t.Errorf("drops the host didn't count as refusals shouldn't be reported: %+v", r.Findings)
 	}
 
 	// SO_REUSEPORT: describe the full listener on the port, whichever comes first.

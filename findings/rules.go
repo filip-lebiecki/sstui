@@ -154,11 +154,14 @@ func ruleRecvBacklog(a *analysis) {
 }
 
 // ruleListenQueue: full or overflowing accept queues, per listener: a queue
-// full right now (LISTEN_Q), or connection attempts the listener dropped
-// since the last poll (DROPS on a listening socket: the kernel counts one
-// for every handshake it turns away), which catches bursts that overflow the
-// queue between polls. Tells apart a backlog capped by somaxconn from one the
-// application chose itself.
+// full right now (LISTEN_Q), or drops at the listener since the last poll
+// (DROPS on a listening socket), which catches bursts that overflow the queue
+// between polls. A listener's drop counter counts every handshake it turns
+// away, but also stray handshake segments it discards (a duplicate or
+// out-of-window ACK when packets are lost); only refusals also count in the
+// host's TcpExt:ListenDrops (and accept-queue overflows in ListenOverflows),
+// so drops without either are left alone. Tells apart a backlog capped by
+// somaxconn from one the application chose itself.
 func ruleListenQueue(a *analysis) {
 	key := func(c *model.Connection) string {
 		if c.State != "LISTEN" {
@@ -167,6 +170,7 @@ func ruleListenQueue(a *analysis) {
 		return endpoint(c.LocalAddr, c.LocalPort)
 	}
 	overflows, _ := a.rate("TcpExt:ListenOverflows")
+	refused, _ := a.rate("TcpExt:ListenDrops")
 	for _, g := range a.groupBySignal(key, model.SignalListenQueueFull, model.SignalSocketDrops) {
 		// SO_REUSEPORT listeners share an endpoint: describe a full one if
 		// any is full.
@@ -177,6 +181,9 @@ func ruleListenQueue(a *analysis) {
 			if _, ok := signalOf(c, model.SignalListenQueueFull); ok && !full {
 				c0, full = c, true
 			}
+		}
+		if !full && overflows <= 0 && refused <= 0 {
+			continue // stray segments discarded, no connection refused
 		}
 		rq, sq := deref(c0.RecvQ), deref(c0.SendQ)
 		var title, detail string
@@ -191,7 +198,7 @@ func ruleListenQueue(a *analysis) {
 			// The listener's drop counter also counts SYN-queue drops and
 			// other refusals; without overflows, don't blame accept().
 			title = fmt.Sprintf("Listener :%s (%s) is dropping connection attempts", c0.LocalPort, a.procLabel(c0))
-			detail = "The listener turned connection attempts away since the last poll, but the kernel counted no accept-queue overflows: a full SYN queue (a SYN flood without syncookies), or a socket filter or other policy refusing them."
+			detail = "The listener turned connection attempts away since the last poll (the kernel counted ListenDrops), but no accept-queue overflows: a full SYN queue (a SYN flood without syncookies), or a socket filter or other policy refusing them."
 		}
 		f := Finding{
 			ID:         "listen_queue|" + g.key,

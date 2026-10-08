@@ -216,8 +216,10 @@ func RenderSignals(signals []model.Signal) string {
 	var parts []string
 	for _, s := range signals {
 		color := signalColors[s.Type]
-		if color == "" {
-			color = lipgloss.Color("#888")
+		if color == "" || s.Severity == 0 {
+			// Info-level signals are context, not alarms: grey whatever
+			// their type's color (RETRANS is red when it's a warning).
+			color = lipgloss.Color("#868e96")
 		}
 		bgColor := color
 		style := lipgloss.NewStyle().

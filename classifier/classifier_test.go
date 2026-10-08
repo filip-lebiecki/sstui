@@ -335,7 +335,8 @@ func TestReordering(t *testing.T) {
 }
 
 // TestClassifyCWndCollapse: a cwnd cut deeper than one halving (rounded
-// down, as Reno rounds) fires only with loss or ECN marks in the same poll;
+// down, as Reno rounds) shows, as info-level context, only with loss or ECN
+// marks in the same poll;
 // a cut without them (restart after idle, cwnd validation) and BBR's
 // ProbeRTT drop to 4 packets (cwnd_gain 1) are by design. Without
 // bytes_retrans (old kernel) only packets marked lost count.
@@ -347,38 +348,38 @@ func TestClassifyCWndCollapse(t *testing.T) {
 	cases := []struct {
 		name    string
 		c       *model.Connection
-		wantSev int // 0 = no signal
+		fires   bool
 		wantVal string
 	}{
-		{"idle restart, no loss", collapse(241, 100), 0, ""},
-		{"loss: bytes retransmitted", func() *model.Connection { c := collapse(100, 40); c.DeltaBytesRetrans = ip(7240); return c }(), 1, "100→40 after loss"},
-		{"loss: packets marked lost", func() *model.Connection { c := collapse(100, 20); c.Lost = ip(3); return c }(), 2, "100→20 after loss"},
-		{"ECN marks", func() *model.Connection { c := collapse(100, 40); c.DeltaDeliveredCE = ip(12); return c }(), 1, "100→40 after ECN marks"},
-		{"Reno halving of an odd cwnd", func() *model.Connection { c := collapse(41, 20); c.DeltaBytesRetrans = ip(1448); return c }(), 0, ""},
-		{"exact halving", func() *model.Connection { c := collapse(40, 20); c.DeltaBytesRetrans = ip(1448); return c }(), 0, ""},
-		{"deeper than one halving", func() *model.Connection { c := collapse(41, 19); c.DeltaBytesRetrans = ip(1448); return c }(), 1, "41→19 after loss"},
-		{"two Reno halvings", func() *model.Connection { c := collapse(41, 10); c.DeltaBytesRetrans = ip(1448); return c }(), 1, "41→10 after loss"},
-		{"deeper than two halvings", func() *model.Connection { c := collapse(41, 9); c.DeltaBytesRetrans = ip(1448); return c }(), 2, "41→9 after loss"},
-		{"old kernel, no evidence", &model.Connection{Protocol: "tcp", State: "ESTAB", PrevCWnd: ip(100), CWnd: ip(40)}, 0, ""},
-		{"old kernel, packets marked lost", &model.Connection{Protocol: "tcp", State: "ESTAB", PrevCWnd: ip(100), CWnd: ip(40), Lost: ip(3)}, 1, "100→40 after loss"},
+		{"idle restart, no loss", collapse(241, 100), false, ""},
+		{"loss: bytes retransmitted", func() *model.Connection { c := collapse(100, 40); c.DeltaBytesRetrans = ip(7240); return c }(), true, "100→40 after loss"},
+		{"loss: packets marked lost", func() *model.Connection { c := collapse(100, 20); c.Lost = ip(3); return c }(), true, "100→20 after loss"},
+		{"ECN marks", func() *model.Connection { c := collapse(100, 40); c.DeltaDeliveredCE = ip(12); return c }(), true, "100→40 after ECN marks"},
+		{"Reno halving of an odd cwnd", func() *model.Connection { c := collapse(41, 20); c.DeltaBytesRetrans = ip(1448); return c }(), false, ""},
+		{"exact halving", func() *model.Connection { c := collapse(40, 20); c.DeltaBytesRetrans = ip(1448); return c }(), false, ""},
+		{"deeper than one halving", func() *model.Connection { c := collapse(41, 19); c.DeltaBytesRetrans = ip(1448); return c }(), true, "41→19 after loss"},
+		{"two Reno halvings", func() *model.Connection { c := collapse(41, 10); c.DeltaBytesRetrans = ip(1448); return c }(), true, "41→10 after loss"},
+		{"deeper than two halvings", func() *model.Connection { c := collapse(41, 9); c.DeltaBytesRetrans = ip(1448); return c }(), true, "41→9 after loss"},
+		{"old kernel, no evidence", &model.Connection{Protocol: "tcp", State: "ESTAB", PrevCWnd: ip(100), CWnd: ip(40)}, false, ""},
+		{"old kernel, packets marked lost", &model.Connection{Protocol: "tcp", State: "ESTAB", PrevCWnd: ip(100), CWnd: ip(40), Lost: ip(3)}, true, "100→40 after loss"},
 		{"BBR ProbeRTT on a lossy path", func() *model.Connection {
 			c := collapse(698, 4)
 			c.BBRCWndGain, c.DeltaBytesRetrans = fl(1), ip(1448)
 			return c
-		}(), 0, ""},
+		}(), false, ""},
 		{"BBR PROBE_BW loss", func() *model.Connection {
 			c := collapse(698, 4)
 			c.BBRCWndGain, c.DeltaBytesRetrans = fl(2), ip(1448)
 			return c
-		}(), 2, "698→4 after loss"},
+		}(), true, "698→4 after loss"},
 	}
 	for _, tc := range cases {
 		s, ok := sigByType(Classify(tc.c), model.SignalCWndCollapse)
 		switch {
-		case tc.wantSev == 0 && ok:
+		case !tc.fires && ok:
 			t.Errorf("%s: want no CWND_DROP, got %+v", tc.name, s)
-		case tc.wantSev > 0 && (!ok || s.Severity != tc.wantSev || s.Value != tc.wantVal):
-			t.Errorf("%s: want CWND_DROP sev %d %q, got %+v (present=%v)", tc.name, tc.wantSev, tc.wantVal, s, ok)
+		case tc.fires && (!ok || s.Severity != 0 || s.Value != tc.wantVal):
+			t.Errorf("%s: want info CWND_DROP %q, got %+v (present=%v)", tc.name, tc.wantVal, s, ok)
 		}
 	}
 }
@@ -496,6 +497,19 @@ func TestPathLoss(t *testing.T) {
 			t.Errorf("%s: want no PATH_LOSS, got %+v", tt.name, s)
 		case tt.wantSev > 0 && (!ok || s.Severity != tt.wantSev):
 			t.Errorf("%s: want PATH_LOSS sev %d, got %+v (present=%v)", tt.name, tt.wantSev, s, ok)
+		}
+	}
+}
+
+// TestSynStall: a lost SYN or SYN-ACK costs one retry and the handshake goes
+// through, so one retry is quiet; two (~3 s without an answer) warn and
+// three (~7 s) are critical.
+func TestSynStall(t *testing.T) {
+	for _, tt := range []struct{ retries, wantSev int }{{0, 0}, {1, 0}, {2, 1}, {3, 2}, {6, 2}} {
+		c := &model.Connection{Protocol: "tcp", State: "SYN-SENT", TimerRetrans: ip(tt.retries)}
+		s, ok := sigByType(Classify(c), model.SignalSynStall)
+		if (tt.wantSev == 0 && ok) || (tt.wantSev > 0 && (!ok || s.Severity != tt.wantSev)) {
+			t.Errorf("%d retries: want SYN_STALL sev %d, got %+v (present=%v)", tt.retries, tt.wantSev, s, ok)
 		}
 	}
 }

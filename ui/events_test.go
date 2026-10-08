@@ -15,18 +15,17 @@ func TestCollectEventsCachedReuses(t *testing.T) {
 
 	buf := poller.NewBuffer()
 	inode := "777"
-	mk := func(retrans *int) []*model.Connection {
+	mk := func(sndWnd int) []*model.Connection {
 		return []*model.Connection{{
 			Protocol: "tcp", State: "ESTAB",
 			LocalAddr: "1.1.1.1", LocalPort: "1",
 			PeerAddr: "2.2.2.2", PeerPort: "2",
-			Inode: &inode, RetransNow: retrans,
+			Inode: &inode, SndWnd: &sndWnd,
 		}}
 	}
 
-	buf.AddSnapshot(mk(nil)) // no signal yet
-	r := 5
-	buf.AddSnapshot(mk(&r)) // RETRANS warn onset
+	buf.AddSnapshot(mk(65535)) // no signal yet
+	buf.AddSnapshot(mk(0))     // ZERO_WIN onset
 
 	ev1 := collectEventsCached(buf)
 	if len(ev1) == 0 {
@@ -39,7 +38,7 @@ func TestCollectEventsCachedReuses(t *testing.T) {
 	}
 
 	// A new snapshot must invalidate the cache.
-	buf.AddSnapshot(mk(&r))
+	buf.AddSnapshot(mk(0))
 	ev3 := collectEventsCached(buf)
 	if len(ev3) != 0 && &ev3[0] == &ev1[0] {
 		t.Errorf("expected cache to be recomputed after a new snapshot")

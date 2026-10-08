@@ -234,8 +234,12 @@ func (l *lab) record(ns string, d time.Duration) string {
 	return path
 }
 
-// report is the part of `sstui check --json` the lab asserts on.
+// report is the part of `sstui check --json` the lab asserts on, plus the
+// warn/crit socket signals a replay of the recording raised (see
+// signalPolls), which Live and Detail would have shown.
 type report struct {
+	signals string // "none", or "LABEL=polls ..."
+
 	Status   string `json:"status"`
 	Polls    int    `json:"polls"`
 	Findings []struct {
@@ -263,7 +267,8 @@ func (l *lab) check(path string) *report {
 	for _, f := range r.Findings {
 		l.t.Logf("  finding %-28s %-8s %2d polls  %s", f.ID, f.Severity, f.PollsSeen, f.Title)
 	}
-	l.t.Logf("  signals (polls with a warn/crit socket): %s", signalPolls(l.t, path))
+	r.signals = signalPolls(l.t, path)
+	l.t.Logf("  signals (polls with a warn/crit socket): %s", r.signals)
 	return &r
 }
 
@@ -302,11 +307,15 @@ func (r *report) expectNone(t *testing.T, k string) {
 	}
 }
 
-// expectClean fails if anything was reported.
+// expectClean fails if anything was reported, as a finding or as a warn/crit
+// signal on any socket: healthy traffic shouldn't light up Live either.
 func (r *report) expectClean(t *testing.T) {
 	t.Helper()
 	if len(r.Findings) > 0 {
 		t.Errorf("healthy traffic should report nothing; got %s", r.kinds())
+	}
+	if r.signals != "none" {
+		t.Errorf("healthy traffic should raise no warn/crit signals; got %s", r.signals)
 	}
 }
 
@@ -323,7 +332,7 @@ func (r *report) kinds() string {
 
 // signalPolls replays a recording through the same pipeline as sstui and
 // counts, per signal label, the polls in which some socket had it at warn or
-// crit. It's evidence for the log, not an assertion.
+// crit.
 func signalPolls(t *testing.T, path string) string {
 	r, err := session.Open(path)
 	if err != nil {

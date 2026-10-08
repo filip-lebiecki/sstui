@@ -187,6 +187,16 @@ func TestReorderingRequestResponse(t *testing.T) {
 	r.expectNone(t, "loss")
 }
 
+// TestSynStall: the path drops everything the client sends, so its
+// handshakes never complete and the SYNs back off (1 s, 3 s, 7 s, ...).
+func TestSynStall(t *testing.T) {
+	l := newLab(t)
+	l.path(wan.with("loss 100%"), wan)
+	l.start(l.b, "sink", addrB+port)
+	l.start(l.a, "hold", addrB+port, "5")
+	l.recordAndCheck(l.a, 9*time.Second).expect(t, "syn_stall", "critical")
+}
+
 // TestZeroWindow: the receiving application stops reading. Its buffer fills,
 // it advertises a zero window, and the sender's data piles up in Send-Q.
 func TestZeroWindow(t *testing.T) {

@@ -89,16 +89,23 @@ func diagnose(c *model.Connection) Diagnosis {
 		}
 		if r.sig == model.SignalSocketDrops && c.State == "LISTEN" {
 			if s, ok := has(r.sig); ok {
-				// A listener's drops are handshakes it turned away, not data.
+				// A listener's drops aren't unread data: refused handshakes
+				// or stray handshake segments. Only the host counters tell
+				// which, so the Findings tab, not this view, decides.
 				if q, full := has(model.SignalListenQueueFull); full {
 					s.Severity = max(s.Severity, q.Severity)
+					return Diagnosis{Headline: "Accept queue full — new connections are being dropped",
+						Hint:     "the listening app isn't accept()ing fast enough; raise backlog / somaxconn",
+						Severity: s.Severity}
 				}
-				return Diagnosis{Headline: "Listener dropping connection attempts",
-					Hint:     "the accept queue overflowed (the app isn't accept()ing fast enough) or the SYN queue filled; raise backlog / somaxconn",
+				return Diagnosis{Headline: "Listener discarded incoming packets",
+					Hint:     "refused connection attempts (accept or SYN queue overflow) or stray handshake segments; the Findings tab says which",
 					Severity: s.Severity}
 			}
 		}
-		if s, ok := has(r.sig); ok {
+		// Info-level signals are context (a full TCP send buffer, one poll's
+		// retransmits), not a verdict; they're listed below the banner.
+		if s, ok := has(r.sig); ok && s.Severity > 0 {
 			if r.sig == model.SignalInboundLoss && lossDrops {
 				// The drops are part of this story and make it worse.
 				if d, ok := has(model.SignalSocketDrops); ok {

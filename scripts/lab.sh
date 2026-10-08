@@ -16,6 +16,9 @@
 #   SSTUI_LAB_HOSTWIDE=1 scripts/lab.sh # also scenarios that change
 #                                       # host-wide settings (tcp_mem): only
 #                                       # on a disposable machine
+#   SSTUI_LAB_DEMO=docs/demo/web-1.jsonl.gz scripts/lab.sh -run Demo
+#                                       # record the README demo (here only;
+#                                       # also needs unshare and hostname)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -40,9 +43,17 @@ if [ -n "${SSTUI_LAB_KEEP:-}" ]; then
 	keep=$(realpath "$SSTUI_LAB_KEEP")
 fi
 hostwide=${SSTUI_LAB_HOSTWIDE:-}
+demo=
+if [ -n "${SSTUI_LAB_DEMO:-}" ]; then
+	if [ -n "${SSTUI_LAB_HOST:-}" ]; then
+		echo "SSTUI_LAB_DEMO records here only; unset SSTUI_LAB_HOST" >&2
+		exit 2
+	fi
+	demo=$(realpath "$SSTUI_LAB_DEMO")
+fi
 
 if [ -z "${SSTUI_LAB_HOST:-}" ]; then
-	sudo env SSTUI_BIN="$out/sstui" SSTUI_LAB_KEEP="$keep" SSTUI_LAB_HOSTWIDE="$hostwide" \
+	sudo env SSTUI_BIN="$out/sstui" SSTUI_LAB_KEEP="$keep" SSTUI_LAB_HOSTWIDE="$hostwide" SSTUI_LAB_DEMO="$demo" \
 		"$out/lab.test" -test.v -test.timeout 20m "${args[@]}"
 	exit
 fi

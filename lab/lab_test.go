@@ -98,6 +98,7 @@ type lab struct {
 	a, r, b  string // client, router, server namespaces
 	bin      string // sstui binary
 	ssFilter string // passed to `sstui record --ss-filter` when set
+	hostname string // the recording's host name (a UTS namespace) when set
 	interval string // `sstui record --interval`; default 500ms
 }
 
@@ -268,6 +269,16 @@ func (l *lab) dropSynAcks(ns string) {
 		"u32", "match", "ip", "protocol", "6", "0xff", "match", "u8", "0x12", "0xff", "at", "33", "action", "drop")
 }
 
+// lossTo drops one in every n packets (at random) arriving in namespace ns
+// for address addr, so the path to that one peer is lossy and the rest
+// aren't.
+func (l *lab) lossTo(ns, addr string, n int) {
+	l.t.Helper()
+	l.sh("tc", "-n", ns, "qdisc", "add", "dev", "veth0", "ingress")
+	l.sh("tc", "-n", ns, "filter", "add", "dev", "veth0", "ingress", "protocol", "ip",
+		"u32", "match", "ip", "dst", addr+"/32", "action", "gact", "pass", "random", "netrand", "drop", strconv.Itoa(n))
+}
+
 // hostWide skips a scenario that changes host-wide settings unless
 // SSTUI_LAB_HOSTWIDE=1 asks for it: some kernel limits (tcp_mem) have no
 // per-namespace copy, so changing them touches every socket on the machine.
@@ -313,9 +324,24 @@ func (l *lab) squeezeTCPMem(pages string) {
 // ends.
 func (l *lab) start(ns string, role ...string) {
 	l.t.Helper()
+	l.startAs(ns, "", role...)
+}
+
+// startAs is start with the workload's process named name (what ss shows),
+// as a demo wants services rather than lab.test; "" keeps lab.test. The
+// kernel keeps 15 characters of it.
+func (l *lab) startAs(ns, name string, role ...string) {
+	l.t.Helper()
 	self, err := os.Executable()
 	if err != nil {
 		l.t.Fatal(err)
+	}
+	if name != "" {
+		named := filepath.Join(l.t.TempDir(), name)
+		if err := os.Symlink(self, named); err != nil {
+			l.t.Fatal(err)
+		}
+		self = named
 	}
 	cmd := exec.Command("ip", append([]string{"netns", "exec", ns, self}, role...)...)
 	cmd.Env = append(os.Environ(), roleEnv+"=1")
@@ -346,6 +372,9 @@ func (l *lab) startRecord(ns string, d time.Duration) func() string {
 	args := []string{l.bin, "record", "--interval", interval, "--duration", d.String(), "-o", path}
 	if l.ssFilter != "" {
 		args = append(args, "--ss-filter", l.ssFilter)
+	}
+	if l.hostname != "" {
+		args = append([]string{"unshare", "--uts", "sh", "-c", `hostname "$0" && exec "$@"`, l.hostname}, args...)
 	}
 	if ns != "" {
 		args = append([]string{"ip", "netns", "exec", ns}, args...)
@@ -389,15 +418,19 @@ func (l *lab) keep(path, side string) {
 	if dir == "" {
 		return
 	}
-	dst := filepath.Join(dir, strings.ReplaceAll(l.t.Name(), "/", "_")+"-"+side+".jsonl.gz")
+	l.copyOut(path, filepath.Join(dir, strings.ReplaceAll(l.t.Name(), "/", "_")+"-"+side+".jsonl.gz"))
+}
+
+// copyOut copies a recording to dst, owned by the user who ran sudo.
+func (l *lab) copyOut(path, dst string) {
+	l.t.Helper()
 	b, err := os.ReadFile(path)
 	if err == nil {
 		err = os.WriteFile(dst, b, 0o644)
 	}
 	if err != nil {
-		l.t.Errorf("keeping the recording: %v", err)
+		l.t.Errorf("copying the recording: %v", err)
 	}
-	// Hand it back to the user who ran sudo.
 	uid, errU := strconv.Atoi(os.Getenv("SUDO_UID"))
 	gid, errG := strconv.Atoi(os.Getenv("SUDO_GID"))
 	if errU == nil && errG == nil {

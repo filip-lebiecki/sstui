@@ -14,6 +14,13 @@ every kernel metric is one key press away.
 
 ![tabs](https://img.shields.io/badge/tabs-9-blue) ![signals](https://img.shields.io/badge/signals-26-orange) ![ring%20buffer](https://img.shields.io/badge/history-50%20min-green)
 
+![sstui replaying a recording: three ranked findings, then the lossy connection in Live and its history](docs/demo/triage.gif)
+
+*A recording from the [scenario lab](#scenario-lab), replayed: a worker
+that can't keep up, an accept queue overflowing, a lossy path to one peer.
+Each finding comes with its evidence and what to run next; `Enter` shows
+just the affected sockets.*
+
 ---
 
 ## Contents
@@ -51,6 +58,8 @@ Everything you see on screen — the table, the bars, the events log, the
 sparklines — is rendered from that buffer. Hit `Space` to freeze the Live
 table and `[` / `]` to scrub back and forward through that history, so you
 can replay exactly how a connection went bad instead of only seeing "now".
+
+![stepping through a recording from a healthy start until the problems appear](docs/demo/timetravel.gif)
 
 There's no agent, no daemon, no setuid binary. Just `ss`. Without root you
 still see every socket, but only your own sockets show which process owns
@@ -1202,6 +1211,18 @@ squeeze a kernel limit for a few seconds; a watchdog restores it within
 90 s even if the run is killed. The scenarios live in
 `lab/scenarios_test.go`; each one logs the findings and per-signal poll
 counts it saw, so a failure shows its evidence.
+
+The README's demo GIFs replay a recording the lab makes (`TestDemo`, a
+server named web-1 whose services go wrong 16 s in), driven by
+[vhs](https://github.com/charmbracelet/vhs) tapes:
+
+```bash
+SSTUI_LAB_DEMO=docs/demo/web-1.jsonl.gz scripts/lab.sh -run Demo
+vhs docs/demo/triage.tape      # VHS_NO_SANDBOX=true where Chromium's sandbox can't start
+vhs docs/demo/timetravel.tape
+```
+
+They want DejaVu Sans Mono and an emoji font (Noto Color Emoji) installed.
 
 Release binaries are built static with the version stamped in:
 

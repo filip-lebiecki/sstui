@@ -3,6 +3,7 @@
 package lab
 
 import (
+	"os"
 	"testing"
 	"time"
 )
@@ -579,6 +580,51 @@ func TestReceiveQueuePruned(t *testing.T) {
 	server := l.recordAndCheck(l.b, 8*time.Second)
 	server.expect(t, "rcv_prune", "warning")
 	server.expectNone(t, "rcv_mem_pressure")
+}
+
+// TestDemo records the README's demo (docs/demo): one server, web-1, whose
+// services run healthy for a while, then three things go wrong at once. A
+// worker falls behind its feed, an auth service stops accepting, and an
+// uploader's path to one peer starts losing 1% of its packets. It runs
+// only with SSTUI_LAB_DEMO set to where the recording goes.
+func TestDemo(t *testing.T) {
+	out := os.Getenv("SSTUI_LAB_DEMO")
+	if out == "" {
+		t.Skip("records the README demo; set SSTUI_LAB_DEMO to the recording's path")
+	}
+	l := newLab(t)
+	l.path(wan, wan)
+	l.hostname, l.interval = "web-1", "2s"
+	peers := l.moreAddrs(l.a, 2)
+	l.start(l.a, "sink", peers[1]+port)
+	l.startAs(l.b, "api", "reqserver", addrB+":443", "20000")
+	l.start(l.a, "reqclient", addrB+":443", "20000", "8")
+	l.startAs(l.b, "worker", "slowsink", addrB+":7000", "300")
+	l.startAs(l.b, "auth", "backlog", addrB+":8443", "16")
+
+	wait := l.startRecord(l.b, 60*time.Second)
+	time.Sleep(16 * time.Second)
+	l.start(l.a, "send", addrB+":7000") // more work than the worker can take
+	l.start(l.a, "hold", addrB+":8443", "40")
+	l.lossTo(l.a, peers[1], 100)
+	l.startAs(l.b, "uploader", "send", peers[1]+port)
+	path := wait()
+
+	r := l.check(path, "server")
+	r.expect(t, "recv_backlog", "critical")
+	r.expect(t, "listen_queue", "critical")
+	r.expect(t, "loss", "warning")
+	// Nothing else, so the healthy opening and the api stay quiet. The
+	// burst of 40 connections at a backlog of 16 may overflow the SYN
+	// queue for a poll before the accept queue is seen full.
+	for _, f := range r.Findings {
+		switch kind(f.ID) {
+		case "recv_backlog", "listen_queue", "loss", "syn_backlog", "listen_overflow_host":
+		default:
+			t.Errorf("demo: unexpected %s finding: %s", f.ID, f.Title)
+		}
+	}
+	l.copyOut(path, out)
 }
 
 // TestHealthyIdleKeepalive: idle connections with TCP keepalive on (Go's

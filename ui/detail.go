@@ -305,9 +305,17 @@ func RenderSocket(conn *model.Connection, historical bool, buf *poller.Buffer, w
 				fmtBytes(&used)+" / "+fmtBytes(&limit), ratio))
 		}
 		{
+			// The send buffer's limit (tb) holds what's queued in the
+			// socket: w for TCP (sk_wmem_queued, what the kernel checks
+			// against tb), t for UDP (sk_wmem_alloc). TCP's t is only
+			// what's been handed to the device, near 0 with a full buffer.
 			used, limit := 0, 0
-			if conn.SkmemT != nil {
-				used = *conn.SkmemT
+			queued := conn.SkmemW
+			if conn.Protocol == "udp" {
+				queued = conn.SkmemT
+			}
+			if queued != nil {
+				used = *queued
 			}
 			if conn.SkmemTB != nil {
 				limit = *conn.SkmemTB

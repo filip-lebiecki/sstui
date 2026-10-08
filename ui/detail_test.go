@@ -61,3 +61,19 @@ func TestOOORatio(t *testing.T) {
 		t.Errorf("unknown OOO count: ratio is undefined")
 	}
 }
+
+// TestSocketSendBufferQueued: a TCP send buffer's fill is what's queued in
+// it (skmem w), checked against tb; t is only what the device holds, near 0
+// with a full buffer (the demo's uploader: t 0, w 1.5 MB of a 1.6 MB tb).
+// UDP's queue is t.
+func TestSocketSendBufferQueued(t *testing.T) {
+	i := func(v int) *int { return &v }
+	tcp := &model.Connection{Protocol: "tcp", State: "ESTAB", SkmemT: i(0), SkmemW: i(1_536_000), SkmemTB: i(1_638_400)}
+	if out := ansi.Strip(RenderSocket(tcp, false, poller.NewBuffer(), 140, 40)); !strings.Contains(out, "snd buf         :   1.5M / 1.6M") {
+		t.Errorf("TCP send buffer should show w / tb:\n%s", out)
+	}
+	udp := &model.Connection{Protocol: "udp", State: "UNCONN", SkmemT: i(4096), SkmemW: i(0), SkmemTB: i(212_992)}
+	if out := ansi.Strip(RenderSocket(udp, false, poller.NewBuffer(), 140, 40)); !strings.Contains(out, "snd buf         :   4.0K / 208.0K") {
+		t.Errorf("UDP send buffer should show t / tb:\n%s", out)
+	}
+}

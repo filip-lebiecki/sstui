@@ -293,7 +293,7 @@ so you can step back to see what was wrong when.
 | Path MTU black hole | `RTO` / `NO_ACK` on connections with nothing acknowledged since the handshake, segments over 536 bytes | a ping of full-sized packets with DF set; `tcp_mtu_probing`; let ICMP "fragmentation needed" through or clamp the MSS |
 | Inbound loss (per peer / host-wide) | `RX_LOSS` | path back toward the peer (loss is often asymmetric); RX drops / ring size when many peers are affected |
 | Reordering, path MTU, latency inflation | `REORDER`, `PMTU`, `RTT_SPIKE` | ECMP/LACP hashing; ICMP/MSS clamping; qdisc / BBR |
-| Window- or buffer-limited throughput | `RWND_LIM`, `SNDBUF_LIM` | BDP estimate vs `tcp_rmem`/`tcp_wmem`, window scaling |
+| Window- or buffer-limited throughput | `RWND_LIM`, `SNDBUF_LIM` | slow reader or small buffer at the receiver (its Recv-Q tells; named outright when the receiver is local), `tcp_rmem`, window scaling; BDP estimate vs `tcp_wmem` |
 | Socket leak | `CW_LEAK` | fd count vs limit; the code path missing `close()` |
 | Connection churn / port exhaustion | `TW_STORM`, ephemeral range ≥70% used | pooling/keep-alive, `tcp_tw_reuse`, wider port range |
 | SYN flood / backlog, UDP drops, memory pressure | `SyncookiesSent`, `Udp:RcvbufErrors`, prune/backlog-drop counters | sources of half-open connections, `rmem_max`, `tcp_mem` |
@@ -694,7 +694,7 @@ badge color and in the Live-tab indicator glyph.
 | `PMTU`     | `pmtu_mismatch`      | `pmtu < advmss+40`                                                          | `pmtu:` `advmss:` ✓                    | 1        | orange |
 | `RTT_SPIKE`| `rtt_spike`          | `rtt/minrtt > 5` (crit >15) and `rtt − minrtt ≥ 10ms`                       | `rtt:` `minrtt:` ✓                     | 1–2      | orange |
 | `SEND_Q`   | `send_buffer_pressure` | Send-Q ≥ 50% of send buffer (crit ≥80%), sustained 2 polls; 16K/64K abs fallback | column + `skmem` `tb` ✓        | UDP 1–2, TCP 0 (info) | yellow |
-| `RCV_Q`    | `recv_buffer_pressure` | Recv-Q ≥ 50% of recv buffer (crit ≥80%), sustained 2 polls; 16K/64K abs fallback | column + `skmem` `rb` ✓        | 1–2      | yellow |
+| `RCV_Q`    | `recv_buffer_pressure` | Recv-Q ≥ 50% of recv buffer (crit ≥80%), sustained 2 polls; for TCP of half the buffer, what it holds in data; 16K/64K abs fallback | column + `skmem` `rb` ✓        | 1–2      | yellow |
 | `HI_RETRANS`| `high_retrans_rate` | `retrans/sent > 5%` this poll                                              | deltas of `bytes_sent`/`bytes_retrans` ✓ | 0 (info) | red  |
 | `CWND_LIM` | `cwnd_limited`       | `unacked > 0.8·cwnd` && `> 10` (using its full window — healthy bulk transfer) | `unacked:` `cwnd:` ✓                | 0 (info) | gray   |
 | `LISTEN_Q` | `listen_queue_full`  | LISTEN `RecvQ/SendQ > 0.8` (crit ≥1.0)                                      | `RecvQ/SendQ` column ✓                 | 1–2      | red    |
@@ -751,7 +751,7 @@ badge color and in the Live-tab indicator glyph.
 | Signal      | Fires when                                          | Severity         | What it means                            |
 |-------------|------------------------------------------------------|------------------|------------------------------------------|
 | `SEND_Q`    | Send-Q ≥ 50% of the send buffer (crit ≥80%) on two consecutive polls; 16 KB / 64 KB when the buffer size is unknown | UDP warn / crit; TCP info | Data queued faster than it drains. For TCP that's an app writing faster than the path: normal for bulk transfers (a blocked sender shows as `ZERO_WIN`, `RWND_LIM`, `SNDBUF_LIM`). For UDP the host can't put packets out as fast as the app sends |
-| `RCV_Q`     | Recv-Q ≥ 50% of the receive buffer (crit ≥80%) on two consecutive polls; same fallback | warn / crit | The local app isn't reading fast enough |
+| `RCV_Q`     | Recv-Q ≥ 50% of the receive buffer (crit ≥80%) on two consecutive polls; same fallback. For TCP, of half the buffer: the rest of `rb` pays per-packet overhead, so a full TCP queue holds about half of it in data | warn / crit | The local app isn't reading fast enough |
 
 ---
 

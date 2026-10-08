@@ -558,3 +558,31 @@ func TestSynStall(t *testing.T) {
 		}
 	}
 }
+
+// TestRecvQueuePressure: a TCP receive buffer holds about half of rb in data,
+// so a TCP Recv-Q is judged against that (a full one reaches crit), while a
+// UDP Recv-Q is judged against rb. Both must persist across two polls.
+func TestRecvQueuePressure(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		proto     string
+		cur, prev int
+		wantSev   int
+	}{
+		{"tcp reader keeping up", "tcp", 0, 0, 0},
+		{"tcp 30% of rb", "tcp", 39_000, 39_000, 1},
+		{"tcp full (60% of rb)", "tcp", 78_000, 78_000, 2},
+		{"tcp one poll only", "tcp", 78_000, 0, 0},
+		{"udp 30% of rb", "udp", 39_000, 39_000, 0},
+		{"udp 60% of rb", "udp", 78_000, 78_000, 1},
+	} {
+		c := &model.Connection{Protocol: tt.proto, State: "ESTAB", RecvQ: ip(tt.cur), PrevRecvQ: ip(tt.prev), SkmemRB: ip(131_072)}
+		if tt.proto == "udp" {
+			c.State = "UDP_ESTAB"
+		}
+		s, ok := sigByType(Classify(c), model.SignalRecvBufferPressure)
+		if got := map[bool]int{true: s.Severity}[ok]; got != tt.wantSev {
+			t.Errorf("%s: RCV_Q severity %d, want %d", tt.name, got, tt.wantSev)
+		}
+	}
+}

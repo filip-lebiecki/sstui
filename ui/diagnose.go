@@ -55,7 +55,7 @@ func diagnose(c *model.Connection) Diagnosis {
 		{model.SignalZeroWindow, "Stalled: peer's receive window is zero",
 			"the remote application has stopped reading from its socket"},
 		{model.SignalRwndLimited, "Throughput limited by the receiver's window",
-			"the peer can't advertise window fast enough — it's the bottleneck, not you"},
+			"the receiver's buffer is too small for the path, or the app there reads slowly — the bottleneck is at that end, not the network"},
 		{model.SignalSndbufLimited, "Throughput limited by the local send buffer",
 			"raise SO_SNDBUF or the app isn't writing fast enough"},
 		{model.SignalRTOFiring, "Retransmission timeout firing repeatedly",

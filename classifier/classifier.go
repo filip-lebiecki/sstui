@@ -363,6 +363,21 @@ func queueSeverity(q int, bufCap *int) int {
 	return 0
 }
 
+// tcpRecvPayload is how much data a TCP receive buffer of rb bytes holds:
+// rb is a memory budget that also pays each packet's overhead, and TCP sizes
+// its window to fit, historically half of it (tcp_adv_win_scale), these days
+// what the kernel measures (in the lab, a slow reader's full buffer held
+// 0.4-0.63 of rb in data). Judged against rb itself, a full TCP receive
+// queue barely reached the warning level. A reader that keeps up leaves
+// Recv-Q at 0, so the lower bar doesn't catch healthy traffic.
+func tcpRecvPayload(rb *int) *int {
+	if rb == nil {
+		return nil
+	}
+	half := *rb / 2
+	return &half
+}
+
 // queuePressure returns the severity for a socket queue, but only when it has
 // been under pressure on *both* this poll and the previous one. Requiring
 // persistence (and stashed prev value) means a momentary queue during a normal
@@ -644,7 +659,7 @@ func Classify(c *model.Connection) []model.Signal {
 		signals = append(signals, model.Signal{Type: model.SignalSendBufferPressure, Severity: 0, Value: *c.SendQ})
 	}
 
-	if sev := queuePressure(c.RecvQ, c.PrevRecvQ, c.SkmemRB); sev > 0 {
+	if sev := queuePressure(c.RecvQ, c.PrevRecvQ, tcpRecvPayload(c.SkmemRB)); sev > 0 {
 		signals = append(signals, model.Signal{Type: model.SignalRecvBufferPressure, Severity: sev, Value: *c.RecvQ})
 	}
 

@@ -24,6 +24,7 @@ const roleEnv = "SSTUI_LAB_ROLE"
 //	send ADDR [N [CC]]        N connections (default 1) writing as fast as they can,
 //	                          with congestion control CC (default: the system's)
 //	stall ADDR                accept connections and never read (zero window)
+//	slowsink ADDR KBPS        accept connections and read each at KBPS kilobytes/s
 //	backlog ADDR N            listen with an accept queue of N, never accept
 //	hold ADDR N               open N connections and keep them
 //	noclose ADDR              accept connections and never close them
@@ -75,6 +76,25 @@ func runRole(args []string) error {
 			}()
 		}
 		return <-errc
+	case "slowsink":
+		rate := num(2) * 1000
+		return serve(arg(1), func(c net.Conn) {
+			buf := make([]byte, 16<<10)
+			start, read := time.Now(), 0
+			for {
+				// Read on schedule: never ahead of rate, like an app that
+				// can only process so much per second.
+				if ahead := time.Duration(float64(read)/float64(rate)*float64(time.Second)) - time.Since(start); ahead > 0 {
+					time.Sleep(ahead)
+				}
+				n, err := c.Read(buf)
+				if err != nil {
+					c.Close()
+					return
+				}
+				read += n
+			}
+		})
 	case "stall":
 		return serve(arg(1), keep)
 	case "backlog":

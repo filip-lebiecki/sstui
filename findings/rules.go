@@ -107,8 +107,7 @@ func ruleRecvBacklog(a *analysis) {
 			Title:    fmt.Sprintf("%s isn't reading fast enough: %s backed up", a.procLabel(c0), plural(len(g.conns), "socket")),
 			Detail:   "Data arrives faster than the application reads it; once a socket's receive buffer fills, the kernel drops (UDP) or throttles (TCP) the sender.",
 			Evidence: []string{fmt.Sprintf("%s waiting in Recv-Q", humanBytes(float64(queued)))},
-			// Same exclusion as the grouping: DROPS counts here unless it
-			// comes with RX_LOSS (and no RCV_Q, which the first term covers).
+			// Same as the grouping: loss-recovery discards are info DROPS.
 			Filter: filterJoin(procFilter(c0), "not state=LISTEN", "(signal=RCV_Q or signal=DROPS:warn)"),
 			Count:  len(g.conns),
 		}
@@ -143,10 +142,17 @@ func ruleRecvBacklog(a *analysis) {
 				Command: fmt.Sprintf("sysctl -w net.core.rmem_max=%d", target),
 			})
 		}
+		// A bigger TCP limit only matters once autotuning has hit it; a slow
+		// reader's buffer usually never grows that far.
+		atCap := func(v []int) bool {
+			return slices.ContainsFunc(g.conns, func(c *model.Connection) bool {
+				return c.Protocol == "tcp" && c.SkmemRB != nil && *c.SkmemRB >= v[2]
+			})
+		}
 		if udp < len(g.conns) {
-			if v := a.in.Sysctl.Ints("net.ipv4.tcp_rmem"); len(v) == 3 {
+			if v := a.in.Sysctl.Ints("net.ipv4.tcp_rmem"); len(v) == 3 && atCap(v) {
 				f.Actions = append(f.Actions, Action{
-					Text:    fmt.Sprintf("For TCP, a larger buffer only helps with bursts (tcp_rmem max is %s)", humanBytes(float64(v[2]))),
+					Text:    fmt.Sprintf("For TCP, a larger buffer only helps with bursts; it has reached tcp_rmem max (%s)", humanBytes(float64(v[2]))),
 					Command: fmt.Sprintf(`sysctl -w net.ipv4.tcp_rmem="%d %d %d"`, v[0], v[1], roundUpMB(float64(v[2])*2)),
 				})
 			}
@@ -707,6 +713,11 @@ func bdpBytes(c *model.Connection) (float64, bool) {
 }
 
 // ruleRwndLimited: throughput capped by the receiver's advertised window.
+// From the sending end a receive buffer too small for the path and a slow
+// reader (whose full buffer leaves little window) look the same, so the
+// finding names both unless the receiver is on this host, where its Recv-Q
+// tells. The delivery rate isn't evidence here: under a window limit it is
+// the window divided by the RTT, whatever the path could carry.
 func ruleRwndLimited(a *analysis) {
 	for _, g := range a.groupBySignal(func(c *model.Connection) string { return c.PeerAddr }, model.SignalRwndLimited) {
 		c0 := g.conns[0]
@@ -714,16 +725,16 @@ func ruleRwndLimited(a *analysis) {
 			ID:       "rwnd|" + g.key,
 			Severity: g.sev,
 			Title:    fmt.Sprintf("Throughput to %s is limited by the receiver's window", g.key),
-			Detail:   "We could send faster, but the receiver's advertised window is too small for this path — its buffer, not the network, is the bottleneck.",
+			Detail:   "We could send faster, but the receiver's advertised window holds us back: either its receive buffer is too small for this path, or the application there reads slowly and its buffer is full. From this end the two look the same.",
 			Filter:   filterJoin("peer=="+g.key, "signal=RWND_LIM"),
 			Count:    len(g.conns),
 		}
 		if s, ok := signalOf(c0, model.SignalRwndLimited); ok {
 			f.Evidence = append(f.Evidence, fmt.Sprintf("blocked on the window %v", s.Value))
 		}
-		bdp, haveBDP := bdpBytes(c0)
-		if haveBDP {
-			f.Evidence = append(f.Evidence, fmt.Sprintf("path needs ≈%s in flight (delivery rate × RTT)", humanBytes(bdp)))
+		if c0.SndWnd != nil && c0.RTT != nil && *c0.RTT > 0 {
+			f.Evidence = append(f.Evidence, fmt.Sprintf("the receiver advertises %s; at %.0f ms RTT that caps a connection at ≈%s/s",
+				humanBytes(float64(*c0.SndWnd)), *c0.RTT, humanBytes(float64(*c0.SndWnd)/(*c0.RTT/1000))))
 		}
 		switch {
 		case c0.WscaleSnd == nil:
@@ -736,19 +747,37 @@ func ruleRwndLimited(a *analysis) {
 		case *c0.WscaleSnd == 0:
 			f.Evidence = append(f.Evidence, "the receiver advertises window scale 0 — its window can't exceed 64 KB")
 		}
-		if a.localPeer(c0) != nil {
+		rcv := a.localPeer(c0)
+		var slowReader bool
+		if rcv != nil {
+			_, slowReader = signalOf(rcv, model.SignalRecvBufferPressure)
+		}
+		switch {
+		case slowReader:
+			f.Detail = "We could send faster, but the receiver's advertised window holds us back. The receiver is on this host and its receive queue is full: the application reads slowly, and a bigger buffer wouldn't help."
+			f.Evidence = append(f.Evidence, fmt.Sprintf("the receiving socket (%s) has %s waiting in Recv-Q", a.procLabel(rcv), humanBytes(float64(deref(rcv.RecvQ)))))
+			if rcv.PID != nil {
+				f.Actions = append(f.Actions, Action{Text: "Find out why the reader is slow — CPU-bound or blocked", Command: fmt.Sprintf("top -H -p %d", *rcv.PID)})
+			}
+		case rcv != nil:
 			if v := a.in.Sysctl.Ints("net.ipv4.tcp_rmem"); len(v) == 3 {
-				target := float64(v[2]) * 2
-				if haveBDP {
-					target = max(target, bdp*2)
-				}
 				f.Actions = append(f.Actions, Action{
-					Text:    fmt.Sprintf("The receiver is on this host; tcp_rmem max is %s", humanBytes(float64(v[2]))),
-					Command: fmt.Sprintf(`sysctl -w net.ipv4.tcp_rmem="%d %d %d"`, v[0], v[1], roundUpMB(target)),
+					Text:    fmt.Sprintf("The receiver is on this host and keeps up with its data, so its buffer is the cap; tcp_rmem max is %s", humanBytes(float64(v[2]))),
+					Command: fmt.Sprintf(`sysctl -w net.ipv4.tcp_rmem="%d %d %d"`, v[0], v[1], roundUpMB(float64(v[2])*2)),
 				})
 			}
-		} else {
-			f.Actions = append(f.Actions, Action{Text: fmt.Sprintf("Raise the receive buffer on %s (its tcp_rmem max, or SO_RCVBUF if the app sets one — which also disables autotuning)", g.key)})
+		default:
+			var ports []string
+			for _, c := range g.conns {
+				if p := "sport = :" + c.PeerPort; !slices.Contains(ports, p) {
+					ports = append(ports, p)
+				}
+			}
+			slices.Sort(ports)
+			f.Actions = append(f.Actions,
+				Action{Text: fmt.Sprintf("On %s, look at the receiving sockets: a full Recv-Q means the application there reads slowly (fix the reader); a nearly empty one means its buffer is too small", g.key),
+					Command: fmt.Sprintf("ss -tmn '%s'", strings.Join(ports, " or "))},
+				Action{Text: "For a small buffer: raise its tcp_rmem max, or SO_RCVBUF if the app sets one (which also disables autotuning)"})
 		}
 		a.add(f)
 	}

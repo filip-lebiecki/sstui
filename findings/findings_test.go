@@ -317,16 +317,60 @@ func TestRankingCritFirst(t *testing.T) {
 
 func TestRwndLimitedWindowScaling(t *testing.T) {
 	c := conn("ESTAB", "10.0.0.1", "1", "10.0.0.2", "443", model.Signal{Type: model.SignalRwndLimited, Severity: 2, Value: "90% of poll"})
-	c.DeliveryRate, c.RTT = ip(100_000_000), fp(80) // 100 Mbit/s × 80 ms = 1 MB BDP
+	c.SndWnd, c.RTT = ip(65535), fp(80)
 	f := byID(Analyze(Input{Conns: []*model.Connection{c}, Sysctl: poller.Sysctls{"net.ipv4.tcp_window_scaling": "0"}}), "rwnd|")
 	if f == nil {
 		t.Fatal("expected rwnd finding")
 	}
-	if !hasText(f.Evidence, "window scaling wasn't negotiated") || !hasText(f.Evidence, "≈977 KB") {
+	if !hasText(f.Evidence, "window scaling wasn't negotiated") || !hasText(f.Evidence, "advertises 64 KB; at 80 ms RTT that caps a connection at ≈800 KB/s") {
 		t.Errorf("evidence = %q", f.Evidence)
 	}
 	if !hasCommand(f, "tcp_window_scaling=1") {
 		t.Errorf("should suggest enabling window scaling: %+v", f.Actions)
+	}
+}
+
+// TestRecvBacklogTCPBufferAdvice: raising tcp_rmem max only helps a TCP
+// socket whose buffer autotuning has already grown to it.
+func TestRecvBacklogTCPBufferAdvice(t *testing.T) {
+	rmem := poller.Sysctls{"net.ipv4.tcp_rmem": "4096 131072 6291456"}
+	for _, tt := range []struct {
+		rb   int
+		want bool
+	}{{131_072, false}, {6_291_456, true}} {
+		c := conn("ESTAB", "10.0.0.1", "5001", "10.0.0.2", "40000", sig(model.SignalRecvBufferPressure, 2))
+		c.Protocol, c.PID, c.RecvQ, c.SkmemRB = "tcp", ip(9), ip(70_000), ip(tt.rb)
+		f := byID(Analyze(Input{Conns: []*model.Connection{c}, Sysctl: rmem}), "recv_backlog|pid:9")
+		if f == nil || hasCommand(f, "tcp_rmem") != tt.want {
+			t.Errorf("rb %d: tcp_rmem advice %v, want %v: %+v", tt.rb, f != nil && hasCommand(f, "tcp_rmem"), tt.want, f)
+		}
+	}
+}
+
+// TestRwndLimitedCause: a remote receiver could be a slow reader or a small
+// buffer, so the finding names both; a receiver on this host shows which.
+func TestRwndLimitedCause(t *testing.T) {
+	snd := conn("ESTAB", "127.0.0.1", "40000", "127.0.0.1", "5001", sig(model.SignalRwndLimited, 2))
+	rcv := conn("ESTAB", "127.0.0.1", "5001", "127.0.0.1", "40000")
+	rcv.Process, rcv.PID, rcv.RecvQ = sp("reader"), ip(7), ip(250_000)
+	rmem := poller.Sysctls{"net.ipv4.tcp_rmem": "4096 131072 6291456"}
+
+	snd2 := conn("ESTAB", "127.0.0.1", "40001", "127.0.0.1", "443", sig(model.SignalRwndLimited, 1))
+	f := byID(Analyze(Input{Conns: []*model.Connection{snd, snd2}, Sysctl: rmem}), "rwnd|")
+	if f == nil || !strings.Contains(f.Detail, "reads slowly") || !hasCommand(f, "ss -tmn 'sport = :443 or sport = :5001'") {
+		t.Errorf("remote receiver: want both causes and how to tell them apart: %+v", f)
+	}
+
+	rcv.Signals = []model.Signal{{Type: model.SignalRecvBufferPressure, Severity: 1}}
+	f = byID(Analyze(Input{Conns: []*model.Connection{snd, rcv}, Sysctl: rmem}), "rwnd|")
+	if f == nil || !hasText(f.Evidence, "has 244 KB waiting in Recv-Q") || !hasCommand(f, "top -H -p 7") || hasCommand(f, "tcp_rmem") {
+		t.Errorf("local slow reader: want the reader named and no buffer advice: %+v", f)
+	}
+
+	rcv.Signals, rcv.RecvQ = nil, ip(0)
+	f = byID(Analyze(Input{Conns: []*model.Connection{snd, rcv}, Sysctl: rmem}), "rwnd|")
+	if f == nil || !hasCommand(f, `tcp_rmem="4096 131072 12582912"`) {
+		t.Errorf("local receiver keeping up: want the tcp_rmem advice: %+v", f)
 	}
 }
 

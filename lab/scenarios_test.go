@@ -305,3 +305,17 @@ func TestPMTUBlackHole(t *testing.T) {
 	r.expect(t, "pmtu_blackhole", "critical")
 	r.expectNone(t, "loss")
 }
+
+// TestSlowReader: the receiving application reads only 500 KB/s of a
+// 100 Mbit/s path. Its receive queue stays full and TCP flow control holds
+// the sender to the reader's pace: the receiver names its slow reader, the
+// sender sees the window holding it back.
+func TestSlowReader(t *testing.T) {
+	l := newLab(t)
+	l.path(wan, wan)
+	l.start(l.b, "slowsink", addrB+port, "500")
+	l.start(l.a, "send", addrB+port)
+	client, server := l.recordBoth(8 * time.Second)
+	server.expect(t, "recv_backlog", "critical") // a full TCP receive queue
+	client.expect(t, "rwnd", "warning")
+}

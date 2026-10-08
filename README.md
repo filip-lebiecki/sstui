@@ -1230,7 +1230,7 @@ They want DejaVu Sans Mono and an emoji font (Noto Color Emoji) installed.
 Release binaries are built static with the version stamped in:
 
 ```bash
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w -X main.version=v1.4.0" -o dist/sstui-linux-amd64 .
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w -X main.version=v1.4.1" -o dist/sstui-linux-amd64 .
 ```
 
 Coding conventions:

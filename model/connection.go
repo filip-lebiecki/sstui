@@ -2,8 +2,15 @@ package model
 
 import "time"
 
-// SendSlotMin is the shortest span a SendSlot covers once complete.
+// SendSlotMin is the span a SendSlot covers once complete (see SlotFull).
 const SendSlotMin = 2 * time.Second
+
+// SlotFull reports whether a slot spanning span is complete: SendSlotMin,
+// give or take a tenth. Polls are timestamped when ss returns, so polls 2 s
+// apart are 1.99 s apart as often as 2.01 s; held to exactly SendSlotMin,
+// half the slots at sstui's default interval ran to 4 s, the window held too
+// few for a verdict, and loss findings came and went.
+func SlotFull(span time.Duration) bool { return span >= SendSlotMin*9/10 }
 
 // SendSlot summarizes at least SendSlotMin of a connection's sending: the
 // polls in which it sent data, what was retransmitted or reordered, and the
@@ -172,6 +179,12 @@ type Connection struct {
 	SendSlots []SendSlot `json:"-"`
 	// RecvSlots are the same for receiving, for RX_LOSS.
 	RecvSlots []RecvSlot `json:"-"`
+	// HostBufferDrops is whether TCP dropped anything for want of buffer or
+	// memory this poll, by the host's counters (poller.TCPBufferDrops); nil
+	// when they can't tell. The socket drop counter also takes what TCP
+	// discards by design (PAWS, duplicate data, probes), which these
+	// counters leave out. Set by the session before the snapshot is added.
+	HostBufferDrops *bool `json:"-"`
 	// PathMinRTT is the lowest min RTT among this poll's connections to the
 	// same peer address: the path's baseline, for a connection whose own
 	// minimum was measured through a queue (a receiver only measures it on

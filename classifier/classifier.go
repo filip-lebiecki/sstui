@@ -301,11 +301,11 @@ func SteadyRetrans(c *model.Connection) bool {
 // judge: about 8 s of sending (receiving) at 2 s slots.
 const slotMinCount = 4
 
-// completeSlots returns slots without the one still filling (span shorter
-// than model.SendSlotMin), or nil when fewer than slotMinCount are complete:
+// completeSlots returns slots without the one still filling (not yet
+// model.SlotFull), or nil when fewer than slotMinCount are complete:
 // too little traffic to judge.
 func completeSlots[S any](slots []S, span func(S) time.Duration) []S {
-	if n := len(slots); n > 0 && span(slots[n-1]) < model.SendSlotMin {
+	if n := len(slots); n > 0 && !model.SlotFull(span(slots[n-1])) {
 		slots = slots[:n-1]
 	}
 	if len(slots) < slotMinCount {
@@ -324,12 +324,15 @@ func slotSpan(slots []model.SendSlot) time.Duration {
 
 // Reordering thresholds: reordering events as a share of data segments sent.
 // Set from the scenario lab: 0.1% of packets reordered on a 100 Mbit/s path
-// gives about 0.9% (each reordered packet can count more than once), while
-// the stray events request bursts produce stay far below 0.1% over a window,
-// and in a few percent of polls. Loss recovery can pass it; the ratio to
-// retransmits (reorderPerRetrans) tells that apart.
+// gives about 0.9% (each reordered packet can count more than once), and
+// the reordering scenarios ran at 4% and more. Healthy bulk flows sharing a
+// busy link with request/response traffic saw up to 0.2%, steadily: real
+// (the receiver counted the out-of-order arrivals), but so little that TCP's
+// reordering tolerance absorbs it, nothing to act on. The stray events
+// request bursts produce stay far below that. Loss recovery can pass it; the
+// ratio to retransmits (reorderPerRetrans) tells that apart.
 const (
-	reorderWarn = 0.001
+	reorderWarn = 0.005
 	reorderCrit = 0.05
 	// reorderPerRetrans is the least reordering events per retransmitted
 	// segment over the window. Loss recovery ticks reord_seen steadily too
@@ -669,20 +672,29 @@ func Classify(c *model.Connection) []model.Signal {
 	// keep up. Applies to both TCP and UDP; data lost that way is a hard
 	// event, not a soft warning, so even one drop is worth surfacing.
 	//
-	// Except on a TCP socket that received no data segment that poll: the
-	// counter also takes every segment TCP discards by design, above all
-	// keepalive and zero-window probes (an old sequence number, answered
-	// with an ACK). An idle connection with keepalive on (Go's default, a
-	// probe every 15 s) drops one per probe. Those are info: nothing was
-	// lost, and a stalled reader shows as RCV_Q or ZERO_WIN anyway.
+	// Except on a TCP socket, where the counter also takes every segment
+	// TCP discards by design, which are info: nothing was lost for want of
+	// room, and a stalled reader shows as RCV_Q or ZERO_WIN anyway.
+	//   - No data segment arrived that poll: keepalive and zero-window
+	//     probes (an old sequence number, answered with an ACK). An idle
+	//     connection with keepalive on (Go's default, a probe every 15 s)
+	//     drops one per probe.
+	//   - TCP dropped nothing for want of buffer or memory anywhere on the
+	//     host that poll (HostBufferDrops): PAWS (RFC 7323 timestamp checks
+	//     failing on ACKs, about 1500 in 35 s on the lab's busy senders) and
+	//     duplicate data.
 	if c.DeltaSkmemD != nil && *c.DeltaSkmemD > 0 {
 		sev := 1
 		if *c.DeltaSkmemD > 10 {
 			sev = 2
 		}
 		var v any = *c.DeltaSkmemD
-		if n, ok := dataSegsThisPoll(c); ok && n == 0 && c.Protocol == "tcp" && c.State != "LISTEN" {
-			sev, v = 0, fmt.Sprintf("%d without data (probes)", *c.DeltaSkmemD)
+		if c.Protocol == "tcp" && c.State != "LISTEN" {
+			if n, ok := dataSegsThisPoll(c); ok && n == 0 {
+				sev, v = 0, fmt.Sprintf("%d without data (probes)", *c.DeltaSkmemD)
+			} else if c.HostBufferDrops != nil && !*c.HostBufferDrops {
+				sev, v = 0, fmt.Sprintf("%d by TCP's checks (PAWS, duplicates), none for want of buffer", *c.DeltaSkmemD)
+			}
 		}
 		signals = append(signals, model.Signal{Type: model.SignalSocketDrops, Severity: sev, Value: v})
 	}
@@ -915,14 +927,14 @@ func Classify(c *model.Connection) []model.Signal {
 		}
 	}
 
-	// DSACK growth: peer reported duplicate ACKs since last poll. Means our
-	// RTO was too aggressive and we retransmitted unnecessarily.
+	// DSACK growth: the peer reported duplicate data since last poll, so we
+	// retransmitted something that had arrived (an RTO or fast retransmit
+	// too eager, or reordering). Info-level context like RETRANS: TCP undoes
+	// spurious retransmits itself, and a healthy flow sharing a busy link
+	// in the lab (TestHealthyDefaultInterval) had them now and then; real
+	// reordering is REORDER's.
 	if c.DeltaDSACKDups != nil && *c.DeltaDSACKDups > 0 {
-		sev := 1
-		if *c.DeltaDSACKDups > 5 {
-			sev = 2
-		}
-		signals = append(signals, model.Signal{Type: model.SignalDSACKSpurious, Severity: sev, Value: *c.DeltaDSACKDups})
+		signals = append(signals, model.Signal{Type: model.SignalDSACKSpurious, Severity: 0, Value: *c.DeltaDSACKDups})
 	}
 
 	// Inbound loss: on the receiving host, segments arriving after a gap are

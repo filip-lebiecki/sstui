@@ -79,7 +79,7 @@ func (s *Session) sysSlots(now time.Time) []*poller.SysStat {
 	}
 	bounds := []timedSys{s.sysHist[0]}
 	for _, h := range s.sysHist[1:] {
-		if h.at.Sub(bounds[len(bounds)-1].at) >= model.SendSlotMin {
+		if model.SlotFull(h.at.Sub(bounds[len(bounds)-1].at)) {
 			bounds = append(bounds, h)
 		}
 	}
@@ -126,6 +126,13 @@ func (s *Session) Ingest(p *Poll) bool {
 	// that still returned data; skip only when nothing came back.
 	if p.Err != nil && len(p.Conns) == 0 {
 		return false
+	}
+	if p.Sys != nil && s.SysPrev != nil {
+		if dropped, ok := s.SysCur.TCPBufferDrops(s.SysPrev); ok {
+			for _, c := range p.Conns {
+				c.HostBufferDrops = &dropped
+			}
+		}
 	}
 	s.Buf.AddSnapshotAt(p.Conns, p.Time)
 

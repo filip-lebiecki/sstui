@@ -15,6 +15,7 @@
 package lab
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -97,6 +98,7 @@ type lab struct {
 	a, r, b  string // client, router, server namespaces
 	bin      string // sstui binary
 	ssFilter string // passed to `sstui record --ss-filter` when set
+	interval string // `sstui record --interval`; default 500ms
 }
 
 var labSeq atomic.Int32
@@ -340,7 +342,8 @@ func (l *lab) record(ns string, d time.Duration) string {
 func (l *lab) startRecord(ns string, d time.Duration) func() string {
 	l.t.Helper()
 	path := filepath.Join(l.t.TempDir(), "rec.jsonl.gz")
-	args := []string{l.bin, "record", "--interval", "500ms", "--duration", d.String(), "-o", path}
+	interval := cmp.Or(l.interval, "500ms")
+	args := []string{l.bin, "record", "--interval", interval, "--duration", d.String(), "-o", path}
 	if l.ssFilter != "" {
 		args = append(args, "--ss-filter", l.ssFilter)
 	}
@@ -475,6 +478,26 @@ func (r *report) expect(t *testing.T, k, severity string) {
 		}
 	}
 	t.Errorf("%s: want a %s finding at %s or worse; got %s", r.side, k, severity, r.kinds())
+}
+
+// expectSteady fails unless a finding of this kind was reported in at least
+// polls polls: a verdict that comes and goes would show in fewer.
+func (r *report) expectSteady(t *testing.T, k string, polls int) {
+	t.Helper()
+	for _, f := range r.Findings {
+		if kind(f.ID) == k && f.PollsSeen >= polls {
+			return
+		}
+	}
+	t.Errorf("%s: want a %s finding in at least %d of %d polls; got %s", r.side, k, polls, r.Polls, r.kindPolls())
+}
+
+func (r *report) kindPolls() string {
+	var ks []string
+	for _, f := range r.Findings {
+		ks = append(ks, fmt.Sprintf("%s in %d", kind(f.ID), f.PollsSeen))
+	}
+	return strings.Join(ks, ", ")
 }
 
 // expectTitle fails unless a finding of this kind was reported with title

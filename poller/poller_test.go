@@ -318,6 +318,26 @@ func TestAdvanceSendSlots(t *testing.T) {
 	}
 }
 
+// TestSendSlotsAtTwoSeconds: at sstui's default 2 s interval each poll
+// completes a slot even when it lands a few ms early, so the 12 s window
+// keeps six slots rather than three of 4 s (the demo's loss finding came and
+// went that way).
+func TestSendSlotsAtTwoSeconds(t *testing.T) {
+	i := func(v int) *int { return &v }
+	t0 := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	prev := &model.Connection{Timestamp: t0}
+	at := t0
+	for n := range 12 {
+		at = at.Add(2*time.Second + time.Duration(n%2*20-10)*time.Millisecond) // 1.99 s, 2.01 s, ...
+		cur := &model.Connection{Timestamp: at, DeltaBytesSent: i(100_000), DeltaBytesRetrans: i(1448)}
+		cur.SendSlots = advanceSendSlots(cur, prev)
+		prev = cur
+	}
+	if len(prev.SendSlots) != 6 {
+		t.Errorf("12 s of 2 s polls: want 6 slots, got %d: %+v", len(prev.SendSlots), prev.SendSlots)
+	}
+}
+
 // TestSetPathMinRTT: each connection gets the lowest min RTT among the
 // connections to its peer; a peer with none known gets nothing.
 func TestSetPathMinRTT(t *testing.T) {

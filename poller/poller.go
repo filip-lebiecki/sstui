@@ -52,7 +52,7 @@ func advanceSendSlots(cur, prev *model.Connection) []model.SendSlot {
 	}
 	slots := slices.Clone(prev.SendSlots)
 	if *cur.DeltaBytesSent >= slotMinBytes {
-		if n := len(slots); n == 0 || slots[n-1].End.Sub(slots[n-1].Start) >= model.SendSlotMin {
+		if n := len(slots); n == 0 || model.SlotFull(slots[n-1].End.Sub(slots[n-1].Start)) {
 			slots = append(slots, model.SendSlot{Start: prev.Timestamp})
 		}
 		s := &slots[len(slots)-1]
@@ -102,7 +102,7 @@ func advanceRecvSlots(cur, prev *model.Connection) []model.RecvSlot {
 	}
 	slots := slices.Clone(prev.RecvSlots)
 	if *cur.DeltaBytesReceived >= slotMinBytes {
-		if n := len(slots); n == 0 || slots[n-1].End.Sub(slots[n-1].Start) >= model.SendSlotMin {
+		if n := len(slots); n == 0 || model.SlotFull(slots[n-1].End.Sub(slots[n-1].Start)) {
 			slots = append(slots, model.RecvSlot{Start: prev.Timestamp})
 		}
 		s := &slots[len(slots)-1]

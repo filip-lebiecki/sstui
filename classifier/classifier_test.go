@@ -327,15 +327,11 @@ func TestReordering(t *testing.T) {
 	}{
 		{"steady reordering", reord(6, 6, 9), 1},
 		{"heavy reordering", reord(6, 6, 80), 2},
-		{"in half the slots", reord(6, 3, 9), 1},
+		{"in half the slots", reord(6, 3, 12), 1},
 		{"stray events in two slots", reord(6, 2, 2), 0},
-		{"steady but below 0.1% of segments", func() *model.Connection {
-			c := reord(6, 6, 1)
-			for i := range c.SendSlots {
-				c.SendSlots[i].Sent *= 10 // 1 event per 10,000 segments
-			}
-			return c
-		}(), 0},
+		// TestHealthyDefaultInterval in the lab: bulk beside request/response
+		// traffic, 0.2% of segments reordered in every slot.
+		{"steady but below 0.5% of segments", reord(6, 6, 2), 0},
 		{"too little history", reord(3, 3, 9), 0},
 		{"no MSS to count segments", func() *model.Connection { c := reord(6, 6, 9); c.MSS = nil; return c }(), 0},
 		{"receiver-side out-of-order only", &model.Connection{Protocol: "tcp", State: "ESTAB", DeltaRcvOOOPack: ip(30)}, 0},

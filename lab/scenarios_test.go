@@ -66,6 +66,22 @@ func TestHealthySlowLinkCongestion(t *testing.T) {
 	server.expectClean(t)
 }
 
+// TestHealthyDefaultInterval: bulk and bursty request/response sharing the
+// link, watched at sstui's default 2 s interval rather than the lab's 500 ms,
+// which is what users run.
+func TestHealthyDefaultInterval(t *testing.T) {
+	l := newLab(t)
+	l.path(wan, wan)
+	l.interval = "2s"
+	l.start(l.b, "sink", addrB+port)
+	l.start(l.a, "send", addrB+port, "2")
+	l.start(l.b, "reqserver", addrB+":443", "1000000")
+	l.start(l.a, "reqclient", addrB+":443", "1000000", "8")
+	client, server := l.recordBoth(32 * time.Second)
+	client.expectClean(t)
+	server.expectClean(t)
+}
+
 // TestHealthyLongPath: four flows on a 100 ms path, where each sawtooth
 // takes seconds and slow start overshoots hard.
 func TestHealthyLongPath(t *testing.T) {
@@ -124,6 +140,23 @@ func TestLightPacketLoss(t *testing.T) {
 	r.expect(t, "loss", "warning")
 	r.expectNone(t, "reorder") // loss recovery ticks reord_seen; it isn't reordering
 	rx.expect(t, "rx_loss", "warning")
+}
+
+// TestPacketLossDefaultInterval: 1% loss watched at sstui's default 2 s
+// interval rather than the lab's 500 ms. Loss is judged in slots of 2 s;
+// polls 2 s apart, give or take a few ms, must each complete one, or the
+// window holds too few slots for a verdict every other poll and the finding
+// comes and goes. Over 32 s (17 polls) the verdict holds from about the
+// sixth poll on.
+func TestPacketLossDefaultInterval(t *testing.T) {
+	l := newLab(t)
+	l.path(wan.with("loss 1%"), wan)
+	l.interval = "2s"
+	l.start(l.b, "sink", addrB+port)
+	l.start(l.a, "send", addrB+port)
+	r, rx := l.recordBoth(32 * time.Second)
+	r.expectSteady(t, "loss", 10)
+	rx.expectSteady(t, "rx_loss", 10)
 }
 
 // TestHeavyPacketLoss: 3% loss is critical.

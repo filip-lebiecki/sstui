@@ -79,15 +79,14 @@ func TestFindingFiltersSelectAffectedSockets(t *testing.T) {
 		conns = append(conns, mk("TIME-WAIT", "10.0.0.1", strconv.Itoa(51000+p), "10.0.0.30", "80", sig(model.SignalTimeWaitStorm, 1)))
 	}
 	rx := mk("ESTAB", "10.0.0.1", "443", "198.51.100.4", "51000", sig(model.SignalInboundLoss, 1))
-	rx.DeltaRcvOOOPack, rx.DeltaDataSegsIn = i(50), i(1000)
 	conns = append(conns, rx)
 	// A slow reader (drops, no loss) and loss-recovery drops on the same
 	// process: the backlog filter must select only the former.
 	slow := mk("ESTAB", "10.0.0.1", "9000", "10.0.0.40", "51000", sig(model.SignalSocketDrops, 1))
 	slow.DeltaSkmemD = i(3)
 	lossDrop := mk("ESTAB", "10.0.0.1", "9001", "198.51.100.4", "51001",
-		[]model.Signal{{Type: model.SignalSocketDrops, Severity: 1}, {Type: model.SignalInboundLoss, Severity: 1}})
-	lossDrop.DeltaSkmemD, lossDrop.DeltaRcvOOOPack, lossDrop.DeltaDataSegsIn = i(2), i(40), i(800)
+		[]model.Signal{{Type: model.SignalSocketDrops, Severity: 0}, {Type: model.SignalInboundLoss, Severity: 1}})
+	lossDrop.DeltaSkmemD, lossDrop.DeltaRcvOOOPack = i(2), i(40)
 	conns = append(conns, slow, lossDrop)
 	// Healthy noise that no filter should pick up.
 	conns = append(conns, mk("ESTAB", "10.0.0.1", "50100", "10.0.0.5", "5432", nil))

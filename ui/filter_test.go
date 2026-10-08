@@ -90,6 +90,7 @@ func TestFilterSignalNames(t *testing.T) {
 		{"proc=nginx and signal=bbr_underutil", "signal BBR_LOW was removed"},
 		{"signal=RETRANZ", `unknown signal "RETRANZ"`},
 		{"sigal=RETRANS", `unknown filter key "sigal"`},
+		{"signal=DROPS:loud", `unknown signal level "loud"`},
 	} {
 		f := &Filter{}
 		if err := f.SetQuery("state=ESTAB"); err != nil {
@@ -101,6 +102,33 @@ func TestFilterSignalNames(t *testing.T) {
 		}
 		if f.Query() != "state=ESTAB" || !f.IsActive() {
 			t.Errorf("%q: rejected query replaced the active filter (now %q)", tt.query, f.Query())
+		}
+	}
+}
+
+// TestFilterSignalLevel: "signal=X:warn" matches X at warn or crit, not as
+// info; ":crit" only at crit.
+func TestFilterSignalLevel(t *testing.T) {
+	at := func(sev int) *model.Connection {
+		return &model.Connection{Signals: []model.Signal{{Type: model.SignalSocketDrops, Severity: sev}}}
+	}
+	for _, tt := range []struct {
+		query string
+		want  [3]bool // matches at info, warn, crit
+	}{
+		{"signal=DROPS", [3]bool{true, true, true}},
+		{"signal=DROPS:warn", [3]bool{false, true, true}},
+		{"signal=drops:CRIT", [3]bool{false, false, true}},
+		{"not signal=DROPS:warn", [3]bool{true, false, false}},
+	} {
+		f := &Filter{}
+		if err := f.SetQuery(tt.query); err != nil {
+			t.Fatalf("%q: %v", tt.query, err)
+		}
+		for sev, want := range tt.want {
+			if got := f.Matches(at(sev)); got != want {
+				t.Errorf("%q at severity %d: match %v, want %v", tt.query, sev, got, want)
+			}
 		}
 	}
 }

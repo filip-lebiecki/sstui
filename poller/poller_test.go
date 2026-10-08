@@ -317,3 +317,38 @@ func TestAdvanceSendSlots(t *testing.T) {
 		t.Errorf("without delta counters there are no slots")
 	}
 }
+
+// TestAdvanceRecvSlots: receiving fills slots the same way; the queue is
+// rcv_rtt - minrtt, recorded only when timestamps make rcv_rtt a real sample.
+func TestAdvanceRecvSlots(t *testing.T) {
+	i := func(v int) *int { return &v }
+	f := func(v float64) *float64 { return &v }
+	t0 := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	SetInterval(500 * time.Millisecond)
+	defer SetInterval(2 * time.Second)
+
+	prev := &model.Connection{Timestamp: t0}
+	poll := func(n, recv int, ts bool) *model.Connection {
+		cur := &model.Connection{Timestamp: t0.Add(time.Duration(n) * 500 * time.Millisecond), Timestamps: ts,
+			DeltaBytesReceived: i(recv), DeltaDataSegsIn: i(recv / 1000), DeltaRcvOOOPack: i(recv / 10000), RcvRTT: f(70), MinRTT: f(40)}
+		cur.RecvSlots = advanceRecvSlots(cur, prev)
+		prev = cur
+		return cur
+	}
+	early := poll(1, 100_000, true).RecvSlots
+	poll(2, 100_000, false) // counted, but no queue sample without timestamps
+	poll(3, 500, true)      // a trickle: not counted
+	c := poll(4, 100_000, true)
+	if len(c.RecvSlots) != 1 {
+		t.Fatalf("2 s of polls should fill one slot, got %d", len(c.RecvSlots))
+	}
+	if s := c.RecvSlots[0]; s.Segs != 300 || s.OOO != 30 || len(s.QueueMS) != 2 || s.QueueMS[0] != 30 {
+		t.Errorf("slot = %+v", s)
+	}
+	if early[0].Segs != 100 || len(early[0].QueueMS) != 1 {
+		t.Errorf("extending a slot changed the earlier snapshot's copy: %+v", early[0])
+	}
+	if old := (&model.Connection{Timestamp: t0}); advanceRecvSlots(old, prev) != nil {
+		t.Errorf("without delta counters there are no slots")
+	}
+}

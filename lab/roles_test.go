@@ -20,7 +20,7 @@ const roleEnv = "SSTUI_LAB_ROLE"
 // runRole runs one workload until it's killed. Roles that only set up state
 // (hangup) return once it's in place.
 //
-//	sink ADDR                 accept connections and read everything
+//	sink ADDR                 accept connections, read everything, close on EOF
 //	send ADDR [N [CC]]        N connections (default 1) writing as fast as they can,
 //	                          with congestion control CC (default: the system's)
 //	stall ADDR                accept connections and never read (zero window)
@@ -31,6 +31,8 @@ const roleEnv = "SSTUI_LAB_ROLE"
 //	slowaccept ADDR N MS      listen with an accept queue of N, accept (and close)
 //	                          one connection every MS ms
 //	burst ADDR N MS           every MS ms, open N connections at once, then close them
+//	churn ADDR N              N loops opening a connection and closing it at once,
+//	                          as a client without connection reuse does
 //	reqserver ADDR SIZE       answer every request byte with SIZE bytes
 //	reqclient ADDR SIZE N     N connections, each asking for SIZE bytes at random intervals
 func runRole(args []string) error {
@@ -49,7 +51,7 @@ func runRole(args []string) error {
 	}
 	switch arg(0) {
 	case "sink":
-		return serve(arg(1), func(c net.Conn) { io.Copy(io.Discard, c) })
+		return serve(arg(1), func(c net.Conn) { io.Copy(io.Discard, c); c.Close() })
 	case "send":
 		n := 1
 		if arg(2) != "" {
@@ -133,6 +135,23 @@ func runRole(args []string) error {
 			wg.Wait()
 			time.Sleep(time.Duration(num(3)) * time.Millisecond)
 		}
+	case "churn":
+		for range num(2) {
+			go func() {
+				for {
+					// Closing first leaves this side in TIME-WAIT, holding
+					// the local port for 60 s. Once the range is used up,
+					// connect fails (EADDRNOTAVAIL) until ports come free.
+					c, err := net.DialTimeout("tcp", arg(1), 4*time.Second)
+					if err != nil {
+						time.Sleep(10 * time.Millisecond)
+						continue
+					}
+					c.Close()
+				}
+			}()
+		}
+		sleepForever()
 	case "reqserver":
 		resp := make([]byte, num(2))
 		return serve(arg(1), func(c net.Conn) {

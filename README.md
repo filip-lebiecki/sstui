@@ -290,6 +290,7 @@ so you can step back to see what was wrong when.
 | Accept queue full or overflowing | `LISTEN_Q`, or `DROPS` on the listener (bursts that overflow between polls) when the host counted `ListenOverflows` / `ListenDrops` | names the listener; tells apart a `somaxconn` cap from the app's own backlog |
 | Can't connect | `SYN_STALL`, per destination | `nc -vz`, `ip route get`, firewalls |
 | Packet loss (per peer / host-wide) | `PATH_LOSS`, `RTO`, `NO_ACK` | `mtr` for one peer; NIC/CPU checks when many peers lose at once |
+| Path MTU black hole | `RTO` / `NO_ACK` on connections with nothing acknowledged since the handshake, segments over 536 bytes | a ping of full-sized packets with DF set; `tcp_mtu_probing`; let ICMP "fragmentation needed" through or clamp the MSS |
 | Inbound loss (per peer / host-wide) | `RX_LOSS` | path back toward the peer (loss is often asymmetric); RX drops / ring size when many peers are affected |
 | Reordering, path MTU, latency inflation | `REORDER`, `PMTU`, `RTT_SPIKE` | ECMP/LACP hashing; ICMP/MSS clamping; qdisc / BBR |
 | Window- or buffer-limited throughput | `RWND_LIM`, `SNDBUF_LIM` | BDP estimate vs `tcp_rmem`/`tcp_wmem`, window scaling |
@@ -446,6 +447,7 @@ Press `/`, type one or more terms, hit `Enter`:
 | `pid=<pid>`         | Exact process ID                                     |
 | `proto=<tcp\|udp>`  | Protocol                                             |
 | `signal=<label>`    | Connection has this signal active (e.g. `RETRANS`, `cwnd_collapse`) |
+| `signal=<label>:warn` | ... at warn or crit, not as info (also `:crit`)      |
 | bare `<state>`      | Shortcut for `state=…` if it matches a known state   |
 | any other bare term | Substring match on local address, peer address or process name |
 
@@ -460,6 +462,7 @@ Examples:
 /dport=443 sport=51234     # one specific socket pair
 /(peer=10.0.0.1 or peer=10.1.0.1) and sport=1234
 /proc=nginx not signal=RETRANS
+/signal=DROPS:warn         # drops that are a fault, not loss-recovery discards
 ```
 
 `Esc` clears the filter.
@@ -701,12 +704,12 @@ badge color and in the Live-tab indicator glyph.
 | `CWND_DROP`| `cwnd_collapse`      | `CWnd < ⌊PrevCWnd/2⌋`, prev ≥ 20, with loss or ECN marks the same poll, not BBR ProbeRTT | `cwnd:` + prev poll `cwnd`, `bytes_retrans:` delta, `lost:`, `delivered_ce:` delta ✓ | 0 (info) | orange |
 | `DSACK`    | `dsack_spurious`     | `Δdsack_dups > 0` (crit >5)                                                 | `dsack_dups:` delta ✓                  | 1–2      | yellow |
 | `REORDER`  | `reordering`         | over the last ~12 s: reordering events in at least half of the 2 s slots and ≥0.1% of segments (crit ≥5%); not under `PATH_LOSS` | `reord_seen:` `bytes_sent:` deltas, `mss:` ✓ | 1–2 | orange |
-| `DROPS`    | `socket_drops`       | `Δskmem.d > 0` (crit >10) — kernel dropped data at this socket (with `RX_LOSS` and no `RCV_Q`: out-of-order data discarded during loss recovery) | `skmem` `d` delta ✓ | 1–2 | red |
-| `RWND_LIM` | `rwnd_limited`       | sending & `Δrwnd_limited ≥ 25%` of poll (crit ≥75%) — blocked on peer window | `rwnd_limited:` delta ✓               | 1–2      | yellow |
-| `SNDBUF_LIM`| `sndbuf_limited`    | sending & `Δsndbuf_limited ≥ 25%` of poll (crit ≥75%) — blocked on send buffer | `sndbuf_limited:` delta ✓          | 1–2      | yellow |
+| `DROPS`    | `socket_drops`       | `Δskmem.d > 0` (crit >10) — kernel dropped data at this socket (info when segments arrived after a gap that poll and there's no `RCV_Q`: out-of-order data discarded during loss recovery) | `skmem` `d` delta ✓ | 0–2 | red |
+| `RWND_LIM` | `rwnd_limited`       | sending & `Δrwnd_limited ≥ 25%` of poll (crit ≥75%), this poll and the one before — blocked on peer window | `rwnd_limited:` delta ✓               | 1–2      | yellow |
+| `SNDBUF_LIM`| `sndbuf_limited`    | sending & `Δsndbuf_limited ≥ 25%` of poll (crit ≥75%), this poll and the one before — blocked on send buffer | `sndbuf_limited:` delta ✓          | 1–2      | yellow |
 | `CW_LEAK`  | `close_wait_leak`    | one process holds ≥20 CLOSE-WAIT sockets (crit ≥50) — fd leak              | per-process CLOSE-WAIT count ✓          | 1–2      | red    |
 | `TW_STORM` | `time_wait_storm`    | ≥200 TIME-WAIT toward one peer endpoint (crit ≥2000) — port exhaustion risk | per-peer TIME-WAIT count ✓            | 1–2      | orange |
-| `RX_LOSS`  | `inbound_loss`       | `Δrcv_ooopack / Δdata_segs_in ≥ 2%` (crit ≥10%), with ≥100 data segments this poll — inbound loss seen at the receiver | `rcv_ooopack:` `data_segs_in:` deltas ✓ | 1–2 | red |
+| `RX_LOSS`  | `inbound_loss`       | over the last ~12 s: ≥2% of data segments received arrived after a gap (crit ≥10%), in at least half of the 2 s slots, with `rcv_rtt` near min RTT in ¾ of receiving polls (needs TCP timestamps) — inbound loss seen at the receiver | `rcv_ooopack:` `data_segs_in:` deltas, `rcv_rtt:` `minrtt:` `ts` ✓ | 1–2 | red |
 | `PATH_LOSS`| `path_loss`          | over the last ~12 s: ≥0.05% of bytes retransmitted (crit ≥1%), in at least half of the 2 s slots, with median RTT while sending near its minimum (BBR exempt) | `bytes_sent:` `bytes_retrans:` deltas, `rtt:` `minrtt:` ✓ | 1–2 | red |
 
 ### Connection-state signals
@@ -730,8 +733,8 @@ badge color and in the Live-tab indicator glyph.
 | `HI_RETRANS`  | `Δbytes_retrans / Δbytes_sent > 5%`                                    | info                    | This poll's retransmit rate is high. Context only: a burst like this is normal during slow start, so findings rely on `PATH_LOSS` |
 | `DSACK`       | `dsack_dups` grew this poll                                            | warn / crit (>5)        | Spurious retransmits — the data had arrived (aggressive RTO, or reordering) |
 | `REORDER`     | Over the last ~12 s: `reord_seen` grew in at least half of the 2 s slots, by ≥0.1% of the segments sent; not evaluated while `PATH_LOSS` fires | warn / crit (≥5%) | Our packets are reordered on the way to the peer (often ECMP / LACP / multi-queue hashing). The counter also ticks now and then during loss recovery or request bursts, and steadily under steady loss, so one-off events and lossy connections don't count |
-| `DROPS`       | `skmem` drop counter (`d`) grew this poll                             | warn / crit (>10)       | Kernel discarded data at the socket — buffer overran, receiver too slow. On a listening socket it counts refused connection attempts (accept or SYN queue overflow) or stray handshake segments instead; the accept-queue finding reports it when the host's `ListenOverflows` / `ListenDrops` counters say connections were refused. With `RX_LOSS` and an empty receive queue it's out-of-order data discarded during loss recovery instead, and Findings/Detail say so |
-| `RX_LOSS`     | ≥2% of data segments received this poll arrived after a gap (crit ≥10%; needs ≥100 segments) | warn / crit | **Inbound** loss (or reordering) on the peer → here path. The only loss signal available on the receiving side — the retransmit counters live on the sender. One lost segment makes everything behind it arrive out of order, so the ratio overstates the loss rate; the thresholds account for that |
+| `DROPS`       | `skmem` drop counter (`d`) grew this poll                             | warn / crit (>10); info for loss-recovery discards | Kernel discarded data at the socket — buffer overran, receiver too slow. On a listening socket it counts refused connection attempts (accept or SYN queue overflow) or stray handshake segments instead; the accept-queue finding reports it when the host's `ListenOverflows` / `ListenDrops` counters say connections were refused. When segments arrived after a gap in the same poll and the receive queue is empty, it's out-of-order data discarded during loss recovery instead: info, and the inbound-loss finding mentions it |
+| `RX_LOSS`     | Over the last ~12 s: ≥2% of data segments received arrived after a gap, in at least half of the 2 s slots, and `rcv_rtt` within max(4 ms, 10% of min RTT) of the minimum in at least ¾ of the receiving polls. No verdict without TCP timestamps | warn / crit (≥10%) | **Inbound** loss (or reordering) on the peer → here path. The only loss signal available on the receiving side — the retransmit counters live on the sender. One lost segment makes everything behind it arrive out of order, so the ratio overstates the loss rate (in the lab 0.1% loss gave ~6%, 1% ~10%). A flow filling a bottleneck also arrives with gaps, but its data waits in the queue, which `rcv_rtt` includes. Blind to a BBR sender's loss (BBR keeps a standing queue); the sender's `PATH_LOSS` sees it |
 
 ### Congestion & flow control
 
@@ -833,7 +836,7 @@ socket creation.
 | Reordering     | `reordering:`       | Kernel's reordering-distance estimate                              |
 | Reord Seen     | `reord_seen:`       | cum. reorder events observed                                       |
 | Rcv OOO        | `rcv_ooopack:`      | cum. out-of-order segments **received**: each one arrived after a gap, i.e. a segment from the peer was lost (or reordered) on its way here. When sstui runs on the receiving host this is the only visible trace of inbound loss — the sender's retransmit counters live on the other machine |
-| OOO / data in  | (computed)          | `rcv_ooopack / data_segs_in`, per poll and over the connection's life (Detail → Inbound). Drives the `RX_LOSS` signal |
+| OOO / data in  | (computed)          | `rcv_ooopack / data_segs_in`, per poll and over the connection's life (Detail → Inbound). Summed per receive slot, it drives the `RX_LOSS` signal |
 | Δ Reord Seen   | (computed)          | Summed per send slot; drives the `REORDER` signal                  |
 
 ### Last-activity timestamps
@@ -1125,13 +1128,15 @@ the real `ss` binary and skip when it isn't installed.
 each scenario builds a client and a server network namespace joined
 through a router namespace, shapes the router's links with `tc netem`,
 runs a small workload (a reader that stops reading, a server that never
-accepts, packet loss, ...), records the client or server with
-`sstui record`, and asserts on `sstui check --json`. Healthy controls
-(bulk transfer, bursty request/response) must come out clean, so a noisy
-rule fails the lab as surely as a missed diagnosis.
+accepts, packet loss, port exhaustion, a path MTU black hole, ...),
+records the client, the server or both with `sstui record`, and asserts
+on `sstui check --json`. Loss is checked from both ends: the sender sees
+its retransmits, the receiver only the gaps in what arrives. Healthy
+controls (bulk transfer, bursty request/response) must come out clean on
+both ends, so a noisy rule fails the lab as surely as a missed diagnosis.
 
 ```bash
-scripts/lab.sh                        # every scenario (about a minute)
+scripts/lab.sh                        # every scenario (about 4 minutes)
 scripts/lab.sh -run ZeroWindow        # one of them
 SSTUI_LAB_KEEP=out scripts/lab.sh     # keep each recording in out/
 ```

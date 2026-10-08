@@ -87,18 +87,21 @@ func TestLimitedSeverity(t *testing.T) {
 	defer func() { PollIntervalMS = old }()
 
 	tests := []struct {
-		name string
-		ms   *float64
-		want int
+		name     string
+		ms, prev *float64
+		want     int
 	}{
-		{"nil", nil, 0},
-		{"zero", fl(0), 0},
-		{"below warn (10%)", fl(200), 0},
-		{"warn (40%)", fl(800), 1},
-		{"crit (90%)", fl(1800), 2},
+		{"nil", nil, fl(1800), 0},
+		{"zero", fl(0), fl(1800), 0},
+		{"below warn (10%)", fl(200), fl(1800), 0},
+		{"warn (40%)", fl(800), fl(1800), 1},
+		{"crit (90%)", fl(1800), fl(1800), 2},
+		{"crit after a warn poll", fl(1800), fl(800), 2},
+		{"one poll alone", fl(1800), fl(200), 0},
+		{"no previous poll", fl(1800), nil, 0},
 	}
 	for _, tt := range tests {
-		if got, _ := limitedSeverity(tt.ms); got != tt.want {
+		if got, _ := limitedSeverity(tt.ms, tt.prev); got != tt.want {
 			t.Errorf("%s: limitedSeverity = %d, want %d", tt.name, got, tt.want)
 		}
 	}
@@ -110,14 +113,14 @@ func TestClassifyBottleneckRequiresSending(t *testing.T) {
 	defer func() { PollIntervalMS = old }()
 
 	// Heavily rwnd-limited but not sending: no signal (the limit is moot).
-	idle := &model.Connection{Protocol: "tcp", State: "ESTAB", DeltaRwndLimitedMS: fl(1900)}
+	idle := &model.Connection{Protocol: "tcp", State: "ESTAB", DeltaRwndLimitedMS: fl(1900), PrevDeltaRwndLimitedMS: fl(1900)}
 	if _, ok := sigByType(Classify(idle), model.SignalRwndLimited); ok {
 		t.Errorf("rwnd-limited but idle should not fire RWND_LIM")
 	}
 
 	// Sending and rwnd-limited: fires.
 	busy := &model.Connection{Protocol: "tcp", State: "ESTAB",
-		DeltaBytesSent: ip(1), DeltaRwndLimitedMS: fl(1900)}
+		DeltaBytesSent: ip(1), DeltaRwndLimitedMS: fl(1900), PrevDeltaRwndLimitedMS: fl(1900)}
 	if s, ok := sigByType(Classify(busy), model.SignalRwndLimited); !ok || s.Severity != 2 {
 		t.Errorf("sending + rwnd-limited should fire crit, got %+v (present=%v)", s, ok)
 	}
@@ -393,43 +396,85 @@ func TestClassifyCwndLimitedIsInfo(t *testing.T) {
 	}
 }
 
-// TestClassifyInboundLoss: segments arriving after a gap as a share of data
-// received, with a minimum of traffic before judging.
+// TestClassifyInboundLoss: segments arriving after a gap in most receive
+// slots, with no queue on the way in, is inbound loss; gaps with a queue
+// (congestion), bursty gaps, or no timestamps to measure the queue aren't.
+// gappy(n, withGaps, oooPerSlot, queueMS) builds n complete 2 s slots of
+// 1000 segments, the first withGaps of them with oooPerSlot out of order.
 func TestClassifyInboundLoss(t *testing.T) {
+	t0 := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	gappy := func(n, withGaps, ooo int, queueMS float64) *model.Connection {
+		c := &model.Connection{Protocol: "tcp", State: "ESTAB", MinRTT: fl(40), Timestamps: true}
+		for i := range n {
+			s := model.RecvSlot{Start: t0.Add(time.Duration(2*i) * time.Second), End: t0.Add(time.Duration(2*i+2) * time.Second),
+				Segs: 1000, QueueMS: []float64{queueMS, queueMS}}
+			if i < withGaps {
+				s.OOO = ooo
+			}
+			c.RecvSlots = append(c.RecvSlots, s)
+		}
+		return c
+	}
+	noTS := gappy(6, 6, 60, 1)
+	noTS.Timestamps = false
+	for i := range noTS.RecvSlots {
+		noTS.RecvSlots[i].QueueMS = nil // the poller records no queue without timestamps
+	}
 	cases := []struct {
-		name    string
-		ooo, in int
-		want    int // severity, 0 = no signal
+		name string
+		c    *model.Connection
+		want int // severity, 0 = no signal
 	}{
-		{"clean", 0, 1000, 0},
-		{"below warn", 10, 1000, 0},
-		{"warn", 30, 1000, 1},
-		{"crit", 150, 1000, 2},
-		{"too little data to judge", 20, 50, 0},
+		{"steady gaps, no queue", gappy(6, 6, 60, 1), 1},
+		{"heavy", gappy(6, 6, 150, 1), 2},
+		{"half the slots is still steady", gappy(6, 3, 120, 1), 1},
+		{"below warn", gappy(6, 6, 10, 1), 0},
+		{"bursty: 2 of 6 slots", gappy(6, 2, 300, 1), 0},
+		{"a queue: congestion", gappy(6, 6, 60, 30), 0},
+		{"a queue in a third of the polls: congestion", func() *model.Connection {
+			c := gappy(6, 6, 60, 1)
+			for i := range 4 {
+				c.RecvSlots[i].QueueMS = []float64{1, 30} // 4 of 12 polls
+			}
+			return c
+		}(), 0},
+		{"a queue in a sixth of the polls: no queue", func() *model.Connection {
+			c := gappy(6, 6, 60, 1)
+			for i := range 2 {
+				c.RecvSlots[i].QueueMS = []float64{1, 30} // 2 of 12 polls
+			}
+			return c
+		}(), 1},
+		{"no timestamps, no verdict", noTS, 0},
+		{"too little history", gappy(3, 3, 60, 1), 0},
 	}
 	for _, tc := range cases {
-		c := &model.Connection{Protocol: "tcp", State: "ESTAB", DeltaRcvOOOPack: ip(tc.ooo), DeltaDataSegsIn: ip(tc.in)}
-		s, ok := sigByType(Classify(c), model.SignalInboundLoss)
+		s, ok := sigByType(Classify(tc.c), model.SignalInboundLoss)
 		if got := map[bool]int{true: s.Severity}[ok]; got != tc.want {
 			t.Errorf("%s: severity %d, want %d (%+v)", tc.name, got, tc.want, s)
 		}
 	}
 }
 
+// TestDropsExplainedByInboundLoss: drops in a poll where segments arrived
+// after a gap, with an empty receive queue, are loss-recovery discards,
+// whether or not RX_LOSS (a verdict over seconds) has fired yet.
 func TestDropsExplainedByInboundLoss(t *testing.T) {
 	drops := model.Signal{Type: model.SignalSocketDrops, Severity: 1}
-	rx := model.Signal{Type: model.SignalInboundLoss, Severity: 1}
 	rcvq := model.Signal{Type: model.SignalRecvBufferPressure, Severity: 1}
 	for name, tc := range map[string]struct {
 		sigs []model.Signal
+		ooo  *int
 		want bool
 	}{
-		"drops under inbound loss, empty queue": {[]model.Signal{drops, rx}, true},
-		"drops with a full receive queue":       {[]model.Signal{drops, rx, rcvq}, false},
-		"drops without loss":                    {[]model.Signal{drops}, false},
-		"loss without drops":                    {[]model.Signal{rx}, false},
+		"drops with gaps, empty queue":     {[]model.Signal{drops}, ip(30), true},
+		"drops with gaps, full queue":      {[]model.Signal{drops, rcvq}, ip(30), false},
+		"drops without gaps":               {[]model.Signal{drops}, ip(0), false},
+		"drops, gaps unknown (old kernel)": {[]model.Signal{drops}, nil, false},
+		"gaps without drops":               {nil, ip(30), false},
 	} {
-		if got := DropsExplainedByInboundLoss(tc.sigs); got != tc.want {
+		c := &model.Connection{Signals: tc.sigs, DeltaRcvOOOPack: tc.ooo}
+		if got := DropsExplainedByInboundLoss(c); got != tc.want {
 			t.Errorf("%s: got %v, want %v", name, got, tc.want)
 		}
 	}

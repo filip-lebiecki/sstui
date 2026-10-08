@@ -20,6 +20,7 @@ var rules = []func(*analysis){
 	ruleRecvBacklog,
 	ruleListenQueue,
 	ruleSynStall,
+	rulePMTUBlackHole,
 	rulePathLoss,
 	ruleInboundLoss,
 	ruleReordering,
@@ -79,12 +80,13 @@ func ruleZeroWindow(a *analysis) {
 // ruleRecvBacklog: a local process not keeping up with its sockets — full
 // receive queues (RCV_Q) and kernel drops (DROPS), grouped by process.
 func ruleRecvBacklog(a *analysis) {
-	// Drops that come with inbound loss and an unpressured receive queue are
-	// out-of-order data discarded during recovery, not a slow reader;
-	// ruleInboundLoss reports those. A listener's drops are connection
+	// Drops that come with inbound gaps and an unpressured receive queue are
+	// out-of-order data discarded during recovery, not a slow reader: the
+	// classifier makes those info, so they don't group here, and
+	// ruleInboundLoss mentions them. A listener's drops are connection
 	// attempts it turned away, which ruleListenQueue reports.
 	key := func(c *model.Connection) string {
-		if c.State == "LISTEN" || classifier.DropsExplainedByInboundLoss(c.Signals) {
+		if c.State == "LISTEN" {
 			return ""
 		}
 		return procKey(c)
@@ -107,7 +109,7 @@ func ruleRecvBacklog(a *analysis) {
 			Evidence: []string{fmt.Sprintf("%s waiting in Recv-Q", humanBytes(float64(queued)))},
 			// Same exclusion as the grouping: DROPS counts here unless it
 			// comes with RX_LOSS (and no RCV_Q, which the first term covers).
-			Filter: filterJoin(procFilter(c0), "not state=LISTEN", "(signal=RCV_Q or (signal=DROPS not signal=RX_LOSS))"),
+			Filter: filterJoin(procFilter(c0), "not state=LISTEN", "(signal=RCV_Q or signal=DROPS:warn)"),
 			Count:  len(g.conns),
 		}
 		if udp > 0 {
@@ -279,7 +281,13 @@ var lossSignals = []model.SignalType{model.SignalPathLoss, model.SignalRTOFiring
 // rulePathLoss: packet loss on the path. Loss toward one peer points at that
 // peer or its path; loss toward many peers at once points at this host.
 func rulePathLoss(a *analysis) {
-	groups := a.groupBySignal(func(c *model.Connection) string { return c.PeerAddr }, lossSignals...)
+	key := func(c *model.Connection) string {
+		if classifier.HungAfterHandshake(c) {
+			return "" // rulePMTUBlackHole's
+		}
+		return c.PeerAddr
+	}
+	groups := a.groupBySignal(key, lossSignals...)
 	if len(groups) == 0 {
 		return
 	}
@@ -322,6 +330,86 @@ func rulePathLoss(a *analysis) {
 			Count:  len(g.conns),
 		})
 	}
+}
+
+// rulePMTUBlackHole: connections stalled on their very first data. The
+// handshake's small packets got through and every full-sized segment since
+// vanished, the signature of a path MTU black hole. Many peers at once point
+// at this host's own MTU (a VPN, tunnel or container interface).
+func rulePMTUBlackHole(a *analysis) {
+	key := func(c *model.Connection) string {
+		if !classifier.HungAfterHandshake(c) {
+			return ""
+		}
+		return c.PeerAddr
+	}
+	groups := a.groupBySignal(key, model.SignalRTOFiring, model.SignalPeerNoAck)
+	if len(groups) == 0 {
+		return
+	}
+	detail := "The handshake's small packets got through, but not one full-sized data segment has been acknowledged since. That is the signature of a path MTU black hole: a link on the path (a tunnel, VPN or overlay) carries smaller packets, and the ICMP \"fragmentation needed\" that would tell this host is filtered. Less likely: the peer went away right after accepting."
+	var fixes []Action
+	if v, ok := a.in.Sysctl.Int("net.ipv4.tcp_mtu_probing"); ok && v == 0 {
+		fixes = append(fixes, Action{Text: "Let TCP find a packet size that gets through by itself", Command: "sysctl -w net.ipv4.tcp_mtu_probing=1"})
+	}
+	fixes = append(fixes, Action{Text: "Fix it at the source: allow ICMP \"fragmentation needed\" (ICMPv6 \"packet too big\") through the firewalls, or clamp the MSS on the tunnel or VPN"})
+	if a.manyPeers(len(groups)) {
+		var conns []*model.Connection
+		sev := 0
+		for _, g := range groups {
+			conns = append(conns, g.conns...)
+			sev = max(sev, g.sev)
+		}
+		a.add(Finding{
+			ID:       "pmtu_blackhole_local",
+			Severity: sev,
+			Title:    fmt.Sprintf("Connections to %d different peers hang right after the handshake — likely this host's MTU", len(groups)),
+			Detail:   detail + " With this many unrelated peers, suspect this host: an interface (VPN, tunnel, container network) whose MTU is larger than what its path carries.",
+			Evidence: []string{blackHoleEvidence(conns)},
+			Actions:  append([]Action{{Text: "Compare the interfaces' MTUs with what the underlying network carries", Command: "ip link"}}, fixes...),
+			Filter:   sigFilter(model.SignalRTOFiring, model.SignalPeerNoAck),
+			Count:    len(conns),
+		})
+		return
+	}
+	for _, g := range groups {
+		a.add(Finding{
+			ID:       "pmtu_blackhole|" + g.key,
+			Severity: g.sev,
+			Title:    fmt.Sprintf("Connections to %s hang right after the handshake — likely a path MTU black hole", g.key),
+			Detail:   detail,
+			Evidence: []string{blackHoleEvidence(g.conns)},
+			Actions: append([]Action{{
+				Text:    "Check whether full-sized packets get through (unfragmented; payload = path MTU minus headers)",
+				Command: pingDF(g.key, g.conns[0]),
+			}}, fixes...),
+			Filter: filterJoin("peer=="+g.key, sigFilter(model.SignalRTOFiring, model.SignalPeerNoAck)),
+			Count:  len(g.conns),
+		})
+	}
+}
+
+// blackHoleEvidence describes connections hung after their handshake.
+func blackHoleEvidence(conns []*model.Connection) string {
+	mss, retries := 0, 0
+	for _, c := range conns {
+		mss = max(mss, deref(c.MSS))
+		retries = max(retries, deref(c.TimerRetrans))
+	}
+	return fmt.Sprintf("%s: handshake done, nothing acknowledged since; %d-byte segments retransmitted %s", plural(len(conns), "connection"), mss, plural(retries, "time"))
+}
+
+// pingDF is a ping of full-sized packets that mustn't be fragmented, sized to
+// the connection's path MTU (1500 when unknown) minus the IP and ICMP headers.
+func pingDF(peer string, c *model.Connection) string {
+	mtu := 1500
+	if c.PMTU != nil && *c.PMTU > 0 {
+		mtu = *c.PMTU
+	}
+	if strings.Contains(peer, ":") {
+		return fmt.Sprintf("ping -6 -M do -c 3 -s %d %s", mtu-48, peer)
+	}
+	return fmt.Sprintf("ping -M do -c 3 -s %d %s", mtu-28, peer)
 }
 
 // manyPeers reports whether a problem seen toward n distinct peers is
@@ -416,18 +504,26 @@ func ruleInboundLoss(a *analysis) {
 	if len(groups) == 0 {
 		return
 	}
-	// ratio returns the aggregate evidence line (none when no data-segment
-	// counts are known, rather than an empty bullet).
+	// ratio returns the aggregate evidence line over the window RX_LOSS
+	// judges (none when no data-segment counts are known, rather than an
+	// empty bullet).
 	ratio := func(conns []*model.Connection) []string {
 		var ooo, in int
+		var from, to time.Time
 		for _, c := range conns {
-			ooo += deref(c.DeltaRcvOOOPack)
-			in += deref(c.DeltaDataSegsIn)
+			for _, s := range c.RecvSlots {
+				ooo += s.OOO
+				in += s.Segs
+				if from.IsZero() || s.Start.Before(from) {
+					from = s.Start
+				}
+				to = maxTime(to, s.End)
+			}
 		}
 		if in == 0 {
 			return nil
 		}
-		return []string{fmt.Sprintf("%.1f%% of %d data segments received this poll arrived after a gap", float64(ooo)/float64(in)*100, in)}
+		return []string{fmt.Sprintf("%.1f%% of %d data segments received over the last %s arrived after a gap", float64(ooo)/float64(in)*100, in, to.Sub(from).Round(time.Second))}
 	}
 	rxActions := []Action{
 		{Text: "Check this host's receive path for drops and overruns", Command: "ip -s link"},
@@ -441,10 +537,10 @@ func ruleInboundLoss(a *analysis) {
 			conns = append(conns, g.conns...)
 			sev = max(sev, g.sev)
 		}
-		ev, dsev := discardEvidence(conns)
+		ev := discardEvidence(conns)
 		f := Finding{
 			ID:       "rx_loss_local",
-			Severity: max(sev, dsev),
+			Severity: sev,
 			Title:    fmt.Sprintf("Inbound packet loss from %d different peers — likely this host's receive path", len(groups)),
 			Detail:   "Data from many unrelated senders arrives with gaps at once, so the common factor is here: NIC or driver drops, a full RX ring, or a CPU too busy to service network interrupts.",
 			Evidence: append(ratio(conns), ev...),
@@ -459,10 +555,10 @@ func ruleInboundLoss(a *analysis) {
 		return
 	}
 	for _, g := range groups {
-		ev, sev := discardEvidence(g.conns)
+		ev := discardEvidence(g.conns)
 		a.add(Finding{
 			ID:       "rx_loss|" + g.key,
-			Severity: max(g.sev, sev),
+			Severity: g.sev,
 			Title:    fmt.Sprintf("Inbound packet loss from %s: %s receiving data with gaps", g.key, plural(len(g.conns), "connection")),
 			Detail:   "Segments sent by this peer go missing (or arrive reordered) on the way here; the sender retransmits, which costs throughput and latency. Its retransmit counters are on the other machine — this is the receiving side's view.",
 			Evidence: append(ratio(g.conns), ev...),
@@ -476,24 +572,18 @@ func ruleInboundLoss(a *analysis) {
 }
 
 // discardEvidence describes kernel drops that inbound loss explains (see
-// classifier.DropsExplainedByInboundLoss) and returns the severity they add:
-// discarded out-of-order data forces extra retransmits, so it can raise the
-// inbound-loss finding to the DROPS signal's severity.
-func discardEvidence(conns []*model.Connection) ([]string, int) {
-	drops, sev := 0, 0
+// classifier.DropsExplainedByInboundLoss).
+func discardEvidence(conns []*model.Connection) []string {
+	drops := 0
 	for _, c := range conns {
-		if !classifier.DropsExplainedByInboundLoss(c.Signals) {
-			continue
-		}
-		drops += deref(c.DeltaSkmemD)
-		if s, ok := signalOf(c, model.SignalSocketDrops); ok {
-			sev = max(sev, s.Severity)
+		if classifier.DropsExplainedByInboundLoss(c) {
+			drops += deref(c.DeltaSkmemD)
 		}
 	}
 	if drops == 0 {
-		return nil, 0
+		return nil
 	}
-	return []string{fmt.Sprintf("the kernel also discarded %s (receive memory full during loss recovery) — not a slow reader: the receive queue is empty", plural(drops, "out-of-order segment"))}, sev
+	return []string{fmt.Sprintf("the kernel also discarded %s (receive memory full during loss recovery) — not a slow reader: the receive queue is empty", plural(drops, "out-of-order segment"))}
 }
 
 // ruleReordering: sender-detected reordering, grouped by peer.

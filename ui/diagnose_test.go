@@ -66,13 +66,26 @@ func TestDiagnosePrefersRootCause(t *testing.T) {
 }
 
 // Drops during inbound loss with an empty queue are not a slow reader.
+// (The classifier makes those drops info.)
 func TestDiagnoseLossDrops(t *testing.T) {
 	c := withSignals(
-		model.Signal{Type: model.SignalSocketDrops, Severity: 2},
+		model.Signal{Type: model.SignalSocketDrops, Severity: 0},
 		model.Signal{Type: model.SignalInboundLoss, Severity: 1},
 	)
+	ooo := 30
+	c.DeltaRcvOOOPack = &ooo
 	d := diagnose(c)
-	if !strings.Contains(d.Headline, "Inbound packet loss") || d.Severity != 2 || !strings.Contains(d.Hint, "discarding out-of-order data") {
-		t.Errorf("want inbound-loss verdict raised to crit by the drops, got %+v", d)
+	if !strings.Contains(d.Headline, "Inbound packet loss") || !strings.Contains(d.Hint, "discarding out-of-order data") {
+		t.Errorf("want the inbound-loss verdict naming the discards, got %+v", d)
+	}
+}
+
+// A connection hung after its handshake reads as a black hole, as in Findings.
+func TestDiagnosePMTUBlackHole(t *testing.T) {
+	c := withSignals(model.Signal{Type: model.SignalRTOFiring, Severity: 2})
+	one, unacked, mss := 1, 11, 1448
+	c.State, c.Delivered, c.Unacked, c.MSS = "ESTAB", &one, &unacked, &mss
+	if d := diagnose(c); !strings.Contains(d.Headline, "path MTU black hole") || d.Severity != 2 {
+		t.Errorf("want the black-hole verdict, got %+v", d)
 	}
 }

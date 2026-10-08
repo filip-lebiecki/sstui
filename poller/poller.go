@@ -29,15 +29,17 @@ func syncClassifierInterval() {
 	classifier.PollIntervalMS = float64(PollInterval / time.Millisecond)
 }
 
-// SlotWindow is how far back PATH_LOSS and REORDER look: 12 s, or four polls
-// when polling is slower than every 3 s, so it always spans several slots.
+// SlotWindow is how far back PATH_LOSS, REORDER and RX_LOSS look: 12 s, or
+// four polls when polling is slower than every 3 s, so it always spans
+// several slots.
 func SlotWindow() time.Duration {
 	return max(12*time.Second, 4*PollInterval)
 }
 
-// sendSlotMinBytes is the least a poll must send to count toward a send slot
-// (a few segments), so keepalives and trickles don't dilute the picture.
-const sendSlotMinBytes = 10_000
+// slotMinBytes is the least a poll must send (or receive) to count toward a
+// send (receive) slot, a few segments, so keepalives and trickles don't
+// dilute the picture.
+const slotMinBytes = 10_000
 
 // advanceSendSlots returns cur's send slots: prev's, plus this poll when cur
 // was sending, minus slots that started more than SlotWindow ago. Slots are
@@ -49,7 +51,7 @@ func advanceSendSlots(cur, prev *model.Connection) []model.SendSlot {
 		return nil // the kernel doesn't report the counters
 	}
 	slots := slices.Clone(prev.SendSlots)
-	if *cur.DeltaBytesSent >= sendSlotMinBytes {
+	if *cur.DeltaBytesSent >= slotMinBytes {
 		if n := len(slots); n == 0 || slots[n-1].End.Sub(slots[n-1].Start) >= model.SendSlotMin {
 			slots = append(slots, model.SendSlot{Start: prev.Timestamp})
 		}
@@ -64,6 +66,35 @@ func advanceSendSlots(cur, prev *model.Connection) []model.SendSlot {
 			// Clip so the slot copied from prev gets its own array instead
 			// of appending into prev's spare capacity.
 			s.QueueMS = append(slices.Clip(s.QueueMS), *cur.RTT-*cur.MinRTT)
+		}
+	}
+	cut := cur.Timestamp.Add(-SlotWindow())
+	for len(slots) > 0 && slots[0].Start.Before(cut) {
+		slots = slots[1:]
+	}
+	return slots
+}
+
+// advanceRecvSlots is advanceSendSlots for receiving: cur's receive slots,
+// with this poll added when cur received at least slotMinBytes.
+func advanceRecvSlots(cur, prev *model.Connection) []model.RecvSlot {
+	if cur.DeltaBytesReceived == nil || cur.DeltaDataSegsIn == nil || cur.DeltaRcvOOOPack == nil {
+		return nil // the kernel doesn't report the counters
+	}
+	slots := slices.Clone(prev.RecvSlots)
+	if *cur.DeltaBytesReceived >= slotMinBytes {
+		if n := len(slots); n == 0 || slots[n-1].End.Sub(slots[n-1].Start) >= model.SendSlotMin {
+			slots = append(slots, model.RecvSlot{Start: prev.Timestamp})
+		}
+		s := &slots[len(slots)-1]
+		s.End = cur.Timestamp
+		s.Segs += *cur.DeltaDataSegsIn
+		s.OOO += *cur.DeltaRcvOOOPack
+		// With timestamps, rcv_rtt is an RTT sample taken by the receiver
+		// (from our ACK to the data echoing it), so it includes the queue
+		// our incoming data waits in. Without them it's a minimum, no use.
+		if cur.Timestamps && cur.RcvRTT != nil && cur.MinRTT != nil {
+			s.QueueMS = append(slices.Clip(s.QueueMS), *cur.RcvRTT-*cur.MinRTT)
 		}
 	}
 	cut := cur.Timestamp.Add(-SlotWindow())
@@ -374,6 +405,7 @@ func computeDeltas(cur, prev *model.Connection) {
 		cur.PrevUnacked = &v
 	}
 	cur.SendSlots = advanceSendSlots(cur, prev)
+	cur.RecvSlots = advanceRecvSlots(cur, prev)
 
 	// busy: is cumulative ms of TCP work since socket creation; the per-poll
 	// delta is what tells us how busy the kernel was on this socket recently.
@@ -390,6 +422,8 @@ func computeDeltas(cur, prev *model.Connection) {
 	// throughput bottleneck currently is.
 	cur.DeltaRwndLimitedMS = deltaFloat(cur.RwndLimitedMS, prev.RwndLimitedMS)
 	cur.DeltaSndbufLimitedMS = deltaFloat(cur.SndbufLimitedMS, prev.SndbufLimitedMS)
+	cur.PrevDeltaRwndLimitedMS = prev.DeltaRwndLimitedMS
+	cur.PrevDeltaSndbufLimitedMS = prev.DeltaSndbufLimitedMS
 }
 
 // deltaFloat returns cur-prev when both are present and the result is

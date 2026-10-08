@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"sstui/classifier"
 	"sstui/model"
 	"sstui/poller"
 )
@@ -144,6 +145,45 @@ func TestPathLossLocalVsRemote(t *testing.T) {
 	}
 	if byID(r, "loss|") != nil {
 		t.Errorf("per-peer loss findings should be replaced by the local one")
+	}
+}
+
+func TestPMTUBlackHole(t *testing.T) {
+	ip := func(v int) *int { return &v }
+	hung := func(peer string, delivered, mss int) *model.Connection {
+		c := conn("ESTAB", "10.0.0.1", "1", peer, "443", sig(model.SignalRTOFiring, 2))
+		c.Delivered, c.Unacked, c.MSS, c.TimerRetrans = ip(delivered), ip(11), ip(mss), ip(5)
+		return c
+	}
+	r := Analyze(Input{
+		Conns:  []*model.Connection{hung("203.0.113.9", 1, 1448), conn("ESTAB", "10.0.0.1", "2", "198.51.100.1", "443")},
+		Sysctl: poller.Sysctls{"net.ipv4.tcp_mtu_probing": "0"},
+	})
+	f := byID(r, "pmtu_blackhole|203.0.113.9")
+	if f == nil || !hasCommand(f, "ping -M do -c 3 -s 1472 203.0.113.9") || !hasCommand(f, "tcp_mtu_probing=1") {
+		t.Fatalf("hung after the handshake should be a black-hole finding with a DF ping: %+v", r.Findings)
+	}
+	if byID(r, "loss|") != nil {
+		t.Errorf("the black-hole connection shouldn't also be reported as loss: %+v", r.Findings)
+	}
+
+	// Many unrelated peers at once: this host's own MTU.
+	var many []*model.Connection
+	for i := 1; i <= 6; i++ {
+		many = append(many, hung("203.0.113."+strconv.Itoa(i), 1, 1448))
+	}
+	r = Analyze(Input{Conns: many})
+	if f := byID(r, "pmtu_blackhole_local"); f == nil || f.Count != 6 || !hasCommand(f, "ip link") || byID(r, "pmtu_blackhole|") != nil {
+		t.Errorf("black holes toward many peers should be one local finding: %+v", r.Findings)
+	}
+
+	// Data acknowledged before the stall, or segments small enough for any
+	// path: plain loss.
+	for _, c := range []*model.Connection{hung("203.0.113.9", 500, 1448), hung("203.0.113.9", 1, 536)} {
+		r := Analyze(Input{Conns: []*model.Connection{c}})
+		if byID(r, "pmtu_blackhole") != nil || byID(r, "loss|203.0.113.9") == nil {
+			t.Errorf("delivered=%d mss=%d should be loss, not a black hole: %+v", *c.Delivered, *c.MSS, r.Findings)
+		}
 	}
 }
 
@@ -375,12 +415,13 @@ func TestRetransHostNotHiddenByOnePeer(t *testing.T) {
 func TestInboundLossLocalVsRemote(t *testing.T) {
 	rx := func(peer string) *model.Connection {
 		c := conn("ESTAB", "10.0.0.1", "443", peer, "51000", sig(model.SignalInboundLoss, 1))
-		c.DeltaRcvOOOPack, c.DeltaDataSegsIn = ip(50), ip(1000)
+		t0 := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+		c.RecvSlots = []model.RecvSlot{{Start: t0, End: t0.Add(12 * time.Second), Segs: 1000, OOO: 50}}
 		return c
 	}
 	r := Analyze(Input{Conns: []*model.Connection{rx("198.51.100.7"), conn("ESTAB", "10.0.0.1", "443", "198.51.100.8", "1")}})
 	f := byID(r, "rx_loss|198.51.100.7")
-	if f == nil || !hasText(f.Evidence, "5.0% of 1000 data segments") || f.Filter != "peer==198.51.100.7 signal=RX_LOSS" {
+	if f == nil || !hasText(f.Evidence, "5.0% of 1000 data segments received over the last 12s") || f.Filter != "peer==198.51.100.7 signal=RX_LOSS" {
 		t.Errorf("want a per-peer inbound-loss finding: %+v", r.Findings)
 	}
 
@@ -388,17 +429,17 @@ func TestInboundLossLocalVsRemote(t *testing.T) {
 	for i := 1; i <= 6; i++ {
 		many = append(many, rx("198.51.100."+strconv.Itoa(i)))
 	}
-	// One of them also has loss-recovery drops: the host-wide finding must
-	// carry them and take the DROPS severity.
-	many[0].Signals = append(many[0].Signals, model.Signal{Type: model.SignalSocketDrops, Severity: 2})
-	many[0].DeltaSkmemD = ip(1)
+	// One of them also has loss-recovery drops (info, as the classifier
+	// raises them): the host-wide finding must mention them.
+	many[0].Signals = append(many[0].Signals, model.Signal{Type: model.SignalSocketDrops, Severity: 0})
+	many[0].DeltaSkmemD, many[0].DeltaRcvOOOPack = ip(1), ip(40)
 	r = Analyze(Input{Conns: many})
 	f = byID(r, "rx_loss_local")
 	if f == nil || f.Count != 6 || !hasCommand(f, "ethtool -g") {
 		t.Fatalf("inbound loss from many peers should be one local finding: %+v", r.Findings)
 	}
-	if f.Severity != 2 || !hasText(f.Evidence, "discarded 1 out-of-order segment ") {
-		t.Errorf("local finding should carry the discard and its severity: sev %d, %q", f.Severity, f.Evidence)
+	if !hasText(f.Evidence, "discarded 1 out-of-order segment ") {
+		t.Errorf("local finding should carry the discard: %q", f.Evidence)
 	}
 	if byID(r, "rx_loss|") != nil {
 		t.Errorf("per-peer inbound findings should be replaced by the local one")
@@ -407,26 +448,42 @@ func TestInboundLossLocalVsRemote(t *testing.T) {
 
 // The live netem run: a receiver under 3% inbound loss with an empty receive
 // queue showed kernel drops. Those are discarded out-of-order data, so they
-// belong to the inbound-loss finding, not "isn't reading fast enough".
+// belong to the inbound-loss finding, not "isn't reading fast enough". The
+// connections run through the classifier, which decides what the drops are.
 func TestLossDropsAttributedToInboundLoss(t *testing.T) {
-	c := conn("ESTAB", "127.0.0.1", "47200", "127.0.0.1", "48618",
-		model.Signal{Type: model.SignalSocketDrops, Severity: 1, Value: 2},
-		model.Signal{Type: model.SignalInboundLoss, Severity: 1})
-	c.Process, c.PID = sp("python3"), ip(42)
-	c.RecvQ, c.DeltaSkmemD, c.DeltaRcvOOOPack, c.DeltaDataSegsIn = ip(0), ip(2), ip(32), ip(643)
-	r := Analyze(Input{Conns: []*model.Connection{c}})
+	t0 := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	mk := func(rxLoss bool, recvQ int) *model.Connection {
+		c := conn("ESTAB", "127.0.0.1", "47200", "127.0.0.1", "48618")
+		c.Protocol, c.Process, c.PID = "tcp", sp("python3"), ip(42)
+		c.RecvQ, c.PrevRecvQ, c.SkmemRB = ip(recvQ), ip(recvQ), ip(212_992)
+		c.DeltaSkmemD, c.DeltaRcvOOOPack = ip(2), ip(32)
+		if rxLoss { // seconds of steady gaps with no queue: the RX_LOSS verdict
+			c.MinRTT, c.Timestamps = fp(40), true
+			for i := range 6 {
+				c.RecvSlots = append(c.RecvSlots, model.RecvSlot{Start: t0.Add(time.Duration(2*i) * time.Second),
+					End: t0.Add(time.Duration(2*i+2) * time.Second), Segs: 1000, OOO: 60, QueueMS: []float64{0, 0}})
+			}
+		}
+		c.Signals = classifier.Classify(c)
+		return c
+	}
+	r := Analyze(Input{Conns: []*model.Connection{mk(true, 0)}})
 	if f := byID(r, "recv_backlog|"); f != nil {
 		t.Errorf("loss-recovery drops must not blame the reader: %+v", f)
 	}
 	f := byID(r, "rx_loss|127.0.0.1")
 	if f == nil || !hasText(f.Evidence, "discarded 2 out-of-order segments") {
-		t.Fatalf("inbound-loss finding should carry the discards: %+v", f)
+		t.Fatalf("inbound-loss finding should carry the discards: %+v", r.Findings)
+	}
+
+	// Gaps but no RX_LOSS verdict (congestion, or loss too recent to judge):
+	// still discards, not a slow reader.
+	if r := Analyze(Input{Conns: []*model.Connection{mk(false, 0)}}); len(r.Findings) > 0 {
+		t.Errorf("drops with gaps and an empty queue should report nothing: %+v", r.Findings)
 	}
 
 	// With a genuinely full receive queue the reader is slow after all.
-	c.Signals = append(c.Signals, model.Signal{Type: model.SignalRecvBufferPressure, Severity: 1})
-	c.RecvQ = ip(200_000)
-	if byID(Analyze(Input{Conns: []*model.Connection{c}}), "recv_backlog|pid:42") == nil {
+	if byID(Analyze(Input{Conns: []*model.Connection{mk(true, 200_000)}}), "recv_backlog|pid:42") == nil {
 		t.Errorf("drops with a full receive queue should still be a reader problem")
 	}
 }

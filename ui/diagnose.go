@@ -82,10 +82,14 @@ func diagnose(c *model.Connection) Diagnosis {
 			"loss or ECN congestion marks just cut the sending rate sharply"},
 	}
 
-	lossDrops := classifier.DropsExplainedByInboundLoss(c.Signals)
+	lossDrops := classifier.DropsExplainedByInboundLoss(c)
 	for _, r := range rules {
-		if r.sig == model.SignalSocketDrops && lossDrops {
-			continue // out-of-order data discarded under inbound loss: let RX_LOSS explain it
+		if (r.sig == model.SignalRTOFiring || r.sig == model.SignalPeerNoAck) && classifier.HungAfterHandshake(c) {
+			if s, ok := has(r.sig); ok && s.Severity > 0 {
+				return Diagnosis{Headline: "Hung right after the handshake — likely a path MTU black hole",
+					Hint:     "nothing acknowledged since the handshake while full-sized segments time out: a smaller MTU on the path, with ICMP \"fragmentation needed\" filtered",
+					Severity: s.Severity}
+			}
 		}
 		if r.sig == model.SignalSocketDrops && c.State == "LISTEN" {
 			if s, ok := has(r.sig); ok {
@@ -107,10 +111,6 @@ func diagnose(c *model.Connection) Diagnosis {
 		// retransmits), not a verdict; they're listed below the banner.
 		if s, ok := has(r.sig); ok && s.Severity > 0 {
 			if r.sig == model.SignalInboundLoss && lossDrops {
-				// The drops are part of this story and make it worse.
-				if d, ok := has(model.SignalSocketDrops); ok {
-					s.Severity = max(s.Severity, d.Severity)
-				}
 				return Diagnosis{Headline: r.headline,
 					Hint:     "segments are lost (or reordered) between the peer and this host, and the kernel is also discarding out-of-order data — check this host's RX drops, then the path from the peer",
 					Severity: s.Severity}

@@ -68,34 +68,108 @@ func ClassifyAggregate(conns []*model.Connection) {
 
 // DropsExplainedByInboundLoss reports whether a socket's kernel drops (DROPS)
 // are most likely out-of-order data discarded during inbound loss recovery
-// rather than a slow reader: the drops coincide with RX_LOSS and the receive
-// queue is not under sustained pressure (no RCV_Q). Under inbound loss the
-// out-of-order queue holds everything behind each gap; when that exceeds the
-// socket's receive memory the kernel drops segments even though the
-// application has read everything. Blaming the app there points the
-// operator at the wrong end. Call it on a fully classified signal list.
-func DropsExplainedByInboundLoss(sigs []model.Signal) bool {
-	var drops, rxLoss, rcvQ bool
-	for _, s := range sigs {
+// rather than a slow reader: segments arrived after a gap in the same poll
+// and the receive queue is not under sustained pressure (no RCV_Q). Under
+// inbound loss the out-of-order queue holds everything behind each gap; when
+// that exceeds the socket's receive memory the kernel drops segments even
+// though the application has read everything. Blaming the app there points
+// the operator at the wrong end. This poll's gaps, not the RX_LOSS verdict:
+// RX_LOSS needs seconds of steady gaps with no queue, while the discards
+// happen with any gap, congestion included. Classify makes such DROPS info
+// (they're loss's consequence, not a fault of their own); call it on a fully
+// classified connection.
+func DropsExplainedByInboundLoss(c *model.Connection) bool {
+	if c.DeltaRcvOOOPack == nil || *c.DeltaRcvOOOPack == 0 {
+		return false
+	}
+	var drops, rcvQ bool
+	for _, s := range c.Signals {
 		switch s.Type {
 		case model.SignalSocketDrops:
 			drops = true
-		case model.SignalInboundLoss:
-			rxLoss = true
 		case model.SignalRecvBufferPressure:
 			rcvQ = true
 		}
 	}
-	return drops && rxLoss && !rcvQ
+	return drops && !rcvQ
 }
 
-// Inbound-loss thresholds: share of received data segments that arrived out
-// of order in one poll, and the minimum data segments for a verdict.
+// HungAfterHandshake reports whether a connection completed its handshake but
+// has had nothing acknowledged since (delivered counts the SYN), while its
+// data waits for an ACK with segments larger than every IPv4 path must carry
+// (576-byte datagrams, a 536-byte MSS): with a stall signal (RTO, NO_ACK),
+// the signature of a path MTU black hole. A black hole that starts after
+// data got through (a route change into a tunnel) can't be told from loss.
+func HungAfterHandshake(c *model.Connection) bool {
+	return c.State == "ESTAB" && c.Delivered != nil && *c.Delivered <= 1 &&
+		c.Unacked != nil && *c.Unacked > 0 && c.MSS != nil && *c.MSS > 536
+}
+
+// Inbound-loss thresholds: share of received data segments that arrived
+// after a gap. One lost segment makes everything behind it arrive out of
+// order until the retransmission fills the hole, so the share overstates the
+// loss rate: in the scenario lab 0.1% loss gave about 6%, 1% about 10% and 3%
+// about 17%.
 const (
-	inboundLossWarn    = 0.02
-	inboundLossCrit    = 0.10
-	inboundLossMinSegs = 100
+	inboundLossWarn = 0.02
+	inboundLossCrit = 0.10
 )
+
+// inboundLoss judges a connection's recent receiving (c.RecvSlots) for loss
+// on the path from the peer, the receiving side's view of what pathLoss
+// judges on the sender: segments arriving after a gap (rcv_ooopack) in at
+// least half of the slots, at least inboundLossWarn of the segments
+// received, and no queue on the way in: rcv_rtt within max(4 ms, 10% of min
+// RTT) of the minimum in at least three quarters of the receiving polls. A
+// flow filling a bottleneck loses packets too, and they arrive with gaps just
+// the same, but its data waits in the bottleneck's queue, which rcv_rtt (an
+// RTT sample the receiver takes with timestamps) includes. Without
+// timestamps there's no verdict.
+//
+// Three quarters, where pathLoss takes the median: bursty responses on
+// several connections build a queue only when they overlap, so in the lab a
+// healthy request/response client sometimes saw one in barely half its
+// polls, while a lossy path never did. rcv_rtt can afford the stricter
+// test: unlike the sender's RTT it isn't inflated by delayed ACKs, since the
+// timestamp echoed is the time the ACK was sent.
+//
+// A pure receiver measures min RTT only on its handshake, so a connection
+// opened through an already full queue starts from an inflated baseline and
+// may take that queue for none.
+//
+// Reordering on the path also leaves gaps. A sender that doesn't back off
+// on loss (BBR) keeps a standing queue even on a lossy path, so its loss
+// goes unreported here; the sender's PATH_LOSS still sees it.
+func inboundLoss(c *model.Connection) (sev int, value string) {
+	slots := completeSlots(c.RecvSlots, func(s model.RecvSlot) time.Duration { return s.End.Sub(s.Start) })
+	if slots == nil || c.MinRTT == nil {
+		return 0, ""
+	}
+	var segs, ooo, gappy int
+	var queue []float64
+	for _, s := range slots {
+		segs += s.Segs
+		ooo += s.OOO
+		if s.OOO > 0 {
+			gappy++
+		}
+		queue = append(queue, s.QueueMS...)
+	}
+	if segs == 0 || len(queue) == 0 {
+		return 0, ""
+	}
+	ratio := float64(ooo) / float64(segs)
+	if gappy*2 < len(slots) || ratio < inboundLossWarn {
+		return 0, ""
+	}
+	slices.Sort(queue)
+	if queue[len(queue)*3/4] >= max(4, 0.1**c.MinRTT) {
+		return 0, "" // the data waits in a queue: congestion
+	}
+	span := slots[len(slots)-1].End.Sub(slots[0].Start).Round(time.Second)
+	return tierSeverityF(ratio, inboundLossWarn, inboundLossCrit),
+		fmt.Sprintf("%.1f%% of %d segments arrived after a gap over %s, in %d of %d slots", ratio*100, segs, span, gappy, len(slots))
+}
 
 // Path-loss thresholds, set from the scenario lab (lab/): healthy congestion
 // retransmits about 0.02-0.07% on fast links and in a minority of slots,
@@ -128,7 +202,7 @@ const (
 // queue shows, so several flows saturating one also look like path loss; the
 // finding names both causes.
 func pathLoss(c *model.Connection) (sev int, value string) {
-	slots := completeSlots(c)
+	slots := completeSendSlots(c)
 	if slots == nil {
 		return 0, ""
 	}
@@ -160,21 +234,25 @@ func pathLoss(c *model.Connection) (sev int, value string) {
 		fmt.Sprintf("%.2f%% retransmitted over %s, in %d of %d slots", rate*100, slotSpan(slots), lossy, len(slots))
 }
 
-// slotMinCount is the least complete send slots PATH_LOSS and REORDER judge:
-// about 8 s of sending at 2 s slots.
+// slotMinCount is the least complete slots PATH_LOSS, REORDER and RX_LOSS
+// judge: about 8 s of sending (receiving) at 2 s slots.
 const slotMinCount = 4
 
-// completeSlots returns c's send slots without the one still filling, or nil
-// when fewer than slotMinCount are complete: too little sending to judge.
-func completeSlots(c *model.Connection) []model.SendSlot {
-	slots := c.SendSlots
-	if n := len(slots); n > 0 && slots[n-1].End.Sub(slots[n-1].Start) < model.SendSlotMin {
+// completeSlots returns slots without the one still filling (span shorter
+// than model.SendSlotMin), or nil when fewer than slotMinCount are complete:
+// too little traffic to judge.
+func completeSlots[S any](slots []S, span func(S) time.Duration) []S {
+	if n := len(slots); n > 0 && span(slots[n-1]) < model.SendSlotMin {
 		slots = slots[:n-1]
 	}
 	if len(slots) < slotMinCount {
 		return nil
 	}
 	return slots
+}
+
+func completeSendSlots(c *model.Connection) []model.SendSlot {
+	return completeSlots(c.SendSlots, func(s model.SendSlot) time.Duration { return s.End.Sub(s.Start) })
 }
 
 func slotSpan(slots []model.SendSlot) time.Duration {
@@ -204,7 +282,7 @@ const (
 // packets after any loss too, so it can't tell reordering from loss, and the
 // fix differs (path hashing vs. congestion).
 func reordering(c *model.Connection) (sev int, value string) {
-	slots := completeSlots(c)
+	slots := completeSendSlots(c)
 	if slots == nil || c.MSS == nil || *c.MSS <= 0 {
 		return 0, ""
 	}
@@ -304,8 +382,22 @@ func queuePressure(cur, prev, bufCap *int) int {
 // limitedSeverity rates a per-poll "blocked" duration (ms) as a fraction of the
 // poll interval: warn at ≥25%, crit at ≥75%. Returns (0, frac) below the warn
 // threshold so the caller can suppress. Sub-quarter-interval blocking is normal
-// jitter and not worth a signal.
-func limitedSeverity(deltaMS *float64) (int, float64) {
+// jitter and not worth a signal. The previous poll (prevMS) must have been
+// limited too: a new connection on a long path is briefly rwnd-limited while
+// the receiver's buffer autotuning catches up with slow start (in the lab, a
+// quarter of the first busy poll at 100 ms RTT), which isn't a fault.
+func limitedSeverity(deltaMS, prevMS *float64) (int, float64) {
+	sev, frac := limitedLevel(deltaMS)
+	if sev == 0 {
+		return 0, frac
+	}
+	if prev, _ := limitedLevel(prevMS); prev == 0 {
+		return 0, frac
+	}
+	return sev, frac
+}
+
+func limitedLevel(deltaMS *float64) (int, float64) {
 	if deltaMS == nil || *deltaMS <= 0 || PollIntervalMS <= 0 {
 		return 0, 0
 	}
@@ -574,11 +666,11 @@ func Classify(c *model.Connection) []model.Signal {
 	// ceiling is: RWND_LIM = the receiver isn't reading/advertising window fast
 	// enough; SNDBUF_LIM = the local send buffer (SO_SNDBUF / app) is the cap.
 	if c.DeltaBytesSent != nil && *c.DeltaBytesSent > 0 {
-		if sev, frac := limitedSeverity(c.DeltaRwndLimitedMS); sev > 0 {
+		if sev, frac := limitedSeverity(c.DeltaRwndLimitedMS, c.PrevDeltaRwndLimitedMS); sev > 0 {
 			signals = append(signals, model.Signal{Type: model.SignalRwndLimited, Severity: sev,
 				Value: fmt.Sprintf("%.0f%% of poll", frac*100)})
 		}
-		if sev, frac := limitedSeverity(c.DeltaSndbufLimitedMS); sev > 0 {
+		if sev, frac := limitedSeverity(c.DeltaSndbufLimitedMS, c.PrevDeltaSndbufLimitedMS); sev > 0 {
 			signals = append(signals, model.Signal{Type: model.SignalSndbufLimited, Severity: sev,
 				Value: fmt.Sprintf("%.0f%% of poll", frac*100)})
 		}
@@ -657,20 +749,19 @@ func Classify(c *model.Connection) []model.Signal {
 		signals = append(signals, model.Signal{Type: model.SignalDSACKSpurious, Severity: sev, Value: *c.DeltaDSACKDups})
 	}
 
-	// Inbound loss: data segments from the peer arriving after a gap
-	// (rcv_ooopack) as a share of data segments received this poll. On the
-	// receiving host this is the only visible trace of loss on the
-	// peer → here path — the retransmit counters belong to the sender. One
-	// lost segment makes everything behind it arrive out of order until the
-	// retransmission fills the hole (≈ a window's worth), so the ratio
-	// overstates the loss rate and the thresholds sit well above typical
-	// loss percentages. A minimum of data received keeps a stray packet on a
-	// quiet connection from tripping it. Reordering on the path also counts.
-	if c.DeltaRcvOOOPack != nil && c.DeltaDataSegsIn != nil && *c.DeltaDataSegsIn >= inboundLossMinSegs {
-		ratio := float64(*c.DeltaRcvOOOPack) / float64(*c.DeltaDataSegsIn)
-		if sev := tierSeverityF(ratio, inboundLossWarn, inboundLossCrit); sev > 0 {
-			signals = append(signals, model.Signal{Type: model.SignalInboundLoss, Severity: sev,
-				Value: fmt.Sprintf("%.1f%% of %d segments arrived after a gap", ratio*100, *c.DeltaDataSegsIn)})
+	// Inbound loss: on the receiving host, segments arriving after a gap are
+	// the only trace of loss on the peer → here path; the retransmit
+	// counters belong to the sender. Judged over seconds, like PATH_LOSS.
+	if sev, v := inboundLoss(c); sev > 0 {
+		signals = append(signals, model.Signal{Type: model.SignalInboundLoss, Severity: sev, Value: v})
+	}
+
+	if DropsExplainedByInboundLoss(&model.Connection{Signals: signals, DeltaRcvOOOPack: c.DeltaRcvOOOPack}) {
+		for i := range signals {
+			if signals[i].Type == model.SignalSocketDrops {
+				signals[i].Severity = 0
+				signals[i].Value = fmt.Sprintf("%v out-of-order (loss recovery)", signals[i].Value)
+			}
 		}
 	}
 

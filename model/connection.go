@@ -16,6 +16,15 @@ type SendSlot struct {
 	QueueMS    []float64 // rtt - minrtt at each of those polls
 }
 
+// RecvSlot is SendSlot's receiving counterpart: at least SendSlotMin of
+// polls in which the connection received data.
+type RecvSlot struct {
+	Start, End time.Time
+	Segs       int       // data segments received
+	OOO        int       // of those, segments that arrived after a gap (rcv_ooopack)
+	QueueMS    []float64 // rcv_rtt - minrtt at each of those polls
+}
+
 // Connection holds all parsed fields from a single ss row.
 type Connection struct {
 	Timestamp time.Time
@@ -49,6 +58,10 @@ type Connection struct {
 	TimerType    *string `json:",omitempty"`
 	TimerDur     *string `json:",omitempty"`
 	TimerRetrans *int    `json:",omitempty"`
+
+	// Timestamps: the TCP timestamps option was negotiated ("ts"). Without
+	// it rcv_rtt is a running minimum, blind to queueing.
+	Timestamps bool `json:",omitempty"`
 
 	// wscale
 	WscaleSnd *int `json:",omitempty"`
@@ -146,11 +159,17 @@ type Connection struct {
 	PrevRecvQ *int `json:",omitempty"`
 	// PrevUnacked lets NO_ACK require data to stay outstanding across polls.
 	PrevUnacked *int `json:",omitempty"`
+	// The previous poll's rwnd/sndbuf-limited time, so RWND_LIM and
+	// SNDBUF_LIM need two limited polls in a row.
+	PrevDeltaRwndLimitedMS   *float64 `json:",omitempty"`
+	PrevDeltaSndbufLimitedMS *float64 `json:",omitempty"`
 	// SendSlots summarize the connection's recent sending, oldest first, so
 	// PATH_LOSS and REORDER judge several seconds rather than one poll. The
 	// poller carries them from poll to poll; they aren't recorded or
 	// exported (replay rebuilds them).
 	SendSlots []SendSlot `json:"-"`
+	// RecvSlots are the same for receiving, for RX_LOSS.
+	RecvSlots []RecvSlot `json:"-"`
 
 	// Signals are populated by poller.AddSnapshot after deltas, so the
 	// classifier runs once per poll rather than once per render frame.

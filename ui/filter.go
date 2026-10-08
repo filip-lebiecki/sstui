@@ -85,17 +85,24 @@ type predNode struct {
 
 func (n predNode) eval(c *model.Connection) bool { return n.match(c, n.value) }
 
-// signalNode is a "signal=<name>" condition, resolved to its type when parsed.
-type signalNode struct{ typ model.SignalType }
+// signalNode is a "signal=<name>[:warn|:crit]" condition, resolved to its
+// type when parsed. minSev is the least severity that matches (0: any).
+type signalNode struct {
+	typ    model.SignalType
+	minSev int
+}
 
 func (n signalNode) eval(c *model.Connection) bool {
 	for _, s := range c.Signals {
-		if s.Type == n.typ {
+		if s.Type == n.typ && s.Severity >= n.minSev {
 			return true
 		}
 	}
 	return false
 }
+
+// signalSeverities are the ":level" suffixes a signal condition takes.
+var signalSeverities = map[string]int{"warn": 1, "crit": 2}
 
 // removedSignals are signals sstui no longer raises, so an old query or
 // runbook is told why instead of getting an empty table.
@@ -311,11 +318,21 @@ func (p *filterParser) makePred(tok string) filterNode {
 }
 
 func (p *filterParser) makeSignal(name string) filterNode {
+	name, level, leveled := strings.Cut(name, ":")
+	minSev := 0
+	if leveled {
+		sev, ok := signalSeverities[strings.ToLower(level)]
+		if !ok {
+			p.fail(fmt.Errorf("unknown signal level %q (levels: warn crit)", level))
+			return signalNode{}
+		}
+		minSev = sev
+	}
 	if t, ok := model.ParseSignalType(name); ok {
-		return signalNode{t}
+		return signalNode{t, minSev}
 	}
 	if label, ok := removedSignals[strings.ToLower(name)]; ok {
-		p.fail(fmt.Errorf("signal %s was removed (it fired on healthy traffic); a slow sender shows RWND_LIM, SNDBUF_LIM, LOSS or HI_RETRANS", label))
+		p.fail(fmt.Errorf("signal %s was removed (it fired on healthy traffic); a slow sender shows RWND_LIM, SNDBUF_LIM or PATH_LOSS", label))
 	} else {
 		p.fail(fmt.Errorf("unknown signal %q (signals: %s)", name, strings.Join(model.SignalLabels(), " ")))
 	}

@@ -311,6 +311,8 @@ func parseRecord(line string, ts time.Time) (*model.Connection, error) {
 				pending = tok
 			case tok == "app_limited":
 				c.AppLimited = 1
+			case tok == "ts":
+				c.Timestamps = true
 			case congAlgos[tok]:
 				c.CongAlgo = strPtr(tok)
 			}

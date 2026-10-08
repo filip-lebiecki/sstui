@@ -36,7 +36,9 @@ func TestHealthyBulk(t *testing.T) {
 	l.path(wan, wan)
 	l.start(l.b, "sink", addrB+port)
 	l.start(l.a, "send", addrB+port)
-	l.recordAndCheck(l.a, lossRecord).expectClean(t)
+	client, server := l.recordBoth(lossRecord)
+	client.expectClean(t)
+	server.expectClean(t)
 }
 
 // TestHealthyBulkBBR: BBR's startup overshoots the path and loses a burst
@@ -46,7 +48,9 @@ func TestHealthyBulkBBR(t *testing.T) {
 	l.path(wan, wan)
 	l.start(l.b, "sink", addrB+port)
 	l.start(l.a, "send", addrB+port, "1", "bbr")
-	l.recordAndCheck(l.a, lossRecord).expectClean(t)
+	client, server := l.recordBoth(lossRecord)
+	client.expectClean(t)
+	server.expectClean(t)
 }
 
 // TestHealthySlowLinkCongestion: four flows sharing a 10 Mbit/s link. Their
@@ -57,7 +61,9 @@ func TestHealthySlowLinkCongestion(t *testing.T) {
 	l.path(slow, slow)
 	l.start(l.b, "sink", addrB+port)
 	l.start(l.a, "send", addrB+port, "4")
-	l.recordAndCheck(l.a, lossRecord).expectClean(t)
+	client, server := l.recordBoth(lossRecord)
+	client.expectClean(t)
+	server.expectClean(t)
 }
 
 // TestHealthyLongPath: four flows on a 100 ms path, where each sawtooth
@@ -67,7 +73,9 @@ func TestHealthyLongPath(t *testing.T) {
 	l.path(long, long)
 	l.start(l.b, "sink", addrB+port)
 	l.start(l.a, "send", addrB+port, "4")
-	l.recordAndCheck(l.a, lossRecord).expectClean(t)
+	client, server := l.recordBoth(lossRecord)
+	client.expectClean(t)
+	server.expectClean(t)
 }
 
 // Not a control: several flows saturating a link whose buffer is only a few
@@ -83,22 +91,26 @@ func TestHealthyRequestResponse(t *testing.T) {
 	l.path(wan, wan)
 	l.start(l.b, "reqserver", addrB+port, "1000000")
 	l.start(l.a, "reqclient", addrB+port, "1000000", "8")
-	l.recordAndCheck(l.b, lossRecord).expectClean(t)
+	client, server := l.recordBoth(lossRecord)
+	client.expectClean(t)
+	server.expectClean(t)
 }
 
 // ---- failures: sstui must name them ---------------------------------------
 
 // TestPacketLoss: 1% random loss on the data path. For a loss-based sender
 // on a 40 ms path that caps throughput at a few Mbit/s, a twentieth of the
-// link.
+// link. The sender sees its retransmits; the receiver only the gaps in what
+// arrives, and must name the loss too.
 func TestPacketLoss(t *testing.T) {
 	l := newLab(t)
 	l.path(wan.with("loss 1%"), wan)
 	l.start(l.b, "sink", addrB+port)
 	l.start(l.a, "send", addrB+port)
-	r := l.recordAndCheck(l.a, lossRecord)
+	r, rx := l.recordBoth(lossRecord)
 	r.expect(t, "loss", "warning")
 	r.expectNone(t, "reorder") // loss recovery ticks reord_seen; it isn't reordering
+	rx.expect(t, "rx_loss", "warning")
 }
 
 // TestLightPacketLoss: 0.1% loss. Still enough to hold a cubic flow on a
@@ -108,9 +120,10 @@ func TestLightPacketLoss(t *testing.T) {
 	l.path(wan.with("loss 0.1%"), wan)
 	l.start(l.b, "sink", addrB+port)
 	l.start(l.a, "send", addrB+port)
-	r := l.recordAndCheck(l.a, lossRecord)
+	r, rx := l.recordBoth(lossRecord)
 	r.expect(t, "loss", "warning")
 	r.expectNone(t, "reorder") // loss recovery ticks reord_seen; it isn't reordering
+	rx.expect(t, "rx_loss", "warning")
 }
 
 // TestHeavyPacketLoss: 3% loss is critical.
@@ -119,13 +132,16 @@ func TestHeavyPacketLoss(t *testing.T) {
 	l.path(wan.with("loss 3%"), wan)
 	l.start(l.b, "sink", addrB+port)
 	l.start(l.a, "send", addrB+port)
-	r := l.recordAndCheck(l.a, lossRecord)
+	r, rx := l.recordBoth(lossRecord)
 	r.expect(t, "loss", "critical")
 	r.expectNone(t, "reorder") // loss recovery ticks reord_seen; it isn't reordering
+	rx.expect(t, "rx_loss", "warning")
 }
 
 // TestPacketLossBBR: BBR keeps its throughput under 1% loss, but the path is
-// still dropping packets and the operator should know.
+// still dropping packets and the operator should know. Only the sender can
+// tell: BBR keeps a standing queue, which the receiver can't tell from
+// congestion (see classifier.inboundLoss).
 func TestPacketLossBBR(t *testing.T) {
 	l := newLab(t)
 	l.path(wan.with("loss 1%"), wan)
@@ -143,9 +159,10 @@ func TestPacketLossRequestResponse(t *testing.T) {
 	l.path(wan, wan.with("loss 1%"))
 	l.start(l.b, "reqserver", addrB+port, "1000000")
 	l.start(l.a, "reqclient", addrB+port, "1000000", "8")
-	r := l.recordAndCheck(l.b, lossRecord)
+	rx, r := l.recordBoth(lossRecord)
 	r.expect(t, "loss", "warning")
 	r.expectNone(t, "reorder") // loss recovery ticks reord_seen; it isn't reordering
+	rx.expect(t, "rx_loss", "warning")
 }
 
 // TestReordering: 0.5% of packets overtake a few others on the way to the
@@ -243,4 +260,48 @@ func TestCloseWaitLeak(t *testing.T) {
 	l.start(l.b, "noclose", addrB+port)
 	l.start(l.a, "hangup", addrB+port, "60")
 	l.recordAndCheck(l.b, 4*time.Second).expect(t, "close_wait", "critical")
+}
+
+// TestPortExhaustion: a client opening a new connection per request, with no
+// reuse, toward one server. Every closed connection holds its port in
+// TIME-WAIT for 60 s, so a 1000-port range runs dry within seconds and
+// connect() starts failing.
+func TestPortExhaustion(t *testing.T) {
+	l := newLab(t)
+	l.path(wan, wan)
+	l.sysctl(l.a, "net.ipv4.ip_local_port_range=40000 40999")
+	l.start(l.b, "sink", addrB+port)
+	l.start(l.a, "churn", addrB+port, "50")
+	r := l.recordAndCheck(l.a, 6*time.Second)
+	r.expect(t, "ephemeral_ports", "critical")
+	r.expect(t, "time_wait", "warning")
+}
+
+// TestPathMTU: a link in the middle of the path (a tunnel, say) carries 1400
+// bytes, not 1500. The router says so with ICMP and the sender's path MTU
+// discovery adapts; worth knowing, but nothing is broken.
+func TestPathMTU(t *testing.T) {
+	l := newLab(t)
+	l.path(wan, wan)
+	l.narrowLink(1400)
+	l.start(l.b, "sink", addrB+port)
+	l.start(l.a, "send", addrB+port)
+	r := l.recordAndCheck(l.a, 6*time.Second)
+	r.expect(t, "pmtu", "warning")
+	r.expectNone(t, "loss")
+}
+
+// TestPMTUBlackHole: the same narrow link, but a firewall drops the ICMP that
+// would report it. The handshake's small packets get through, every
+// full-sized data segment vanishes, and the connection hangs.
+func TestPMTUBlackHole(t *testing.T) {
+	l := newLab(t)
+	l.path(wan, wan)
+	l.narrowLink(1400)
+	l.dropICMP(l.a)
+	l.start(l.b, "sink", addrB+port)
+	l.start(l.a, "send", addrB+port)
+	r := l.recordAndCheck(l.a, 10*time.Second)
+	r.expect(t, "pmtu_blackhole", "critical")
+	r.expectNone(t, "loss")
 }

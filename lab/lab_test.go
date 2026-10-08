@@ -187,6 +187,31 @@ func (l *lab) reorder(ns, pct string) {
 	l.sh("tc", "-n", ns, "qdisc", "replace", "dev", "veth0", "root", "netem", "delay", "1ms", "reorder", pct)
 }
 
+// sysctl sets a sysctl inside namespace ns (the net.* ones are per namespace).
+func (l *lab) sysctl(ns, kv string) {
+	l.t.Helper()
+	l.sh("ip", "netns", "exec", ns, "sysctl", "-qw", kv)
+}
+
+// narrowLink lowers the MTU of the router's link toward b to mtu, like a
+// tunnel in the middle of the path: both ends keep a 1500-byte MTU and learn
+// the smaller one only from the router's ICMP "fragmentation needed". b's
+// packets toward the router must fit too (veth drops what's over the
+// receiving end's MTU), so b should only send ACKs.
+func (l *lab) narrowLink(mtu int) {
+	l.t.Helper()
+	l.sh("ip", "-n", l.r, "link", "set", "tob", "mtu", strconv.Itoa(mtu))
+}
+
+// dropICMP discards every ICMP packet arriving at namespace ns, like a
+// firewall that filters ICMP wholesale.
+func (l *lab) dropICMP(ns string) {
+	l.t.Helper()
+	l.sh("tc", "-n", ns, "qdisc", "add", "dev", "veth0", "ingress")
+	l.sh("tc", "-n", ns, "filter", "add", "dev", "veth0", "ingress", "protocol", "ip",
+		"u32", "match", "ip", "protocol", "1", "0xff", "action", "drop")
+}
+
 // start runs a workload role (see runRole) inside namespace ns until the test
 // ends.
 func (l *lab) start(ns string, role ...string) {
@@ -206,38 +231,78 @@ func (l *lab) start(ns string, role ...string) {
 
 // record runs `sstui record` inside namespace ns for d and returns the
 // recording's path. With SSTUI_LAB_KEEP set to a directory, every recording
-// is also copied there (named after the test) for inspection or demos.
+// is also copied there (named after the test and the side) for inspection or
+// demos.
 func (l *lab) record(ns string, d time.Duration) string {
+	l.t.Helper()
+	return l.startRecord(ns, d)()
+}
+
+// startRecord starts recording namespace ns for d and returns a function
+// that waits for the recording and returns its path, so both ends of a path
+// can be recorded at once.
+func (l *lab) startRecord(ns string, d time.Duration) func() string {
 	l.t.Helper()
 	path := filepath.Join(l.t.TempDir(), "rec.jsonl.gz")
 	cmd := exec.Command("ip", "netns", "exec", ns, l.bin, "record",
 		"--interval", "500ms", "--duration", d.String(), "-o", path)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		l.t.Fatalf("sstui record: %v\n%s", err, out)
+	var out strings.Builder
+	cmd.Stdout, cmd.Stderr = &out, &out
+	if err := cmd.Start(); err != nil {
+		l.t.Fatalf("sstui record: %v", err)
 	}
-	if keep := os.Getenv("SSTUI_LAB_KEEP"); keep != "" {
-		dst := filepath.Join(keep, strings.ReplaceAll(l.t.Name(), "/", "_")+".jsonl.gz")
-		b, err := os.ReadFile(path)
-		if err == nil {
-			err = os.WriteFile(dst, b, 0o644)
+	// Stops it if the test fails before waiting (or while waiting on the
+	// other end's recording); harmless once it has exited.
+	l.t.Cleanup(func() { cmd.Process.Kill(); cmd.Wait() })
+	return func() string {
+		l.t.Helper()
+		if err := cmd.Wait(); err != nil {
+			l.t.Fatalf("sstui record: %v\n%s", err, out.String())
 		}
-		if err != nil {
-			l.t.Errorf("keeping the recording: %v", err)
-		}
-		// Hand it back to the user who ran sudo.
-		uid, errU := strconv.Atoi(os.Getenv("SUDO_UID"))
-		gid, errG := strconv.Atoi(os.Getenv("SUDO_GID"))
-		if errU == nil && errG == nil {
-			os.Chown(dst, uid, gid)
-		}
+		l.keep(path, l.side(ns))
+		return path
 	}
-	return path
+}
+
+// side names namespace ns for logs and kept recordings.
+func (l *lab) side(ns string) string {
+	switch ns {
+	case l.a:
+		return "client"
+	case l.b:
+		return "server"
+	}
+	return "router"
+}
+
+// keep copies a recording to SSTUI_LAB_KEEP, when set.
+func (l *lab) keep(path, side string) {
+	l.t.Helper()
+	dir := os.Getenv("SSTUI_LAB_KEEP")
+	if dir == "" {
+		return
+	}
+	dst := filepath.Join(dir, strings.ReplaceAll(l.t.Name(), "/", "_")+"-"+side+".jsonl.gz")
+	b, err := os.ReadFile(path)
+	if err == nil {
+		err = os.WriteFile(dst, b, 0o644)
+	}
+	if err != nil {
+		l.t.Errorf("keeping the recording: %v", err)
+	}
+	// Hand it back to the user who ran sudo.
+	uid, errU := strconv.Atoi(os.Getenv("SUDO_UID"))
+	gid, errG := strconv.Atoi(os.Getenv("SUDO_GID"))
+	if errU == nil && errG == nil {
+		os.Chown(dst, uid, gid)
+	}
 }
 
 // report is the part of `sstui check --json` the lab asserts on, plus the
 // warn/crit socket signals a replay of the recording raised (see
 // signalPolls), which Live and Detail would have shown.
 type report struct {
+	side    string // "client" or "server"
 	signals string // "none", or "LABEL=polls ..."
 
 	Status   string `json:"status"`
@@ -250,9 +315,10 @@ type report struct {
 	} `json:"findings"`
 }
 
-// check runs `sstui check --json` on a recording and logs what it found and
-// which socket signals fired, so a failing scenario shows its evidence.
-func (l *lab) check(path string) *report {
+// check runs `sstui check --json` on a recording of side and logs what it
+// found and which socket signals fired, so a failing scenario shows its
+// evidence.
+func (l *lab) check(path, side string) *report {
 	l.t.Helper()
 	out, err := exec.Command(l.bin, "check", "--json", path).Output()
 	var exit *exec.ExitError
@@ -263,7 +329,8 @@ func (l *lab) check(path string) *report {
 	if err := json.Unmarshal(out, &r); err != nil {
 		l.t.Fatalf("sstui check output: %v\n%s", err, out)
 	}
-	l.t.Logf("check: %s over %d polls", r.Status, r.Polls)
+	r.side = side
+	l.t.Logf("%s check: %s over %d polls", side, r.Status, r.Polls)
 	for _, f := range r.Findings {
 		l.t.Logf("  finding %-28s %-8s %2d polls  %s", f.ID, f.Severity, f.PollsSeen, f.Title)
 	}
@@ -275,7 +342,17 @@ func (l *lab) check(path string) *report {
 // recordAndCheck records namespace ns for d and checks the recording.
 func (l *lab) recordAndCheck(ns string, d time.Duration) *report {
 	l.t.Helper()
-	return l.check(l.record(ns, d))
+	return l.check(l.record(ns, d), l.side(ns))
+}
+
+// recordBoth records the client and the server at the same time, for d, and
+// checks both recordings: the sender sees its retransmits, the receiver only
+// the gaps in what arrives.
+func (l *lab) recordBoth(d time.Duration) (client, server *report) {
+	l.t.Helper()
+	wa, wb := l.startRecord(l.a, d), l.startRecord(l.b, d)
+	pa, pb := wa(), wb()
+	return l.check(pa, "client"), l.check(pb, "server")
 }
 
 // kind is a finding ID without its "|key" suffix ("zero_window").
@@ -293,7 +370,7 @@ func (r *report) expect(t *testing.T, k, severity string) {
 			return
 		}
 	}
-	t.Errorf("want a %s finding at %s or worse; got %s", k, severity, r.kinds())
+	t.Errorf("%s: want a %s finding at %s or worse; got %s", r.side, k, severity, r.kinds())
 }
 
 // expectNone fails if a finding of this kind was reported.
@@ -301,7 +378,7 @@ func (r *report) expectNone(t *testing.T, k string) {
 	t.Helper()
 	for _, f := range r.Findings {
 		if kind(f.ID) == k {
-			t.Errorf("want no %s finding; got %s", k, r.kinds())
+			t.Errorf("%s: want no %s finding; got %s", r.side, k, r.kinds())
 			return
 		}
 	}
@@ -312,10 +389,10 @@ func (r *report) expectNone(t *testing.T, k string) {
 func (r *report) expectClean(t *testing.T) {
 	t.Helper()
 	if len(r.Findings) > 0 {
-		t.Errorf("healthy traffic should report nothing; got %s", r.kinds())
+		t.Errorf("%s: healthy traffic should report nothing; got %s", r.side, r.kinds())
 	}
 	if r.signals != "none" {
-		t.Errorf("healthy traffic should raise no warn/crit signals; got %s", r.signals)
+		t.Errorf("%s: healthy traffic should raise no warn/crit signals; got %s", r.side, r.signals)
 	}
 }
 

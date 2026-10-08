@@ -73,6 +73,7 @@ func TestScanRecordsSample(t *testing.T) {
 		{"skmem tb", i(c.SkmemTB), 87040},
 		{"skmem d", i(c.SkmemD), 2},
 		{"congalgo", s(c.CongAlgo), "bbr"},
+		{"timestamps", c.Timestamps, true},
 		{"wscale", [2]int{i(c.WscaleSnd), i(c.WscaleRcv)}, [2]int{13, 10}},
 		{"rto", f(c.RTO), 211.0},
 		{"rtt", [2]float64{f(c.RTT), f(c.RTTVar)}, [2]float64{10.083, 0.776}},

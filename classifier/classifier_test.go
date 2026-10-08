@@ -314,7 +314,21 @@ func TestReordering(t *testing.T) {
 		{"too little history", reord(3, 3, 9), 0},
 		{"no MSS to count segments", func() *model.Connection { c := reord(6, 6, 9); c.MSS = nil; return c }(), 0},
 		{"receiver-side out-of-order only", &model.Connection{Protocol: "tcp", State: "ESTAB", DeltaRcvOOOPack: ip(30)}, 0},
-		{"under steady path loss the counter proves nothing", func() *model.Connection {
+		// TestLightPacketLoss in the lab: 0.1% loss, its retransmit rate just
+		// under PATH_LOSS's threshold, reord_seen ticking in most slots.
+		{"loss recovery below PATH_LOSS: events but few per retransmit", func() *model.Connection {
+			c := reord(6, 5, 3)
+			for i := range c.SendSlots {
+				c.SendSlots[i].Retrans = 1448 // 1 segment per slot: 0.1%, ratio 15/6
+			}
+			return c
+		}(), 0},
+		{"real reordering, the occasional retransmit", func() *model.Connection {
+			c := reord(6, 6, 9)
+			c.SendSlots[1].Retrans, c.SendSlots[4].Retrans = 1448, 1448 // 54 events per 2 retransmits
+			return c
+		}(), 1},
+		{"steady path loss: far more retransmits than events", func() *model.Connection {
 			c := reord(6, 6, 9)
 			c.MinRTT = fl(40)
 			for i := range c.SendSlots {

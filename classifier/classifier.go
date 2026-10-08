@@ -291,20 +291,28 @@ func slotSpan(slots []model.SendSlot) time.Duration {
 // Reordering thresholds: reordering events as a share of data segments sent.
 // Set from the scenario lab: 0.1% of packets reordered on a 100 Mbit/s path
 // gives about 0.9% (each reordered packet can count more than once), while
-// the stray events loss recovery and request bursts produce stay far below
-// 0.1% over a window, and in a few percent of polls.
+// the stray events request bursts produce stay far below 0.1% over a window,
+// and in a few percent of polls. Loss recovery can pass it; the ratio to
+// retransmits (reorderPerRetrans) tells that apart.
 const (
 	reorderWarn = 0.001
 	reorderCrit = 0.05
+	// reorderPerRetrans is the least reordering events per retransmitted
+	// segment over the window. Loss recovery ticks reord_seen steadily too
+	// (at 0.1% loss in up to 4 of 5 slots, up to 0.28% of segments), but
+	// at most 5.5 events per retransmit in the lab, while real reordering
+	// gave 21 or more (mostly 70+), retransmitting only now and then.
+	reorderPerRetrans = 10
 )
 
 // reordering judges a connection's recent sending for packet reordering on
 // the way to the peer, from reord_seen: the sender saw a segment acknowledged
 // out of order without a retransmit. It fires when reordering is steady (in
-// at least half of the slots) and at least reorderWarn of the segments sent.
-// The counter also ticks now and then without any reordering (loss recovery,
-// request bursts: one or two events in a few percent of polls), which a
-// per-poll rule reported as reordering; real reordering, from ECMP or LACP
+// at least half of the slots), at least reorderWarn of the segments sent, and
+// far more common than retransmits (reorderPerRetrans). The counter also
+// ticks without any reordering: now and then on request bursts, which a
+// per-poll rule reported as reordering, and steadily during loss recovery,
+// which only the retransmits tell apart. Real reordering, from ECMP or LACP
 // hashing or multi-queue NICs, shows up in nearly every poll.
 //
 // rcv_ooopack is deliberately not used: the receiver queues out-of-order
@@ -315,16 +323,18 @@ func reordering(c *model.Connection) (sev int, value string) {
 	if slots == nil || c.MSS == nil || *c.MSS <= 0 {
 		return 0, ""
 	}
-	var sent, events, steady int
+	var sent, retrans, events, steady int
 	for _, s := range slots {
 		sent += s.Sent
+		retrans += s.Retrans
 		events += s.Reord
 		if s.Reord > 0 {
 			steady++
 		}
 	}
 	rate := float64(events) / (float64(sent) / float64(*c.MSS))
-	if steady*2 < len(slots) || rate < reorderWarn {
+	retransSegs := float64(retrans) / float64(*c.MSS)
+	if steady*2 < len(slots) || rate < reorderWarn || float64(events) < reorderPerRetrans*retransSegs {
 		return 0, ""
 	}
 	return tierSeverityF(rate, reorderWarn, reorderCrit),
@@ -872,14 +882,8 @@ func Classify(c *model.Connection) []model.Signal {
 		}
 	}
 
-	// Steady loss recovery can tick reord_seen steadily too, so under
-	// PATH_LOSS the counter proves nothing; the loss is what to act on.
-	// Real reordering doesn't raise PATH_LOSS (in the lab it caused only the
-	// occasional retransmit), so this hides no reordering on its own.
-	if lossSev == 0 {
-		if sev, v := reordering(c); sev > 0 {
-			signals = append(signals, model.Signal{Type: model.SignalReordering, Severity: sev, Value: v})
-		}
+	if sev, v := reordering(c); sev > 0 {
+		signals = append(signals, model.Signal{Type: model.SignalReordering, Severity: sev, Value: v})
 	}
 
 	return signals

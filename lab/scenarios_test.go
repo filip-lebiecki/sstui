@@ -132,7 +132,7 @@ func TestPacketLoss(t *testing.T) {
 	l.start(l.a, "send", addrB+port)
 	r, rx := l.recordBoth(lossRecord)
 	r.expect(t, "loss", "warning")
-	r.expectNone(t, "reorder") // loss recovery ticks reord_seen; it isn't reordering
+	r.expectNone(t, "reorder")
 	rx.expect(t, "rx_loss", "warning")
 }
 
@@ -145,7 +145,7 @@ func TestLightPacketLoss(t *testing.T) {
 	l.start(l.a, "send", addrB+port)
 	r, rx := l.recordBoth(lossRecord)
 	r.expect(t, "loss", "warning")
-	r.expectNone(t, "reorder") // loss recovery ticks reord_seen; it isn't reordering
+	r.expectNone(t, "reorder")
 	rx.expect(t, "rx_loss", "warning")
 }
 
@@ -174,7 +174,7 @@ func TestHeavyPacketLoss(t *testing.T) {
 	l.start(l.a, "send", addrB+port)
 	r, rx := l.recordBoth(lossRecord)
 	r.expect(t, "loss", "critical")
-	r.expectNone(t, "reorder") // loss recovery ticks reord_seen; it isn't reordering
+	r.expectNone(t, "reorder")
 	rx.expect(t, "rx_loss", "warning")
 }
 
@@ -189,7 +189,7 @@ func TestPacketLossBBR(t *testing.T) {
 	l.start(l.a, "send", addrB+port, "1", "bbr")
 	r := l.recordAndCheck(l.a, lossRecord)
 	r.expect(t, "loss", "warning")
-	r.expectNone(t, "reorder") // loss recovery ticks reord_seen; it isn't reordering
+	r.expectNone(t, "reorder")
 }
 
 // TestPacketLossRequestResponse: 1% loss on the response path of a bursty
@@ -201,7 +201,7 @@ func TestPacketLossRequestResponse(t *testing.T) {
 	l.start(l.a, "reqclient", addrB+port, "1000000", "8")
 	rx, r := l.recordBoth(lossRecord)
 	r.expect(t, "loss", "warning")
-	r.expectNone(t, "reorder") // loss recovery ticks reord_seen; it isn't reordering
+	r.expectNone(t, "reorder")
 	rx.expect(t, "rx_loss", "warning")
 }
 
@@ -212,6 +212,21 @@ func TestReordering(t *testing.T) {
 	l := newLab(t)
 	l.path(wan, wan)
 	l.reorder(l.a, "0.5%")
+	l.start(l.b, "sink", addrB+port)
+	l.start(l.a, "send", addrB+port)
+	r := l.recordAndCheck(l.a, lossRecord)
+	r.expect(t, "reorder", "warning")
+	r.expectNone(t, "loss")
+}
+
+// TestLightReordering: 0.03% of packets reordered, a few a second: TCP
+// barely notices, but the path is reordering, and a busier flow through it
+// would see more. Reported once slow start's losses leave the window: until
+// then the reordering is too rare next to them (reorderPerRetrans).
+func TestLightReordering(t *testing.T) {
+	l := newLab(t)
+	l.path(wan, wan)
+	l.reorder(l.a, "0.03%")
 	l.start(l.b, "sink", addrB+port)
 	l.start(l.a, "send", addrB+port)
 	r := l.recordAndCheck(l.a, lossRecord)

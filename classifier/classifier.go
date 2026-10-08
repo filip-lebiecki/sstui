@@ -339,22 +339,18 @@ func slotSpan(slots []model.SendSlot) time.Duration {
 }
 
 // Reordering thresholds: reordering events as a share of data segments sent.
-// Set from the scenario lab: 0.1% of packets reordered on a 100 Mbit/s path
-// gives about 0.9% (each reordered packet can count more than once), and
-// the reordering scenarios ran at 4% and more. Healthy bulk flows sharing a
-// busy link with request/response traffic saw up to 0.2%, steadily: real
-// (the receiver counted the out-of-order arrivals), but so little that TCP's
-// reordering tolerance absorbs it, nothing to act on. The stray events
-// request bursts produce stay far below that. Loss recovery can pass it; the
-// ratio to retransmits (reorderPerRetrans) tells that apart.
+// Set from the scenario lab, where each reordered packet counts several
+// times: 0.03% of packets reordered on a 100 Mbit/s path gave about 0.3%,
+// 0.5% about 4%, 10% about 50%. Without reordering the counter didn't move
+// at all, in any scenario: not on loss, congestion or request bursts.
 const (
-	reorderWarn = 0.005
+	reorderWarn = 0.001
 	reorderCrit = 0.05
 	// reorderPerRetrans is the least reordering events per retransmitted
-	// segment over the window. Loss recovery ticks reord_seen steadily too
-	// (at 0.1% loss in up to 4 of 5 slots, up to 0.28% of segments), but
-	// at most 5.5 events per retransmit in the lab, while real reordering
-	// gave 21 or more (mostly 70+), retransmitting only now and then.
+	// segment over the window. Loss doesn't tick reord_seen, and the lab's
+	// reordering gave about 100 or more per retransmit (light reordering
+	// once its flow's slow-start losses left the window); a little
+	// reordering next to far more loss is reported as the loss.
 	reorderPerRetrans = 10
 )
 
@@ -362,11 +358,15 @@ const (
 // the way to the peer, from reord_seen: the sender saw a segment acknowledged
 // out of order without a retransmit. It fires when reordering is steady (in
 // at least half of the slots), at least reorderWarn of the segments sent, and
-// far more common than retransmits (reorderPerRetrans). The counter also
-// ticks without any reordering: now and then on request bursts, which a
-// per-poll rule reported as reordering, and steadily during loss recovery,
-// which only the retransmits tell apart. Real reordering, from ECMP or LACP
-// hashing or multi-queue NICs, shows up in nearly every poll.
+// far more common than retransmits (reorderPerRetrans). Real reordering,
+// from ECMP or LACP hashing or multi-queue NICs, shows up in nearly every
+// poll; a one-off burst, such as a route change, isn't worth a warning.
+//
+// Packets also get reordered inside a host: a veth hands each packet to the
+// backlog of the CPU sending it, so a qdisc that sends from a timer (netem)
+// can reorder every flow through it on a many-core machine. The lab's
+// healthy traffic did, at 0.2-1% of segments, until it enabled RPS. That's
+// real reordering too, and reported.
 //
 // rcv_ooopack is deliberately not used: the receiver queues out-of-order
 // packets after any loss too, so it can't tell reordering from loss, and the
@@ -946,9 +946,8 @@ func Classify(c *model.Connection) []model.Signal {
 	// DSACK growth: the peer reported duplicate data since last poll, so we
 	// retransmitted something that had arrived (an RTO or fast retransmit
 	// too eager, or reordering). Info-level context like RETRANS: TCP undoes
-	// spurious retransmits itself, and a healthy flow sharing a busy link
-	// in the lab (TestHealthyMixed/2s) had them now and then; real
-	// reordering is REORDER's.
+	// spurious retransmits itself (no scenario in the lab has any, not even
+	// the reordering ones), and real reordering is REORDER's.
 	if c.DeltaDSACKDups != nil && *c.DeltaDSACKDups > 0 {
 		signals = append(signals, model.Signal{Type: model.SignalDSACKSpurious, Severity: 0, Value: *c.DeltaDSACKDups})
 	}

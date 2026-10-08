@@ -302,9 +302,8 @@ func TestClassifyPeerNoAck(t *testing.T) {
 }
 
 // TestReordering: steady reord_seen growth over the window is reordering;
-// the stray event or two loss recovery and request bursts produce isn't, and
-// neither is out-of-order arrival at the receiver (rcv_ooopack), which plain
-// loss causes too. reord(n, steady, events) builds n complete 2 s slots of
+// a stray event or two isn't, and neither is out-of-order arrival at the
+// receiver (rcv_ooopack), which plain loss causes too. reord(n, steady, events) builds n complete 2 s slots of
 // 1.448 MB (1000 segments) each, the first `steady` of them with `events`
 // reordering events.
 func TestReordering(t *testing.T) {
@@ -329,15 +328,19 @@ func TestReordering(t *testing.T) {
 		{"heavy reordering", reord(6, 6, 80), 2},
 		{"in half the slots", reord(6, 3, 12), 1},
 		{"stray events in two slots", reord(6, 2, 2), 0},
-		// TestHealthyMixed/2s in the lab: bulk beside request/response
-		// traffic, 0.2% of segments reordered in every slot.
-		{"steady but below 0.5% of segments", reord(6, 6, 2), 0},
+		// TestLightReordering in the lab: 0.03% of packets, 0.3% of segments.
+		{"light but steady", reord(6, 6, 3), 1},
+		{"steady but below 0.1% of segments", func() *model.Connection {
+			c := reord(6, 6, 1)
+			for i := range c.SendSlots {
+				c.SendSlots[i].Sent *= 2 // 1 event per 2000 segments
+			}
+			return c
+		}(), 0},
 		{"too little history", reord(3, 3, 9), 0},
 		{"no MSS to count segments", func() *model.Connection { c := reord(6, 6, 9); c.MSS = nil; return c }(), 0},
 		{"receiver-side out-of-order only", &model.Connection{Protocol: "tcp", State: "ESTAB", DeltaRcvOOOPack: ip(30)}, 0},
-		// TestLightPacketLoss in the lab: 0.1% loss, its retransmit rate just
-		// under PATH_LOSS's threshold, reord_seen ticking in most slots.
-		{"loss recovery below PATH_LOSS: events but few per retransmit", func() *model.Connection {
+		{"a little reordering next to more loss: few events per retransmit", func() *model.Connection {
 			c := reord(6, 5, 3)
 			for i := range c.SendSlots {
 				c.SendSlots[i].Retrans = 1448 // 1 segment per slot: 0.1%, ratio 15/6

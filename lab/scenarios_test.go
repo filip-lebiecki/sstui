@@ -450,3 +450,17 @@ func TestShortConnectionLoss(t *testing.T) {
 	l.start(l.a, "upload", addrB+port, "200000", "8")
 	l.recordAndCheck(l.a, lossRecord).expect(t, "retrans_host", "warning")
 }
+
+// TestUDPReceiveDropsFiltered: the UDP overload of TestUDPReceiveDrops,
+// recorded with an ss filter that leaves the dropping socket out (sstui
+// watching only SSH). The host's UDP counters still see the drops.
+func TestUDPReceiveDropsFiltered(t *testing.T) {
+	l := newLab(t)
+	l.path(wan, wan)
+	l.ssFilter = "sport = :22"
+	l.start(l.b, "udpsink", addrB+port, "500")
+	l.start(l.a, "udpsend", addrB+port, "2000")
+	r := l.recordAndCheck(l.b, 6*time.Second)
+	r.expect(t, "udp_rcvbuf_host", "critical")
+	r.expectNone(t, "recv_backlog") // the socket is out of view
+}

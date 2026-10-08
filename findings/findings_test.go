@@ -513,6 +513,13 @@ func TestUDPDropsDontFoldIntoTCPBacklog(t *testing.T) {
 	if byID(r, "udp_rcvbuf_host") != nil {
 		t.Errorf("visible UDP drops should fold the counter into their finding")
 	}
+
+	// Collecting through an ss filter: the dropping sockets are likely
+	// outside it, and the finding says so.
+	r = Analyze(Input{Sys: sys, SysPrev: prev, Interval: 2 * time.Second, SSFilter: "sport = :22"})
+	if f := byID(r, "udp_rcvbuf_host"); f == nil || !hasText(f.Evidence, "ss filter 'sport = :22'") || f.Filter != "" {
+		t.Errorf("with an ss filter, the host finding should name it: %+v", f)
+	}
 }
 
 // A single poll's burst (slow-start overshoot, a request burst) isn't a host

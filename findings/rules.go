@@ -1165,17 +1165,23 @@ func ruleUDPRcvbufHost(a *analysis) {
 		return
 	}
 	rmemMax, _ := a.in.Sysctl.Int("net.core.rmem_max")
+	evidence := []string{ev, fmt.Sprintf("net.core.rmem_max = %s", humanBytes(float64(rmemMax)))}
+	filter := "proto=udp"
+	if a.in.SSFilter != "" {
+		evidence = append(evidence, fmt.Sprintf("sstui only collects sockets matching the ss filter '%s'; the dropping ones are likely outside it", a.in.SSFilter))
+		filter = "" // they weren't collected: nothing to show
+	}
 	a.add(Finding{
 		ID:       "udp_rcvbuf_host",
 		Severity: 2,
 		Title:    "UDP datagrams are being dropped: receive buffers full",
 		Detail:   "Some UDP application isn't reading fast enough (or its buffer is too small for bursts), so the kernel discards incoming datagrams.",
-		Evidence: []string{ev, fmt.Sprintf("net.core.rmem_max = %s", humanBytes(float64(rmemMax)))},
+		Evidence: evidence,
 		Actions: []Action{
 			{Text: "Find sockets with queued data", Command: "ss -uanpm | awk '$2 > 0'"},
 			{Text: "Raise the cap, then the app's SO_RCVBUF (UDP doesn't autotune)", Command: fmt.Sprintf("sysctl -w net.core.rmem_max=%d", roundUpMB(max(float64(rmemMax)*4, 8<<20)))},
 		},
-		Filter: "proto=udp",
+		Filter: filter,
 	})
 }
 

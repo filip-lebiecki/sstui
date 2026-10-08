@@ -92,9 +92,10 @@ func requireLab(t *testing.T) {
 
 // lab is one scenario's namespaces.
 type lab struct {
-	t       *testing.T
-	a, r, b string // client, router, server namespaces
-	bin     string // sstui binary
+	t        *testing.T
+	a, r, b  string // client, router, server namespaces
+	bin      string // sstui binary
+	ssFilter string // passed to `sstui record --ss-filter` when set
 }
 
 var labSeq atomic.Int32
@@ -296,8 +297,11 @@ func (l *lab) record(ns string, d time.Duration) string {
 func (l *lab) startRecord(ns string, d time.Duration) func() string {
 	l.t.Helper()
 	path := filepath.Join(l.t.TempDir(), "rec.jsonl.gz")
-	cmd := exec.Command("ip", "netns", "exec", ns, l.bin, "record",
-		"--interval", "500ms", "--duration", d.String(), "-o", path)
+	args := []string{"netns", "exec", ns, l.bin, "record", "--interval", "500ms", "--duration", d.String(), "-o", path}
+	if l.ssFilter != "" {
+		args = append(args, "--ss-filter", l.ssFilter)
+	}
+	cmd := exec.Command("ip", args...)
 	var out strings.Builder
 	cmd.Stdout, cmd.Stderr = &out, &out
 	if err := cmd.Start(); err != nil {

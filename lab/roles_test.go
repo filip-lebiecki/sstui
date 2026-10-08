@@ -23,6 +23,7 @@ const roleEnv = "SSTUI_LAB_ROLE"
 //	sink ADDR                 accept connections, read everything, close on EOF
 //	send ADDR [N [CC]]        N connections (default 1) writing as fast as they can,
 //	                          with congestion control CC (default: the system's)
+//	sendfrom SRC ADDR         one connection from local address SRC, writing as fast as it can
 //	sndbuf ADDR BYTES         one connection with SO_SNDBUF set to BYTES (which turns
 //	                          off send-buffer autotuning), writing as fast as it can
 //	stall ADDR                accept connections and never read (zero window)
@@ -80,6 +81,17 @@ func runRole(args []string) error {
 			}()
 		}
 		return <-errc
+	case "sendfrom":
+		c, err := dialFrom(arg(1), arg(2))
+		if err != nil {
+			return err
+		}
+		buf := make([]byte, 64<<10)
+		for {
+			if _, err := c.Write(buf); err != nil {
+				return err
+			}
+		}
 	case "sndbuf":
 		c, err := dial(arg(1))
 		if err != nil {
@@ -297,6 +309,17 @@ func dialCC(addr, cc string) (net.Conn, error) {
 			return serr
 		}
 	}
+	return dialRetry(d, addr)
+}
+
+// dialFrom is dial from local address src.
+func dialFrom(src, addr string) (net.Conn, error) {
+	return dialRetry(net.Dialer{LocalAddr: &net.TCPAddr{IP: net.ParseIP(src)}}, addr)
+}
+
+// dialRetry dials addr with d, retrying for a few seconds while the server's
+// role is still starting.
+func dialRetry(d net.Dialer, addr string) (net.Conn, error) {
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		c, err := d.Dial("tcp", addr)

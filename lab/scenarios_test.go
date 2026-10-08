@@ -402,3 +402,19 @@ func TestLossOnLocalLink(t *testing.T) {
 	r.expect(t, "loss_local", "warning")
 	r.expectNone(t, "loss") // not six separate per-peer findings
 }
+
+// TestInboundLossOnLocalLink: this host's incoming link loses 1% of what
+// arrives (as a NIC dropping on receive would), so data from every sender
+// arrives with gaps. Six clients (addresses) rather than one make the common
+// factor this host's receive path, not one sender's path.
+func TestInboundLossOnLocalLink(t *testing.T) {
+	l := newLab(t)
+	l.path(wan.with("loss 1%"), wan) // the router's link into b
+	l.start(l.b, "sink", addrB+port)
+	for _, src := range l.moreAddrs(l.a, 6) {
+		l.start(l.a, "sendfrom", src, addrB+port)
+	}
+	r := l.recordAndCheck(l.b, lossRecord)
+	r.expect(t, "rx_loss_local", "warning")
+	r.expectNone(t, "rx_loss") // not six separate per-peer findings
+}

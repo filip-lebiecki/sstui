@@ -386,3 +386,19 @@ func TestUDPReceiveDrops(t *testing.T) {
 	l.start(l.a, "udpsend", addrB+port, "2000")
 	l.recordAndCheck(l.b, 6*time.Second).expect(t, "recv_backlog", "critical")
 }
+
+// TestLossOnLocalLink: this host's own link loses 1% of what it sends, so
+// every peer sees loss at once. Six servers (addresses) rather than one make
+// the common factor this host, not one peer's path.
+func TestLossOnLocalLink(t *testing.T) {
+	l := newLab(t)
+	l.path(wan, wan)
+	l.lossyNIC(l.a, "1%")
+	l.start(l.b, "sink", port)
+	for _, addr := range l.moreAddrs(l.b, 6) {
+		l.start(l.a, "send", addr+port)
+	}
+	r := l.recordAndCheck(l.a, lossRecord)
+	r.expect(t, "loss_local", "warning")
+	r.expectNone(t, "loss") // not six separate per-peer findings
+}

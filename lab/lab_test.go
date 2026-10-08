@@ -187,6 +187,33 @@ func (l *lab) reorder(ns, pct string) {
 	l.sh("tc", "-n", ns, "qdisc", "replace", "dev", "veth0", "root", "netem", "delay", "1ms", "reorder", pct)
 }
 
+// lossyNIC drops pct of the packets namespace ns sends, on its own link: a
+// bad NIC, cable or driver. netem reports its drops to the stack as sent,
+// so TCP has to detect them like any loss on the wire.
+func (l *lab) lossyNIC(ns, pct string) {
+	l.t.Helper()
+	l.sh("tc", "-n", ns, "qdisc", "replace", "dev", "veth0", "root", "netem", "loss", pct)
+}
+
+// moreAddrs gives namespace ns (l.a or l.b) n addresses in all: its own
+// and n-1 more on the same subnet (.2, .3, ...), so it looks like n
+// different hosts to the other end. Returns them, its own first.
+func (l *lab) moreAddrs(ns string, n int) []string {
+	l.t.Helper()
+	own := map[string]string{l.a: addrA, l.b: addrB}[ns]
+	addrs := []string{own}
+	prefix := own[:strings.LastIndex(own, ".")+1]
+	for i := 2; len(addrs) < n; i++ {
+		a := prefix + strconv.Itoa(i)
+		if a == own {
+			continue
+		}
+		l.sh("ip", "-n", ns, "addr", "add", a+"/24", "dev", "veth0")
+		addrs = append(addrs, a)
+	}
+	return addrs
+}
+
 // sysctl sets a sysctl inside namespace ns (the net.* ones are per namespace).
 func (l *lab) sysctl(ns, kv string) {
 	l.t.Helper()

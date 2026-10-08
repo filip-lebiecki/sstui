@@ -286,8 +286,8 @@ so you can step back to see what was wrong when.
 | Finding | Triggered by | Typical recommendation |
 |---|---|---|
 | Peer not reading | `ZERO_WIN`, grouped by process + peer | names the local receiver if it's on this host; investigate the app, not the network |
-| App not reading fast enough | `RCV_Q` / `DROPS`, per process | find the slow reader; buffer sizes for bursts (UDP doesn't autotune) |
-| Accept queue full | `LISTEN_Q` + `ListenOverflows` | tells apart a `somaxconn` cap from the app's own backlog |
+| App not reading fast enough | `RCV_Q` / `DROPS` on non-listening sockets, per process | find the slow reader; buffer sizes for bursts (UDP doesn't autotune) |
+| Accept queue full or overflowing | `LISTEN_Q`, or `DROPS` on the listener (bursts that overflow between polls), + `ListenOverflows` | names the listener; tells apart a `somaxconn` cap from the app's own backlog |
 | Can't connect | `SYN_STALL`, per destination | `nc -vz`, `ip route get`, firewalls |
 | Packet loss (per peer / host-wide) | `PATH_LOSS`, `RTO`, `NO_ACK` | `mtr` for one peer; NIC/CPU checks when many peers lose at once |
 | Inbound loss (per peer / host-wide) | `RX_LOSS` | path back toward the peer (loss is often asymmetric); RX drops / ring size when many peers are affected |
@@ -730,7 +730,7 @@ badge color and in the Live-tab indicator glyph.
 | `HI_RETRANS`  | `Δbytes_retrans / Δbytes_sent > 5%`                                    | warn / crit (>20%)      | This poll's retransmit rate is high. Context only: a burst like this is normal during slow start, so findings rely on `PATH_LOSS` |
 | `DSACK`       | `dsack_dups` grew this poll                                            | warn / crit (>5)        | Spurious retransmits — the data had arrived (aggressive RTO, or reordering) |
 | `REORDER`     | Over the last ~12 s: `reord_seen` grew in at least half of the 2 s slots, by ≥0.1% of the segments sent; not evaluated while `PATH_LOSS` fires | warn / crit (≥5%) | Our packets are reordered on the way to the peer (often ECMP / LACP / multi-queue hashing). The counter also ticks now and then during loss recovery or request bursts, and steadily under steady loss, so one-off events and lossy connections don't count |
-| `DROPS`       | `skmem` drop counter (`d`) grew this poll                             | warn / crit (>10)       | Kernel discarded data at the socket — buffer overran, receiver too slow. With `RX_LOSS` and an empty receive queue it's out-of-order data discarded during loss recovery instead, and Findings/Detail say so |
+| `DROPS`       | `skmem` drop counter (`d`) grew this poll                             | warn / crit (>10)       | Kernel discarded data at the socket — buffer overran, receiver too slow. On a listening socket it counts refused connection attempts instead (accept or SYN queue overflow), reported with the accept-queue finding. With `RX_LOSS` and an empty receive queue it's out-of-order data discarded during loss recovery instead, and Findings/Detail say so |
 | `RX_LOSS`     | ≥2% of data segments received this poll arrived after a gap (crit ≥10%; needs ≥100 segments) | warn / crit | **Inbound** loss (or reordering) on the peer → here path. The only loss signal available on the receiving side — the retransmit counters live on the sender. One lost segment makes everything behind it arrive out of order, so the ratio overstates the loss rate; the thresholds account for that |
 
 ### Congestion & flow control

@@ -179,6 +179,42 @@ func sysPair(prev, cur map[string]int64) (*poller.SysStat, *poller.SysStat) {
 	return &poller.SysStat{Counters: cur}, &poller.SysStat{Counters: prev}
 }
 
+// A listener's drops are connection attempts it turned away: they belong to
+// that listener's accept-queue finding (even when the queue isn't full at the
+// moment of the poll), not to "isn't reading fast enough", and the host-wide
+// overflow finding folds into it.
+func TestListenerDropsAreAcceptQueueOverflow(t *testing.T) {
+	sys, prev := sysPair(map[string]int64{"TcpExt:ListenOverflows": 0}, map[string]int64{"TcpExt:ListenOverflows": 20})
+	lst := conn("LISTEN", "0.0.0.0", "80", "0.0.0.0", "*", sig(model.SignalSocketDrops, 2))
+	lst.RecvQ, lst.SendQ, lst.DeltaSkmemD = ip(2), ip(511), ip(21)
+	lst.Process, lst.PID = sp("nginx"), ip(7)
+	r := Analyze(Input{Conns: []*model.Connection{lst}, Sys: sys, SysPrev: prev, Interval: 2 * time.Second})
+
+	f := byID(r, "listen_queue|")
+	if f == nil || f.Severity != 2 || !strings.Contains(f.Title, "overflowed") || !hasText(f.Evidence, "21 connection attempts dropped at this listener") {
+		t.Fatalf("listener drops should be an accept-queue overflow on that listener: %+v", r.Findings)
+	}
+	if byID(r, "recv_backlog|") != nil {
+		t.Errorf("a listener isn't a slow reader: %+v", r.Findings)
+	}
+	if byID(r, "listen_overflow_host") != nil {
+		t.Errorf("the host-wide overflow finding should fold into the listener's")
+	}
+
+	// Without accept-queue overflows the drops aren't blamed on accept().
+	if f := byID(Analyze(Input{Conns: []*model.Connection{lst}}), "listen_queue|"); f == nil || !strings.Contains(f.Title, "is dropping connection attempts") {
+		t.Errorf("drops without ListenOverflows shouldn't claim the accept queue overflowed: %+v", f)
+	}
+
+	// SO_REUSEPORT: describe the full listener on the port, whichever comes first.
+	full := conn("LISTEN", "0.0.0.0", "80", "0.0.0.0", "*", sig(model.SignalListenQueueFull, 2))
+	full.RecvQ, full.SendQ = ip(512), ip(511)
+	f = byID(Analyze(Input{Conns: []*model.Connection{lst, full}}), "listen_queue|")
+	if f == nil || !strings.Contains(f.Title, "Accept queue full") || !hasText(f.Evidence, "queue 512 / 511") || f.Count != 2 {
+		t.Errorf("a full reuseport listener should set the title and queue evidence: %+v", f)
+	}
+}
+
 // Kernel ListenOverflows with no currently-full listener is a burst problem
 // (host finding); with a full listener it folds into that finding instead.
 func TestListenOverflowHost(t *testing.T) {

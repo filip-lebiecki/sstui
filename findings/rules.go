@@ -81,9 +81,10 @@ func ruleZeroWindow(a *analysis) {
 func ruleRecvBacklog(a *analysis) {
 	// Drops that come with inbound loss and an unpressured receive queue are
 	// out-of-order data discarded during recovery, not a slow reader;
-	// ruleInboundLoss reports those.
+	// ruleInboundLoss reports those. A listener's drops are connection
+	// attempts it turned away, which ruleListenQueue reports.
 	key := func(c *model.Connection) string {
-		if classifier.DropsExplainedByInboundLoss(c.Signals) {
+		if c.State == "LISTEN" || classifier.DropsExplainedByInboundLoss(c.Signals) {
 			return ""
 		}
 		return procKey(c)
@@ -91,14 +92,12 @@ func ruleRecvBacklog(a *analysis) {
 	for _, g := range a.groupBySignal(key, model.SignalRecvBufferPressure, model.SignalSocketDrops) {
 		c0 := g.conns[0]
 		var queued, drops, udp int
-		listen := false // a listener with drops: Live must show LISTEN sockets
 		for _, c := range g.conns {
 			queued += deref(c.RecvQ)
 			drops += deref(c.DeltaSkmemD)
 			if c.Protocol == "udp" {
 				udp++
 			}
-			listen = listen || c.State == "LISTEN"
 		}
 		f := Finding{
 			ID:       "recv_backlog|" + g.key,
@@ -108,9 +107,8 @@ func ruleRecvBacklog(a *analysis) {
 			Evidence: []string{fmt.Sprintf("%s waiting in Recv-Q", humanBytes(float64(queued)))},
 			// Same exclusion as the grouping: DROPS counts here unless it
 			// comes with RX_LOSS (and no RCV_Q, which the first term covers).
-			Filter:     filterJoin(procFilter(c0), "(signal=RCV_Q or (signal=DROPS not signal=RX_LOSS))"),
-			ShowListen: listen,
-			Count:      len(g.conns),
+			Filter: filterJoin(procFilter(c0), "not state=LISTEN", "(signal=RCV_Q or (signal=DROPS not signal=RX_LOSS))"),
+			Count:  len(g.conns),
 		}
 		if udp > 0 {
 			a.udpBacklog[f.ID] = true
@@ -155,25 +153,62 @@ func ruleRecvBacklog(a *analysis) {
 	}
 }
 
-// ruleListenQueue: full accept queues, per listener. Tells apart a backlog
-// capped by somaxconn from one the application chose itself.
+// ruleListenQueue: full or overflowing accept queues, per listener: a queue
+// full right now (LISTEN_Q), or connection attempts the listener dropped
+// since the last poll (DROPS on a listening socket: the kernel counts one
+// for every handshake it turns away), which catches bursts that overflow the
+// queue between polls. Tells apart a backlog capped by somaxconn from one the
+// application chose itself.
 func ruleListenQueue(a *analysis) {
-	key := func(c *model.Connection) string { return endpoint(c.LocalAddr, c.LocalPort) }
-	for _, g := range a.groupBySignal(key, model.SignalListenQueueFull) {
-		c0 := g.conns[0]
+	key := func(c *model.Connection) string {
+		if c.State != "LISTEN" {
+			return "" // other sockets' drops are ruleRecvBacklog's
+		}
+		return endpoint(c.LocalAddr, c.LocalPort)
+	}
+	overflows, _ := a.rate("TcpExt:ListenOverflows")
+	for _, g := range a.groupBySignal(key, model.SignalListenQueueFull, model.SignalSocketDrops) {
+		// SO_REUSEPORT listeners share an endpoint: describe a full one if
+		// any is full.
+		c0, full := g.conns[0], false
+		drops := 0
+		for _, c := range g.conns {
+			drops += deref(c.DeltaSkmemD)
+			if _, ok := signalOf(c, model.SignalListenQueueFull); ok && !full {
+				c0, full = c, true
+			}
+		}
 		rq, sq := deref(c0.RecvQ), deref(c0.SendQ)
+		var title, detail string
+		switch {
+		case full:
+			title = fmt.Sprintf("Accept queue full on :%s (%s) — new connections are being dropped", c0.LocalPort, a.procLabel(c0))
+			detail = "Clients complete the handshake but the application isn't calling accept() fast enough, so the kernel drops new SYNs or ACKs once the queue is full."
+		case overflows > 0:
+			title = fmt.Sprintf("Accept queue on :%s (%s) overflowed — connections were dropped", c0.LocalPort, a.procLabel(c0))
+			detail = "The queue isn't full right now, but the listener turned connection attempts away since the last poll and the kernel counted accept-queue overflows: bursts fill it faster than the application accept()s."
+		default:
+			// The listener's drop counter also counts SYN-queue drops and
+			// other refusals; without overflows, don't blame accept().
+			title = fmt.Sprintf("Listener :%s (%s) is dropping connection attempts", c0.LocalPort, a.procLabel(c0))
+			detail = "The listener turned connection attempts away since the last poll, but the kernel counted no accept-queue overflows: a full SYN queue (a SYN flood without syncookies), or a socket filter or other policy refusing them."
+		}
 		f := Finding{
 			ID:         "listen_queue|" + g.key,
 			Severity:   g.sev,
-			Title:      fmt.Sprintf("Accept queue full on :%s (%s) — new connections are being dropped", c0.LocalPort, a.procLabel(c0)),
-			Detail:     "Clients complete the handshake but the application isn't calling accept() fast enough, so the kernel drops new SYNs or ACKs once the queue is full.",
+			Title:      title,
+			Detail:     detail,
 			Evidence:   []string{fmt.Sprintf("queue %d / %d", rq, sq)},
 			Filter:     filterJoin("state=LISTEN", "sport="+c0.LocalPort),
 			ShowListen: true,
 			Count:      len(g.conns),
 		}
-		if s, ok := a.rate("TcpExt:ListenOverflows"); ok && s > 0 {
-			f.Evidence = append(f.Evidence, fmt.Sprintf("kernel: ListenOverflows +%.1f/s", s))
+		if drops > 0 {
+			f.Severity = 2
+			f.Evidence = append(f.Evidence, fmt.Sprintf("%s dropped at this listener in the last poll", plural(drops, "connection attempt")))
+		}
+		if overflows > 0 {
+			f.Evidence = append(f.Evidence, fmt.Sprintf("kernel: ListenOverflows +%.1f/s", overflows))
 		}
 		somax, ok := a.in.Sysctl.Int("net.core.somaxconn")
 		switch {

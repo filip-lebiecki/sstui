@@ -27,6 +27,16 @@ func TestDiagnose(t *testing.T) {
 			model.Signal{Type: model.SignalSocketDrops, Severity: 2},
 		), 2, "dropping data"},
 		{"rwnd limited", withSignals(model.Signal{Type: model.SignalRwndLimited, Severity: 1}), 1, "receiver's window"},
+		{"a listener's drops are refused connections, not data", func() *model.Connection {
+			c := withSignals(model.Signal{Type: model.SignalSocketDrops, Severity: 2})
+			c.State = "LISTEN"
+			return c
+		}(), 2, "Listener dropping connection attempts"},
+		{"a full queue's severity counts with the listener's drops", func() *model.Connection {
+			c := withSignals(model.Signal{Type: model.SignalSocketDrops, Severity: 1}, model.Signal{Type: model.SignalListenQueueFull, Severity: 2})
+			c.State = "LISTEN"
+			return c
+		}(), 2, "Listener dropping connection attempts"},
 	}
 	for _, tt := range tests {
 		d := diagnose(tt.conn)

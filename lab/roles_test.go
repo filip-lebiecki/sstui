@@ -28,6 +28,9 @@ const roleEnv = "SSTUI_LAB_ROLE"
 //	hold ADDR N               open N connections and keep them
 //	noclose ADDR              accept connections and never close them
 //	hangup ADDR N             open N connections, then close them
+//	slowaccept ADDR N MS      listen with an accept queue of N, accept (and close)
+//	                          one connection every MS ms
+//	burst ADDR N MS           every MS ms, open N connections at once, then close them
 //	reqserver ADDR SIZE       answer every request byte with SIZE bytes
 //	reqclient ADDR SIZE N     N connections, each asking for SIZE bytes at random intervals
 func runRole(args []string) error {
@@ -100,6 +103,36 @@ func runRole(args []string) error {
 			c.Close()
 		}
 		return nil
+	case "slowaccept":
+		fd, err := listenBacklog(arg(1), num(2))
+		if err != nil {
+			return err
+		}
+		for {
+			time.Sleep(time.Duration(num(3)) * time.Millisecond)
+			nfd, _, err := syscall.Accept(fd)
+			if err != nil {
+				return err
+			}
+			syscall.Close(nfd)
+		}
+	case "burst":
+		for {
+			var wg sync.WaitGroup
+			for range num(2) {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					// A refused handshake is retried by the kernel (SYN
+					// backoff); give up after a few seconds like a client.
+					if c, err := net.DialTimeout("tcp", arg(1), 4*time.Second); err == nil {
+						c.Close()
+					}
+				}()
+			}
+			wg.Wait()
+			time.Sleep(time.Duration(num(3)) * time.Millisecond)
+		}
 	case "reqserver":
 		resp := make([]byte, num(2))
 		return serve(arg(1), func(c net.Conn) {
@@ -198,28 +231,34 @@ func dialCC(addr, cc string) (net.Conn, error) {
 	}
 }
 
-// listenNoAccept listens with an explicit backlog (net.Listen always uses
-// somaxconn) and never accepts, so the accept queue fills.
+// listenNoAccept listens with an explicit backlog and never accepts, so the
+// accept queue fills.
 func listenNoAccept(addr string, backlog int) error {
-	ap, err := netip.ParseAddrPort(addr)
-	if err != nil {
-		return err
-	}
-	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, 0)
-	if err != nil {
-		return err
-	}
-	if err := syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1); err != nil {
-		return err
-	}
-	if err := syscall.Bind(fd, &syscall.SockaddrInet4{Port: int(ap.Port()), Addr: ap.Addr().As4()}); err != nil {
-		return err
-	}
-	if err := syscall.Listen(fd, backlog); err != nil {
+	if _, err := listenBacklog(addr, backlog); err != nil {
 		return err
 	}
 	sleepForever()
 	return nil
+}
+
+// listenBacklog listens on addr with an explicit accept-queue length
+// (net.Listen always uses somaxconn) and returns the socket.
+func listenBacklog(addr string, backlog int) (int, error) {
+	ap, err := netip.ParseAddrPort(addr)
+	if err != nil {
+		return 0, err
+	}
+	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, 0)
+	if err != nil {
+		return 0, err
+	}
+	if err := syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1); err != nil {
+		return 0, err
+	}
+	if err := syscall.Bind(fd, &syscall.SockaddrInet4{Port: int(ap.Port()), Addr: ap.Addr().As4()}); err != nil {
+		return 0, err
+	}
+	return fd, syscall.Listen(fd, backlog)
 }
 
 // sleepForever blocks without tripping the runtime's deadlock detector (a

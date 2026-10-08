@@ -87,6 +87,17 @@ func diagnose(c *model.Connection) Diagnosis {
 		if r.sig == model.SignalSocketDrops && lossDrops {
 			continue // out-of-order data discarded under inbound loss: let RX_LOSS explain it
 		}
+		if r.sig == model.SignalSocketDrops && c.State == "LISTEN" {
+			if s, ok := has(r.sig); ok {
+				// A listener's drops are handshakes it turned away, not data.
+				if q, full := has(model.SignalListenQueueFull); full {
+					s.Severity = max(s.Severity, q.Severity)
+				}
+				return Diagnosis{Headline: "Listener dropping connection attempts",
+					Hint:     "the accept queue overflowed (the app isn't accept()ing fast enough) or the SYN queue filled; raise backlog / somaxconn",
+					Severity: s.Severity}
+			}
+		}
 		if s, ok := has(r.sig); ok {
 			if r.sig == model.SignalInboundLoss && lossDrops {
 				// The drops are part of this story and make it worse.

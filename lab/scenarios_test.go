@@ -205,7 +205,24 @@ func TestAcceptQueueFull(t *testing.T) {
 	l.path(wan, wan)
 	l.start(l.b, "backlog", addrB+port, "8")
 	l.start(l.a, "hold", addrB+port, "30")
-	l.recordAndCheck(l.b, 5*time.Second).expect(t, "listen_queue", "critical")
+	r := l.recordAndCheck(l.b, 5*time.Second)
+	r.expect(t, "listen_queue", "critical")
+	r.expectNone(t, "recv_backlog") // the listener's drops are refused connections, not unread data
+}
+
+// TestAcceptQueueBursts: bursts of 40 connections against a backlog of 4,
+// accepted one every 10 ms. Each burst overflows the queue, which has
+// drained again by the time sstui polls, so only the listener's drop
+// counter tells; it should still name that listener.
+func TestAcceptQueueBursts(t *testing.T) {
+	l := newLab(t)
+	l.path(wan, wan)
+	l.start(l.b, "slowaccept", addrB+port, "4", "10")
+	l.start(l.a, "burst", addrB+port, "40", "1500")
+	r := l.recordAndCheck(l.b, 8*time.Second)
+	r.expect(t, "listen_queue", "critical")
+	r.expectNone(t, "recv_backlog")
+	r.expectNone(t, "listen_overflow_host") // folded into the listener's finding
 }
 
 // TestCloseWaitLeak: clients hang up, but the server never closes its side;

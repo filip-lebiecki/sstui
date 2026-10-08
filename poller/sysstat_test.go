@@ -77,6 +77,29 @@ func TestSysStatDelta(t *testing.T) {
 	}
 }
 
+// TestTCPBufferDrops: any buffer-drop counter moving is a buffer drop; a
+// full backlog is told apart; no counters, no verdict.
+func TestTCPBufferDrops(t *testing.T) {
+	stat := func(pruned, backlog int64) *SysStat {
+		return &SysStat{Counters: map[string]int64{"TcpExt:RcvPruned": pruned, "TcpExt:TCPBacklogDrop": backlog}}
+	}
+	for _, tt := range []struct {
+		name                 string
+		cur                  *SysStat
+		dropped, backlog, ok bool
+	}{
+		{"quiet", stat(5, 7), false, false, true},
+		{"pruning", stat(9, 7), true, false, true},
+		{"a full backlog", stat(5, 8), true, true, true},
+		{"no counters", &SysStat{Counters: map[string]int64{}}, false, false, false},
+	} {
+		dropped, backlog, ok := tt.cur.TCPBufferDrops(stat(5, 7))
+		if dropped != tt.dropped || backlog != tt.backlog || ok != tt.ok {
+			t.Errorf("%s: dropped %v backlog %v ok %v, want %v %v %v", tt.name, dropped, backlog, ok, tt.dropped, tt.backlog, tt.ok)
+		}
+	}
+}
+
 // TestReadSysStat is a light end-to-end check on the live host: /proc/net/snmp
 // should yield at least the common TCP counters when present.
 func TestReadSysStat(t *testing.T) {

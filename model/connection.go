@@ -185,6 +185,10 @@ type Connection struct {
 	// discards by design (PAWS, duplicate data, probes), which these
 	// counters leave out. Set by the session before the snapshot is added.
 	HostBufferDrops *bool `json:"-"`
+	// HostBacklogDrops is whether any of those were a full socket backlog
+	// (TCPBacklogDrop): the only one a socket with room in its buffer and
+	// its window open can take. Set with HostBufferDrops.
+	HostBacklogDrops *bool `json:"-"`
 	// PathMinRTT is the lowest min RTT among this poll's connections to the
 	// same peer address: the path's baseline, for a connection whose own
 	// minimum was measured through a queue (a receiver only measures it on

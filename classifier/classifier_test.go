@@ -236,6 +236,43 @@ func TestClassifySocketDrops(t *testing.T) {
 	}
 }
 
+// TestOwnDiscards: while another socket's buffer drops move the host's
+// counters, drops at a socket with three quarters of its buffer free and
+// its window open are still TCP's own discards (info), unless a full
+// backlog, the one buffer drop such a socket can take, happened on the
+// host. TestAckLossBesidePrune in the lab: duplicates after lost ACKs, at
+// sockets holding 0 bytes of 1-3 MB, rcv_ssthresh 760 KB-2 MB.
+func TestOwnDiscards(t *testing.T) {
+	yes, no := true, false
+	mk := func(r, ssthresh int, backlog *bool) *model.Connection {
+		return &model.Connection{Protocol: "tcp", State: "ESTAB", DeltaSkmemD: ip(1), DeltaDataSegsIn: ip(400),
+			SkmemR: ip(r), SkmemRB: ip(1_277_473), RcvSSThresh: ip(ssthresh), AdvMSS: ip(1448),
+			HostBufferDrops: &yes, HostBacklogDrops: backlog}
+	}
+	for _, tt := range []struct {
+		name    string
+		c       *model.Connection
+		wantSev int
+	}{
+		{"room and window open: duplicates", mk(0, 763_489, &no), 0},
+		{"window cut for memory: refused", mk(0, 5792, &no), 1},
+		{"buffer filling: may have run out", mk(400_000, 763_489, &no), 1},
+		{"a full backlog on the host: may be it", mk(0, 763_489, &yes), 1},
+		{"backlog drops unknown", mk(0, 763_489, nil), 1},
+	} {
+		s, ok := sigByType(Classify(tt.c), model.SignalSocketDrops)
+		if !ok || s.Severity != tt.wantSev {
+			t.Errorf("%s: want DROPS severity %d, got %+v (present=%v)", tt.name, tt.wantSev, s, ok)
+		}
+	}
+	// With gaps that poll, it's still one label, not loss recovery as well.
+	c := mk(0, 763_489, &no)
+	c.DeltaRcvOOOPack = ip(30)
+	if s, _ := sigByType(Classify(c), model.SignalSocketDrops); s.Value != "1 by TCP's checks (PAWS, duplicates): room in its buffer, window open" {
+		t.Errorf("want one label, TCP's checks: %+v", s)
+	}
+}
+
 // TestClassifyZeroWindowPersistTimer is the regression for ZERO_WIN never
 // firing: ss omits snd_wnd when it is 0, so a stalled sender shows no snd_wnd
 // at all — only the persist (zero-window probe) timer.
@@ -742,20 +779,33 @@ func TestReceiveWindowFill(t *testing.T) {
 }
 
 // TestMemoryRefusedDrops: drops at a TCP socket holding almost none of its
-// receive buffer were refused memory host-wide (TestReceiveMemoryPressure in
-// the lab: 0 bytes of 128-700 KB); a slow reader drops with a full buffer,
-// and loss-recovery discards (info DROPS) aren't drops of this kind.
+// receive buffer, its window clamped for memory pressure, were refused
+// memory host-wide (TestReceiveMemoryPressure in the lab: 0 bytes of
+// 128 KB-1.2 MB, rcv_ssthresh 5792); a slow reader drops with a full buffer,
+// a socket discarding duplicates has its window open
+// (TestAckLossBesidePrune: rcv_ssthresh 760 KB-2 MB), and loss-recovery
+// discards (info DROPS) aren't drops of this kind.
 func TestMemoryRefusedDrops(t *testing.T) {
 	mk := func(r int, sev int) *model.Connection {
 		return &model.Connection{Protocol: "tcp", State: "ESTAB", SkmemR: ip(r), SkmemRB: ip(325_683),
+			RcvSSThresh: ip(5792), AdvMSS: ip(1448),
 			Signals: []model.Signal{{Type: model.SignalSocketDrops, Severity: sev}}}
 	}
+	open := mk(0, 1)
+	open.RcvSSThresh = ip(763_489)
+	unknown := mk(0, 1)
+	unknown.RcvSSThresh = nil
+	tiny := mk(0, 1) // SO_RCVBUF 4 KB: the window is that small anyway
+	tiny.SkmemRB, tiny.RcvSSThresh = ip(8192), ip(4096)
 	for _, tt := range []struct {
 		name string
 		c    *model.Connection
 		want bool
 	}{
-		{"drops, buffer empty", mk(0, 1), true},
+		{"drops, buffer empty, window clamped", mk(0, 1), true},
+		{"drops, buffer empty, window open (duplicates)", open, false},
+		{"no rcv_ssthresh to tell", unknown, false},
+		{"a buffer set that small: not a cut", tiny, false},
 		{"drops, buffer full (slow reader)", mk(300_000, 1), false},
 		{"loss-recovery discards", mk(0, 0), false},
 		{"no drops", &model.Connection{Protocol: "tcp", State: "ESTAB", SkmemR: ip(0), SkmemRB: ip(325_683)}, false},

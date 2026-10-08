@@ -299,6 +299,18 @@ func (l *lab) lossTo(ns, addr string, n int) {
 		"u32", "match", "ip", "dst", addr+"/32", "action", "gact", "pass", "random", "netrand", "drop", strconv.Itoa(n))
 }
 
+// ackLoss drops one in every n of the pure ACKs namespace ns sends (at
+// random): segments under 128 bytes without PSH, SYN or FIN, so its
+// requests and handshakes get through and only acknowledgements are lost.
+func (l *lab) ackLoss(ns string, n int) {
+	l.t.Helper()
+	l.sh("tc", "-n", ns, "qdisc", "add", "dev", "veth0", "clsact")
+	l.sh("tc", "-n", ns, "filter", "add", "dev", "veth0", "egress", "protocol", "ip",
+		"u32", "match", "ip", "protocol", "6", "0xff", "match", "u16", "0", "0xff80", "at", "2",
+		"match", "u8", "0", "0x0b", "at", "33",
+		"action", "gact", "pass", "random", "netrand", "drop", strconv.Itoa(n))
+}
+
 // hostWide skips a scenario that changes host-wide settings unless
 // SSTUI_LAB_HOSTWIDE=1 asks for it: some kernel limits (tcp_mem) have no
 // per-namespace copy, so changing them touches every socket on the machine.
@@ -563,6 +575,17 @@ func (r *report) expectTitle(t *testing.T, k, text string) {
 		}
 	}
 	t.Errorf("%s: want a %s finding titled \"…%s…\"; got %s", r.side, k, text, r.kinds())
+}
+
+// expectNoneTitled fails if a finding of this kind was reported with title
+// containing text: one that blames the wrong process, say.
+func (r *report) expectNoneTitled(t *testing.T, k, text string) {
+	t.Helper()
+	for _, f := range r.Findings {
+		if kind(f.ID) == k && strings.Contains(f.Title, text) {
+			t.Errorf("%s: want no %s finding titled \"…%s…\"; got %q", r.side, k, text, f.Title)
+		}
+	}
 }
 
 // expectNone fails if a finding of this kind was reported.

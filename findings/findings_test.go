@@ -562,6 +562,7 @@ func TestRcvMemPressure(t *testing.T) {
 	// In a namespace (no tcp_mem) between bursts: the sockets prove it.
 	starved := conn("ESTAB", "10.0.0.2", "5001", "10.0.0.1", "41376", model.Signal{Type: model.SignalSocketDrops, Severity: 2, Value: 30})
 	starved.Protocol, starved.PID, starved.SkmemR, starved.SkmemRB, starved.RecvQ = "tcp", ip(4), ip(0), ip(726_839), ip(0)
+	starved.RcvSSThresh, starved.AdvMSS = ip(5792), ip(1448)
 	r := Analyze(Input{Conns: []*model.Connection{starved}, Sys: host, SysPrev: host, Interval: 2 * time.Second})
 	if f := byID(r, "rcv_mem_pressure"); f == nil || f.Severity != 2 || !hasText(f.Evidence, "1 socket dropped data while holding almost no receive memory") {
 		t.Errorf("starved socket: want the memory finding to name it: %+v", r.Findings)

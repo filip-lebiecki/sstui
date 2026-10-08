@@ -57,15 +57,18 @@ func (s *SysStat) Delta(prev *SysStat, key string) (int64, bool) {
 var tcpBufferDropCounters = []string{"TcpExt:TCPRcvQDrop", "TcpExt:TCPZeroWindowDrop", "TcpExt:TCPOFODrop", "TcpExt:RcvPruned", "TcpExt:OfoPruned", "TcpExt:TCPBacklogDrop"}
 
 // TCPBufferDrops reports whether TCP dropped anything for want of buffer or
-// memory between prev and s; ok is false when the counters can't tell.
-func (s *SysStat) TCPBufferDrops(prev *SysStat) (dropped, ok bool) {
+// memory between prev and s, and whether any of it was a full socket
+// backlog (TCPBacklogDrop), the one such drop a socket with an empty
+// receive queue can take; ok is false when the counters can't tell.
+func (s *SysStat) TCPBufferDrops(prev *SysStat) (dropped, backlog, ok bool) {
 	for _, k := range tcpBufferDropCounters {
 		if d, known := s.Delta(prev, k); known {
 			ok = true
 			dropped = dropped || d > 0
+			backlog = backlog || k == "TcpExt:TCPBacklogDrop" && d > 0
 		}
 	}
-	return dropped, ok
+	return dropped, backlog, ok
 }
 
 // ReadSysStat reads and parses the host networking counters. /proc/net/snmp is

@@ -166,6 +166,7 @@ func TestFilterHideListen(t *testing.T) {
 func TestFilterDropsMem(t *testing.T) {
 	drops := func(sev, r int) *model.Connection {
 		return &model.Connection{Protocol: "tcp", State: "ESTAB", SkmemR: &r, SkmemRB: ip(726_839),
+			RcvSSThresh: ip(5792), AdvMSS: ip(1448),
 			Signals: []model.Signal{{Type: model.SignalSocketDrops, Severity: sev}}}
 	}
 	f := &Filter{}

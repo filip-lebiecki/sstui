@@ -659,3 +659,41 @@ func TestHealthyIdleKeepalive(t *testing.T) {
 		time.Sleep(10 * time.Second) // the recording spans the first probes, at 15 s
 	})
 }
+
+// TestAckLoss: a client fetching 1 MB responses loses one in three of the
+// pure ACKs it sends; its requests get through. Cumulative ACKs cover most
+// of it, but when a response's last ACK is lost the server's tail-loss
+// probe resends data the client already has, which the client's kernel
+// discards and counts as a drop. Nothing is lost and both ends keep up:
+// sstui mustn't call it loss, a slow reader or memory pressure.
+func TestAckLoss(t *testing.T) {
+	l := newLab(t)
+	l.path(wan, wan)
+	l.ackLoss(l.a, 3)
+	l.start(l.b, "reqserver", addrB+port, "1000000")
+	l.start(l.a, "reqclient", addrB+port, "1000000", "8")
+	client, server := l.recordBoth(lossRecord)
+	client.expectClean(t)
+	server.expectClean(t)
+}
+
+// TestAckLossBesidePrune: the same client, on a host where another
+// receiver keeps shrinking its buffer under a bulk sender, so the kernel
+// discards its queued data and the host's buffer-drop counters move. The
+// client's duplicate discards land in the same polls; they must not be
+// taken for memory refused host-wide (the client's buffer is empty) or for
+// a slow reader.
+func TestAckLossBesidePrune(t *testing.T) {
+	l := newLab(t)
+	l.path(wan, wan)
+	l.ackLoss(l.a, 3)
+	l.start(l.b, "reqserver", addrB+":443", "1000000")
+	l.startAs(l.a, "fetcher", "reqclient", addrB+":443", "1000000", "8")
+	l.startAs(l.a, "ingest", "shrinksink", addrA+port)
+	l.start(l.b, "send", addrA+port)
+	client := l.recordAndCheck(l.a, lossRecord)
+	client.expect(t, "rcv_prune", "warning")
+	client.expectNone(t, "rcv_mem_pressure")
+	client.expectTitle(t, "recv_backlog", "ingest")
+	client.expectNoneTitled(t, "recv_backlog", "fetcher")
+}

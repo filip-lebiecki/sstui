@@ -128,9 +128,9 @@ func (s *Session) Ingest(p *Poll) bool {
 		return false
 	}
 	if p.Sys != nil && s.SysPrev != nil {
-		if dropped, ok := s.SysCur.TCPBufferDrops(s.SysPrev); ok {
+		if dropped, backlog, ok := s.SysCur.TCPBufferDrops(s.SysPrev); ok {
 			for _, c := range p.Conns {
-				c.HostBufferDrops = &dropped
+				c.HostBufferDrops, c.HostBacklogDrops = &dropped, &backlog
 			}
 		}
 	}

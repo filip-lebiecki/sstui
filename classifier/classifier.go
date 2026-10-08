@@ -82,7 +82,7 @@ func DropsExplainedByInboundLoss(c *model.Connection) bool {
 	if c.DeltaRcvOOOPack == nil || *c.DeltaRcvOOOPack == 0 {
 		return false
 	}
-	if c.HostBufferDrops != nil && !*c.HostBufferDrops {
+	if ownDiscards(c) {
 		return false // TCP's own discards (PAWS, duplicates), not memory: Classify says so
 	}
 	var drops, rcvQ bool
@@ -98,13 +98,24 @@ func DropsExplainedByInboundLoss(c *model.Connection) bool {
 }
 
 // MemoryRefusedDrops reports drops (DROPS, not the loss-recovery kind) at a
-// TCP socket holding almost none of its receive buffer (under a quarter):
-// with that much room in its own buffer, the kernel can only have refused
-// the memory host-wide (tcp_mem). In the lab such sockets held 0 bytes of
-// 128-700 KB buffers, their windows clamped to 6 KB, dropping every poll; a
-// slow reader drops with its buffer full.
+// TCP socket holding almost none of its receive buffer (under a quarter)
+// whose window TCP has clamped for memory pressure: with that much room in
+// its own buffer, the kernel can only have refused the memory host-wide
+// (tcp_mem, or the cgroup's socket memory). In the lab such sockets held 0
+// bytes of 128 KB-1.2 MB buffers, dropping every poll; a slow reader drops
+// with its buffer full.
+//
+// The clamp tells them from a socket discarding duplicates of data it
+// already has (the sender's tail-loss probe after a lost ACK) while another
+// socket's buffer drops move the host's counters: under memory pressure
+// every window a socket advertises cuts rcv_ssthresh to four segments
+// (__tcp_select_window), which the refused sockets in the lab sat at
+// (5792 bytes for a 1448-byte MSS), against hundreds of KB on the others.
 func MemoryRefusedDrops(c *model.Connection) bool {
 	if c.Protocol != "tcp" || c.State == "LISTEN" || c.SkmemR == nil || c.SkmemRB == nil || *c.SkmemRB <= 0 {
+		return false
+	}
+	if !windowCutForMemory(c) {
 		return false
 	}
 	for _, s := range c.Signals {
@@ -113,6 +124,37 @@ func MemoryRefusedDrops(c *model.Connection) bool {
 		}
 	}
 	return false
+}
+
+// windowCutForMemory reports whether TCP has cut the window a socket
+// advertises for memory pressure: rcv_ssthresh at most four segments, and
+// under a quarter of the socket's buffer, which a buffer an app set that
+// small (SO_RCVBUF) would hold it to anyway.
+func windowCutForMemory(c *model.Connection) bool {
+	return c.RcvSSThresh != nil && c.AdvMSS != nil && c.SkmemRB != nil &&
+		*c.RcvSSThresh <= 4**c.AdvMSS && *c.RcvSSThresh*4 < *c.SkmemRB
+}
+
+// ownDiscards reports whether a TCP socket's drops this poll can only be
+// segments TCP discards by design (PAWS, duplicate data), not for want of
+// buffer or memory: none of the host's buffer-drop counters moved; or the
+// socket had three quarters of its buffer free and its window open, so it
+// neither ran out of room nor was refused memory, and the only drop left
+// to it, a full backlog, didn't happen anywhere on the host. The second
+// holds while another socket's drops move the counters: in the lab
+// (TestAckLossBesidePrune) a client's tail-loss duplicates after lost ACKs
+// would otherwise have been called TCP memory pressure, or its reader slow.
+// A reader whose queue overflowed and drained again before the poll looks
+// the same; the host's counters still report the discarding (rcv_prune).
+func ownDiscards(c *model.Connection) bool {
+	if c.HostBufferDrops == nil {
+		return false
+	}
+	if !*c.HostBufferDrops {
+		return true
+	}
+	roomy := c.SkmemR != nil && c.SkmemRB != nil && *c.SkmemR*4 < *c.SkmemRB
+	return roomy && !windowCutForMemory(c) && c.HostBacklogDrops != nil && !*c.HostBacklogDrops
 }
 
 // HungAfterHandshake reports whether a connection completed its handshake but
@@ -696,9 +738,10 @@ func Classify(c *model.Connection) []model.Signal {
 	//     connection with keepalive on (Go's default, a probe every 15 s)
 	//     drops one per probe.
 	//   - TCP dropped nothing for want of buffer or memory anywhere on the
-	//     host that poll (HostBufferDrops): PAWS (RFC 7323 timestamp checks
-	//     failing on ACKs, about 1500 in 35 s on the lab's busy senders) and
-	//     duplicate data.
+	//     host that poll (HostBufferDrops), or this socket had room and its
+	//     window open (ownDiscards): PAWS (RFC 7323 timestamp checks failing
+	//     on ACKs, about 1500 in 35 s on the lab's busy senders) and
+	//     duplicate data (a tail-loss probe after a lost ACK).
 	if c.DeltaSkmemD != nil && *c.DeltaSkmemD > 0 {
 		sev := 1
 		if *c.DeltaSkmemD > 10 {
@@ -710,6 +753,8 @@ func Classify(c *model.Connection) []model.Signal {
 				sev, v = 0, fmt.Sprintf("%d without data (probes)", *c.DeltaSkmemD)
 			} else if c.HostBufferDrops != nil && !*c.HostBufferDrops {
 				sev, v = 0, fmt.Sprintf("%d by TCP's checks (PAWS, duplicates), none for want of buffer", *c.DeltaSkmemD)
+			} else if ownDiscards(c) {
+				sev, v = 0, fmt.Sprintf("%d by TCP's checks (PAWS, duplicates): room in its buffer, window open", *c.DeltaSkmemD)
 			}
 		}
 		signals = append(signals, model.Signal{Type: model.SignalSocketDrops, Severity: sev, Value: v})
@@ -959,7 +1004,9 @@ func Classify(c *model.Connection) []model.Signal {
 		signals = append(signals, model.Signal{Type: model.SignalInboundLoss, Severity: sev, Value: v})
 	}
 
-	if DropsExplainedByInboundLoss(&model.Connection{Signals: signals, DeltaRcvOOOPack: c.DeltaRcvOOOPack, HostBufferDrops: c.HostBufferDrops}) {
+	if DropsExplainedByInboundLoss(&model.Connection{Signals: signals, DeltaRcvOOOPack: c.DeltaRcvOOOPack,
+		HostBufferDrops: c.HostBufferDrops, HostBacklogDrops: c.HostBacklogDrops,
+		SkmemR: c.SkmemR, SkmemRB: c.SkmemRB, RcvSSThresh: c.RcvSSThresh, AdvMSS: c.AdvMSS}) {
 		for i := range signals {
 			if signals[i].Type == model.SignalSocketDrops {
 				signals[i].Severity = 0

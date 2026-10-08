@@ -8,36 +8,37 @@ just "what's happening now".
 Built for triage: it opens on a ranked list of host-level problems
 ("postgres → 10.0.0.5:5432: 37 connections stalled — peer not reading"),
 each with its evidence and copy-ready fix commands sized from this host's
-kernel settings. Underneath, 25 per-socket signals like `ZERO_WIN`,
+kernel settings. Underneath, 26 per-socket signals like `ZERO_WIN`,
 `NO_ACK`, `RX_LOSS`, `SYN_STALL` and `LISTEN_Q` light up automatically, and
 every kernel metric is one key press away.
 
-![tabs](https://img.shields.io/badge/tabs-9-blue) ![signals](https://img.shields.io/badge/signals-25-orange) ![ring%20buffer](https://img.shields.io/badge/history-50%20min-green)
+![tabs](https://img.shields.io/badge/tabs-9-blue) ![signals](https://img.shields.io/badge/signals-26-orange) ![ring%20buffer](https://img.shields.io/badge/history-50%20min-green)
 
 ---
 
 ## Contents
 
 1. [What it does](#what-it-does)
-2. [Who it's for](#who-its-for)
-3. [Why not just `ss` or `netstat`?](#why-not-just-ss-or-netstat)
-4. [Install / build](#install--build)
-5. [Permissions: what you see, and as whom](#permissions-what-you-see-and-as-whom)
-6. [Quick tour](#quick-tour)
-7. [Tabs](#tabs)
-8. [Keybindings](#keybindings)
-9. [Filtering](#filtering)
-10. [Export](#export)
-11. [Headless: check, record, replay, report](#headless-check-record-replay-report)
-12. [Common workflows](#common-workflows)
-13. [Signals reference](#signals-reference)
-14. [Metrics reference](#metrics-reference)
-15. [Performance footprint](#performance-footprint)
-16. [Troubleshooting / FAQ](#troubleshooting--faq)
-17. [Limitations](#limitations)
-18. [Architecture](#architecture)
-19. [Development](#development)
-20. [License](#license)
+2. [Proven on real failures](#proven-on-real-failures)
+3. [Who it's for](#who-its-for)
+4. [Why not just `ss` or `netstat`?](#why-not-just-ss-or-netstat)
+5. [Install / build](#install--build)
+6. [Permissions: what you see, and as whom](#permissions-what-you-see-and-as-whom)
+7. [Quick tour](#quick-tour)
+8. [Tabs](#tabs)
+9. [Keybindings](#keybindings)
+10. [Filtering](#filtering)
+11. [Export](#export)
+12. [Headless: check, record, replay, report](#headless-check-record-replay-report)
+13. [Common workflows](#common-workflows)
+14. [Signals reference](#signals-reference)
+15. [Metrics reference](#metrics-reference)
+16. [Performance footprint](#performance-footprint)
+17. [Troubleshooting / FAQ](#troubleshooting--faq)
+18. [Limitations](#limitations)
+19. [Architecture](#architecture)
+20. [Development](#development)
+21. [License](#license)
 
 ---
 
@@ -92,6 +93,43 @@ What you get out of the box:
 
 ---
 
+## Proven on real failures
+
+Every diagnosis below is checked against the real thing. The [scenario
+lab](#scenario-lab) recreates each failure in network namespaces (real
+kernel TCP, `tc netem` on the links), records it with `sstui record`, and
+asserts on what `sstui check` says, often from both ends of the
+connection. It also asserts what sstui must *not* say: loss must not be
+called reordering, a full accept queue must not be blamed on a slow
+reader. Healthy traffic must come out with no findings at all.
+
+| Failure recreated | What sstui reports |
+|---|---|
+| Packet loss on the path: 0.1%, 1%, 3%; cubic and BBR; bulk and request/response | Loss toward the peer at the sender (critical at 3%); inbound loss at the receiver, which sees only the gaps (not for BBR, see [Limitations](#limitations)) |
+| Reordering: light, heavy, request/response | Reordering, not loss |
+| Loss on this host's own link, outbound or inbound | One local-link finding, not one per peer |
+| Loss spread over many short connections | The host-wide retransmit rate |
+| A path MTU smaller than the link's | A PMTU warning, not loss |
+| A path MTU black hole (the ICMP is dropped): new connections, an established one, this host's own link | The black hole by name; an established connection is told apart as a stall while other connections to the same host get through |
+| Bufferbloat: a deep queue at the bottleneck | Latency inflation, pointing along the path; its losses aren't called path loss |
+| A server that never answers the SYN | SYN stall |
+| A SYN flood | The SYN backlog, with the real limit named |
+| A peer that stops reading | Zero-window stall |
+| A full accept queue, steady or in bursts, also outside an `--ss-filter` | The listen-queue overflow (not a slow reader); the host's overflow counters when the listener is out of view |
+| A CLOSE-WAIT leak | The leaking process |
+| Ephemeral port exhaustion | The port range nearly used up, and the TIME-WAIT pile behind it |
+| A slow reader | Its full receive queue, and the receiver's window at the sender |
+| A small receive buffer, reader keeping up | The window at the sender, the capped buffer at the receiver; the reader isn't blamed |
+| A small send buffer (app-set `SO_SNDBUF`) | The send buffer holding the sender back, which the kernel's own counter misses |
+| UDP receive drops, also outside an `--ss-filter` | The dropping socket; the host's UDP drop counters when it's out of view |
+| TCP short of memory host-wide (`tcp_mem` squeezed, on a disposable VM) | Memory pressure, seen from the host and from inside a network namespace (a container's view); the readers aren't blamed |
+| One socket's queue outgrowing its own buffer | The kernel discarding data, not blamed on `tcp_mem` |
+| Healthy: bulk (cubic, BBR), a congested slow link, a long path, bursty request/response, a connection joining a busy path | No findings at all, and no socket signal at warning or worse, on either end |
+
+Where failures look alike from one host is under [Limitations](#limitations).
+
+---
+
 ## Who it's for
 
 - **SREs and on-call engineers** triaging a host: "is it the network or
@@ -128,7 +166,7 @@ human-paced triage:
 | Per-connection RTT, CWnd, retrans, BBR        | ✓ with `-i`      | ✓ parsed and labelled         |
 | Refreshes automatically                       | `watch ss`       | Built-in, 2 s ticks            |
 | **Per-poll deltas** (TX/RX rates, retrans rate, OOO growth) | ✗   | ✓ computed in poller          |
-| **Anomaly classification** (named signals)    | ✗                | ✓ 25 rules                    |
+| **Anomaly classification** (named signals)    | ✗                | ✓ 26 rules                    |
 | **History** for "when did this start?"        | ✗                | ✓ 50 min ring                 |
 | **Time-series view** per connection           | ✗                | ✓ bar-graph sparklines        |
 | **Event log** of signal onsets                | ✗                | ✓ Events tab                  |
@@ -1078,6 +1116,14 @@ adding signals stays low-ceremony.
   general-purpose hosts; loud workloads (CDNs, proxies, databases)
   may need tweaks. Signal thresholds live in `classifier/classifier.go`,
   finding rules in `findings/rules.go`; both are one-line edits.
+- **Some failures look alike from one host, and the lab confirms where.**
+  A BBR sender's loss is invisible at the receiver: BBR keeps a standing
+  queue, which the receiver can't tell from congestion, so check the
+  sending end. A path that starts dropping everything right after the
+  handshake looks like an MTU black hole. Inbound loss is measured
+  against the lowest round trip seen on the path, so if every connection
+  to a peer opened through an already-full queue, queueing delay can
+  hide it.
 - **`--ss-filter` narrows the socket-count checks.** With a filter
   active, findings like ephemeral-port exhaustion or TIME-WAIT storms see
   only the matching sockets (the Findings tab says so); kernel counters
@@ -1140,7 +1186,7 @@ controls (bulk transfer, bursty request/response) must come out clean on
 both ends, so a noisy rule fails the lab as surely as a missed diagnosis.
 
 ```bash
-scripts/lab.sh                        # every scenario (about 8 minutes)
+scripts/lab.sh                        # every scenario (about 7 minutes)
 scripts/lab.sh -run ZeroWindow        # one of them
 SSTUI_LAB_KEEP=out scripts/lab.sh     # keep each recording in out/
 SSTUI_LAB_HOST=user@vm scripts/lab.sh # run them on another machine over ssh
@@ -1160,7 +1206,7 @@ counts it saw, so a failure shows its evidence.
 Release binaries are built static with the version stamped in:
 
 ```bash
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w -X main.version=v1.3.0" -o dist/sstui-linux-amd64 .
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w -X main.version=v1.4.0" -o dist/sstui-linux-amd64 .
 ```
 
 Coding conventions:

@@ -36,6 +36,26 @@ func TestParseProcNet(t *testing.T) {
 	}
 }
 
+func TestParseSockstat(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sockstat")
+	data := "sockets: used 200\n" +
+		"TCP: inuse 4 orphan 77 tw 0 alloc 82 mem 976\n" +
+		"UDP: inuse 2 mem 3\n" +
+		"FRAG: inuse 0 memory 0\n"
+	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]int64{}
+	if err := parseSockstat(path, out); err != nil {
+		t.Fatal(err)
+	}
+	for k, v := range map[string]int64{"Sockstat:TCPMem": 976, "Sockstat:TCPOrphan": 77, "Sockstat:UDPMem": 3, "Sockstat:socketsUsed": 200} {
+		if got, ok := out[k]; !ok || got != v {
+			t.Errorf("%s = %d (present %v), want %d", k, got, ok, v)
+		}
+	}
+}
+
 func TestSysStatDelta(t *testing.T) {
 	prev := &SysStat{Counters: map[string]int64{"Tcp:RetransSegs": 100, "Tcp:InErrs": 5}}
 	cur := &SysStat{Counters: map[string]int64{"Tcp:RetransSegs": 150, "Tcp:InErrs": 5, "Tcp:OutSegs": 9}}

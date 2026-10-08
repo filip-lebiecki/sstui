@@ -511,3 +511,25 @@ func TestPMTUBlackHoleMidConnection(t *testing.T) {
 	r := l.recordAndCheck(l.a, 10*time.Second)
 	r.expectTitle(t, "loss", "stall while others to it get through")
 }
+
+// TestReceiveMemoryPressure: TCP's host-wide memory limit (tcp_mem) is far
+// below what eight connections into slow readers hold in their receive
+// queues. Their data keeps arriving at queues already over the limit, so the
+// kernel collapses and prunes them. Host-wide: run only on a disposable
+// machine (SSTUI_LAB_HOSTWIDE=1).
+func TestReceiveMemoryPressure(t *testing.T) {
+	hostWide(t)
+	l := newLab(t)
+	l.path(wan, wan)
+	l.start(l.b, "slowsink", addrB+port, "200")
+	l.start(l.a, "send", addrB+port, "8")
+	time.Sleep(3 * time.Second) // let the receive queues fill
+	l.squeezeTCPMem("32 48 64")
+	// The server's namespace sees the pruning and its sockets' drops; tcp_mem
+	// exists only in the machine's own, which sees TCP's memory against it.
+	wb, wh := l.startRecord(l.b, 8*time.Second), l.startRecord("", 8*time.Second)
+	server, host := l.check(wb(), "server"), l.check(wh(), "host")
+	server.expect(t, "rcv_mem_pressure", "critical")
+	server.expectNone(t, "recv_backlog") // the drops are the memory limit's, not the readers'
+	host.expect(t, "rcv_mem_pressure", "critical")
+}

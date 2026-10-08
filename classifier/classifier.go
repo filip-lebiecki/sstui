@@ -94,6 +94,24 @@ func DropsExplainedByInboundLoss(c *model.Connection) bool {
 	return drops && !rcvQ
 }
 
+// MemoryRefusedDrops reports drops (DROPS, not the loss-recovery kind) at a
+// TCP socket holding almost none of its receive buffer (under a quarter):
+// with that much room in its own buffer, the kernel can only have refused
+// the memory host-wide (tcp_mem). In the lab such sockets held 0 bytes of
+// 128-700 KB buffers, their windows clamped to 6 KB, dropping every poll; a
+// slow reader drops with its buffer full.
+func MemoryRefusedDrops(c *model.Connection) bool {
+	if c.Protocol != "tcp" || c.State == "LISTEN" || c.SkmemR == nil || c.SkmemRB == nil || *c.SkmemRB <= 0 {
+		return false
+	}
+	for _, s := range c.Signals {
+		if s.Type == model.SignalSocketDrops {
+			return s.Severity > 0 && *c.SkmemR*4 < *c.SkmemRB
+		}
+	}
+	return false
+}
+
 // HungAfterHandshake reports whether a connection completed its handshake but
 // has had nothing acknowledged since (delivered counts the SYN), while its
 // data waits for an ACK with segments larger than every IPv4 path must carry

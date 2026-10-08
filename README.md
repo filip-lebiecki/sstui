@@ -297,7 +297,7 @@ so you can step back to see what was wrong when.
 | Window- or buffer-limited throughput | `RWND_LIM`, `SNDBUF_LIM`, `RCVBUF_LIM` | slow reader or small buffer at the receiver (its Recv-Q tells; named outright when the receiver is local), `tcp_rmem`, window scaling; for the send buffer, an app-set `SO_SNDBUF` (full but below `tcp_wmem` max) vs a `tcp_wmem` max that's too low |
 | Socket leak | `CW_LEAK` | fd count vs limit; the code path missing `close()` |
 | Connection churn / port exhaustion | `TW_STORM`, ephemeral range ≥70% used | pooling/keep-alive, `tcp_tw_reuse`, wider port range |
-| SYN flood / backlog, UDP drops, memory pressure | `SyncookiesSent`, `Udp:RcvbufErrors`, prune/backlog-drop counters | sources of half-open connections and the listeners' backlogs (with syncookies on, the SYN queue is the backlog), `rmem_max`, `tcp_mem` |
+| SYN flood / backlog, UDP drops, memory pressure | `SyncookiesSent`, `Udp:RcvbufErrors`; TCP's memory (`/proc/net/sockstat`) against `tcp_mem`, prune/drop counters, sockets dropping data with empty buffers | sources of half-open connections and the listeners' backlogs (with syncookies on, the SYN queue is the backlog), `rmem_max`, `tcp_mem` |
 
 The rules live in `findings/rules.go`; each is a small function over the
 latest snapshot, the host counters and the sysctls.
@@ -735,7 +735,7 @@ badge color and in the Live-tab indicator glyph.
 | `HI_RETRANS`  | `Δbytes_retrans / Δbytes_sent > 5%`                                    | info                    | This poll's retransmit rate is high. Context only: a burst like this is normal during slow start, so findings rely on `PATH_LOSS` |
 | `DSACK`       | `dsack_dups` grew this poll                                            | warn / crit (>5)        | Spurious retransmits — the data had arrived (aggressive RTO, or reordering) |
 | `REORDER`     | Over the last ~12 s: `reord_seen` grew in at least half of the 2 s slots, by ≥0.1% of the segments sent; not evaluated while `PATH_LOSS` fires | warn / crit (≥5%) | Our packets are reordered on the way to the peer (often ECMP / LACP / multi-queue hashing). The counter also ticks now and then during loss recovery or request bursts, and steadily under steady loss, so one-off events and lossy connections don't count |
-| `DROPS`       | `skmem` drop counter (`d`) grew this poll                             | warn / crit (>10); info for loss-recovery discards | Kernel discarded data at the socket — buffer overran, receiver too slow. On a listening socket it counts refused connection attempts (accept or SYN queue overflow) or stray handshake segments instead; the accept-queue finding reports it when the host's `ListenOverflows` / `ListenDrops` counters say connections were refused. When segments arrived after a gap in the same poll and the receive queue is empty, it's out-of-order data discarded during loss recovery instead: info, and the inbound-loss finding mentions it |
+| `DROPS`       | `skmem` drop counter (`d`) grew this poll                             | warn / crit (>10); info for loss-recovery discards | Kernel discarded data at the socket — buffer overran, receiver too slow. On a listening socket it counts refused connection attempts (accept or SYN queue overflow) or stray handshake segments instead; the accept-queue finding reports it when the host's `ListenOverflows` / `ListenDrops` counters say connections were refused. When segments arrived after a gap in the same poll and the receive queue is empty, it's out-of-order data discarded during loss recovery instead: info, and the inbound-loss finding mentions it. On a TCP socket holding almost none of its receive buffer, the kernel refused it memory host-wide (`tcp_mem`): the memory-pressure finding reports it, not the reader |
 | `RX_LOSS`     | Over the last ~12 s: ≥2% of data segments received arrived after a gap, in at least half of the 2 s slots, and `rcv_rtt` within max(4 ms, 10% of min RTT) of the minimum in at least ¾ of the receiving polls. The minimum is the lowest among connections to the same peer: a receiver measures its own only on the handshake, which may have waited in the queue. No verdict without TCP timestamps | warn / crit (≥10%) | **Inbound** loss (or reordering) on the peer → here path. The only loss signal available on the receiving side — the retransmit counters live on the sender. One lost segment makes everything behind it arrive out of order, so the ratio overstates the loss rate (in the lab 0.1% loss gave ~6%, 1% ~10%). A flow filling a bottleneck also arrives with gaps, but its data waits in the queue, which `rcv_rtt` includes. Blind to a BBR sender's loss (BBR keeps a standing queue); the sender's `PATH_LOSS` sees it |
 
 ### Congestion & flow control
@@ -1139,13 +1139,20 @@ controls (bulk transfer, bursty request/response) must come out clean on
 both ends, so a noisy rule fails the lab as surely as a missed diagnosis.
 
 ```bash
-scripts/lab.sh                        # every scenario (about 4 minutes)
+scripts/lab.sh                        # every scenario (about 8 minutes)
 scripts/lab.sh -run ZeroWindow        # one of them
 SSTUI_LAB_KEEP=out scripts/lab.sh     # keep each recording in out/
+SSTUI_LAB_HOST=user@vm scripts/lab.sh # run them on another machine over ssh
+SSTUI_LAB_HOSTWIDE=1 SSTUI_LAB_HOST=user@vm scripts/lab.sh
+                                      # also scenarios that change host-wide
+                                      # limits (tcp_mem): disposable machines only
 ```
 
-It builds as you and runs the scenarios with sudo; it needs iproute2
-(`ip`, `ss`) and `tc` with the netem qdisc. The scenarios live in
+It builds as you and runs the scenarios with sudo (on the other machine
+with `SSTUI_LAB_HOST`, which needs passwordless sudo there); it needs
+iproute2 (`ip`, `ss`) and `tc` with the netem qdisc. Host-wide scenarios
+squeeze a kernel limit for a few seconds; a watchdog restores it within
+90 s even if the run is killed. The scenarios live in
 `lab/scenarios_test.go`; each one logs the findings and per-signal poll
 counts it saw, so a failure shows its evidence.
 

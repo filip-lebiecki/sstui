@@ -89,3 +89,13 @@ func TestDiagnosePMTUBlackHole(t *testing.T) {
 		t.Errorf("want the black-hole verdict, got %+v", d)
 	}
 }
+
+// Drops at a socket holding no receive memory are TCP's host-wide limit.
+func TestDiagnoseMemoryRefusedDrops(t *testing.T) {
+	c := withSignals(model.Signal{Type: model.SignalSocketDrops, Severity: 2})
+	r, rb := 0, 726839
+	c.SkmemR, c.SkmemRB = &r, &rb
+	if d := diagnose(c); !strings.Contains(d.Headline, "TCP is short of memory host-wide") || d.Severity != 2 {
+		t.Errorf("want the memory verdict, got %+v", d)
+	}
+}

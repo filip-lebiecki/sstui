@@ -26,6 +26,7 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -265,6 +266,47 @@ func (l *lab) dropSynAcks(ns string) {
 		"u32", "match", "ip", "protocol", "6", "0xff", "match", "u8", "0x12", "0xff", "at", "33", "action", "drop")
 }
 
+// hostWide skips a scenario that changes host-wide settings unless
+// SSTUI_LAB_HOSTWIDE=1 asks for it: some kernel limits (tcp_mem) have no
+// per-namespace copy, so changing them touches every socket on the machine.
+func hostWide(t *testing.T) {
+	t.Helper()
+	if os.Getenv("SSTUI_LAB_HOSTWIDE") != "1" {
+		t.Skip("changes host-wide tcp_mem; run with SSTUI_LAB_HOSTWIDE=1 on a disposable machine")
+	}
+}
+
+// squeezeTCPMem sets the host-wide TCP memory limits (tcp_mem, in pages)
+// for the rest of the test. A watchdog in its own session restores the
+// original after 90 s even if the test is killed (or its ssh session
+// drops); the test's cleanup restores it at once.
+func (l *lab) squeezeTCPMem(pages string) {
+	l.t.Helper()
+	const path = "/proc/sys/net/ipv4/tcp_mem"
+	b, err := os.ReadFile(path)
+	if err != nil {
+		l.t.Fatal(err)
+	}
+	orig := strings.Join(strings.Fields(string(b)), " ")
+	restore := func() error { return os.WriteFile(path, []byte(orig), 0o644) }
+	watchdog := exec.Command("setsid", "sh", "-c", fmt.Sprintf("sleep 90; echo '%s' > %s", orig, path))
+	if err := watchdog.Start(); err != nil {
+		l.t.Fatal(err)
+	}
+	l.t.Cleanup(func() {
+		if err := restore(); err != nil {
+			l.t.Errorf("restoring tcp_mem to %s: %v (the watchdog retries within 90 s)", orig, err)
+			return
+		}
+		syscall.Kill(-watchdog.Process.Pid, syscall.SIGKILL) // its whole session: sh and sleep
+		watchdog.Wait()
+	})
+	if err := os.WriteFile(path, []byte(pages), 0o644); err != nil {
+		l.t.Fatal(err)
+	}
+	l.t.Logf("tcp_mem %s -> %s (pages)", orig, pages)
+}
+
 // start runs a workload role (see runRole) inside namespace ns until the test
 // ends.
 func (l *lab) start(ns string, role ...string) {
@@ -282,7 +324,8 @@ func (l *lab) start(ns string, role ...string) {
 	l.t.Cleanup(func() { cmd.Process.Kill(); cmd.Wait() })
 }
 
-// record runs `sstui record` inside namespace ns for d and returns the
+// record runs `sstui record` inside namespace ns ("" for the machine's own,
+// where host-wide limits like tcp_mem live) for d and returns the
 // recording's path. With SSTUI_LAB_KEEP set to a directory, every recording
 // is also copied there (named after the test and the side) for inspection or
 // demos.
@@ -297,11 +340,14 @@ func (l *lab) record(ns string, d time.Duration) string {
 func (l *lab) startRecord(ns string, d time.Duration) func() string {
 	l.t.Helper()
 	path := filepath.Join(l.t.TempDir(), "rec.jsonl.gz")
-	args := []string{"netns", "exec", ns, l.bin, "record", "--interval", "500ms", "--duration", d.String(), "-o", path}
+	args := []string{l.bin, "record", "--interval", "500ms", "--duration", d.String(), "-o", path}
 	if l.ssFilter != "" {
 		args = append(args, "--ss-filter", l.ssFilter)
 	}
-	cmd := exec.Command("ip", args...)
+	if ns != "" {
+		args = append([]string{"ip", "netns", "exec", ns}, args...)
+	}
+	cmd := exec.Command(args[0], args[1:]...)
 	var out strings.Builder
 	cmd.Stdout, cmd.Stderr = &out, &out
 	if err := cmd.Start(); err != nil {
@@ -327,6 +373,8 @@ func (l *lab) side(ns string) string {
 		return "client"
 	case l.b:
 		return "server"
+	case "":
+		return "host"
 	}
 	return "router"
 }

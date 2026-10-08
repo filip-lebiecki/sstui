@@ -664,3 +664,28 @@ func TestReceiveWindowFill(t *testing.T) {
 		}
 	}
 }
+
+// TestMemoryRefusedDrops: drops at a TCP socket holding almost none of its
+// receive buffer were refused memory host-wide (TestReceiveMemoryPressure in
+// the lab: 0 bytes of 128-700 KB); a slow reader drops with a full buffer,
+// and loss-recovery discards (info DROPS) aren't drops of this kind.
+func TestMemoryRefusedDrops(t *testing.T) {
+	mk := func(r int, sev int) *model.Connection {
+		return &model.Connection{Protocol: "tcp", State: "ESTAB", SkmemR: ip(r), SkmemRB: ip(325_683),
+			Signals: []model.Signal{{Type: model.SignalSocketDrops, Severity: sev}}}
+	}
+	for _, tt := range []struct {
+		name string
+		c    *model.Connection
+		want bool
+	}{
+		{"drops, buffer empty", mk(0, 1), true},
+		{"drops, buffer full (slow reader)", mk(300_000, 1), false},
+		{"loss-recovery discards", mk(0, 0), false},
+		{"no drops", &model.Connection{Protocol: "tcp", State: "ESTAB", SkmemR: ip(0), SkmemRB: ip(325_683)}, false},
+	} {
+		if got := MemoryRefusedDrops(tt.c); got != tt.want {
+			t.Errorf("%s: %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}

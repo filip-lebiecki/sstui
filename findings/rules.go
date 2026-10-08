@@ -87,8 +87,8 @@ func ruleRecvBacklog(a *analysis) {
 	// ruleInboundLoss mentions them. A listener's drops are connection
 	// attempts it turned away, which ruleListenQueue reports.
 	key := func(c *model.Connection) string {
-		if c.State == "LISTEN" {
-			return ""
+		if c.State == "LISTEN" || classifier.MemoryRefusedDrops(c) {
+			return "" // ruleListenQueue's, ruleRcvMemPressure's
 		}
 		return procKey(c)
 	}
@@ -109,6 +109,8 @@ func ruleRecvBacklog(a *analysis) {
 			Detail:   "Data arrives faster than the application reads it; once a socket's receive buffer fills, the kernel drops (UDP) or throttles (TCP) the sender.",
 			Evidence: []string{fmt.Sprintf("%s waiting in Recv-Q", humanBytes(float64(queued)))},
 			// Same as the grouping: loss-recovery discards are info DROPS.
+			// (Drops refused memory host-wide, which the filter can't tell
+			// apart, are only selected too when the process has both kinds.)
 			Filter: filterJoin(procFilter(c0), "not state=LISTEN", "(signal=RCV_Q or signal=DROPS:warn)"),
 			Count:  len(g.conns),
 		}
@@ -1334,30 +1336,80 @@ func ruleRetransHost(a *analysis) {
 	})
 }
 
-// ruleRcvMemPressure: the kernel pruned receive queues or dropped segments
-// for lack of socket memory.
-func ruleRcvMemPressure(a *analysis) {
-	var parts []string
-	for _, k := range []string{"TcpExt:PruneCalled", "TcpExt:RcvPruned", "TcpExt:OfoPruned", "TcpExt:TCPBacklogDrop"} {
+// tcpMemPressure reads TCP's host-wide memory state. The level compares
+// what TCP holds (sockstat) with tcp_mem: from the pressure threshold the
+// kernel shrinks every socket's buffers, at the hard limit it refuses memory
+// and drops what arrives (0, 1, 2). It lasts as long as the pressure. The
+// events are the kernel collapsing or discarding queued data this poll;
+// they come in bursts, since shrunken windows soon slow the senders while
+// the pressure, and the crippled throughput, stay. discarded is set when
+// data was thrown away, not just collapsed.
+func (a *analysis) tcpMemPressure() (level int, events []string, discarded bool) {
+	for _, k := range []string{"TcpExt:PruneCalled", "TcpExt:RcvPruned", "TcpExt:OfoPruned", "TcpExt:TCPRcvQDrop", "TcpExt:TCPBacklogDrop"} {
 		if r, _ := a.rate(k); r > 0 {
-			parts = append(parts, fmt.Sprintf("%s +%.1f/s", strings.TrimPrefix(k, "TcpExt:"), r))
+			events = append(events, fmt.Sprintf("%s +%.1f/s", strings.TrimPrefix(k, "TcpExt:"), r))
+			discarded = discarded || k != "TcpExt:PruneCalled"
 		}
 	}
-	if len(parts) == 0 {
+	mem, ok := a.in.Sys.Get("Sockstat:TCPMem")
+	lim := a.in.Sysctl.Ints("net.ipv4.tcp_mem")
+	switch {
+	case !ok || len(lim) != 3:
+	case mem >= int64(lim[2]):
+		level = 2
+	case mem >= int64(lim[1]):
+		level = 1
+	}
+	return level, events, discarded
+}
+
+// ruleRcvMemPressure: TCP is short of memory host-wide: the level and the
+// events of tcpMemPressure, or sockets dropping data while holding almost
+// none of their buffers (classifier.MemoryRefusedDrops), which prove it even
+// where tcp_mem can't be read (a network namespace) and between the bursts
+// of pruning. Those sockets are named here rather than in recv_backlog.
+func ruleRcvMemPressure(a *analysis) {
+	level, events, discarded := a.tcpMemPressure()
+	dropping := 0
+	for _, c := range a.in.Conns {
+		if classifier.MemoryRefusedDrops(c) {
+			dropping++
+		}
+	}
+	if level == 0 && len(events) == 0 && dropping == 0 {
 		return
 	}
 	f := Finding{
 		ID:       "rcv_mem_pressure",
 		Severity: 1,
-		Title:    "TCP is under receive-memory pressure — the kernel is pruning queues",
-		Detail:   "Socket receive memory hit its limits, so the kernel collapsed or discarded queued data. Applications are reading too slowly or tcp_mem/tcp_rmem are too small for the load.",
-		Evidence: []string{"kernel: " + strings.Join(parts, ", ")},
-		Actions: []Action{
-			{Text: "Compare current TCP memory with the tcp_mem limits (pages)", Command: "cat /proc/net/sockstat"},
-		},
+		Title:    "TCP is short of memory host-wide — the kernel is squeezing socket buffers",
+		Detail:   "TCP as a whole hit its memory limits (tcp_mem), so the kernel shrinks every socket's buffers and collapses or discards queued data. Throughput suffers on every connection, not just the busy ones.",
 	}
-	if v := a.in.Sysctl["net.ipv4.tcp_mem"]; v != "" {
-		f.Evidence = append(f.Evidence, "net.ipv4.tcp_mem = "+v+" (pages)")
+	if discarded || level == 2 || dropping > 0 {
+		f.Severity = 2
+	}
+	if mem, ok := a.in.Sys.Get("Sockstat:TCPMem"); ok {
+		if lim := a.in.Sysctl.Ints("net.ipv4.tcp_mem"); len(lim) == 3 {
+			f.Evidence = append(f.Evidence, fmt.Sprintf("TCP holds %d pages (%s) host-wide; tcp_mem pressure starts at %d, hard limit %d", mem, humanBytes(float64(mem)*4096), lim[1], lim[2]))
+		} else {
+			f.Evidence = append(f.Evidence, fmt.Sprintf("TCP holds %d pages (%s) host-wide", mem, humanBytes(float64(mem)*4096)))
+		}
+	}
+	if len(events) > 0 {
+		f.Evidence = append(f.Evidence, "kernel: "+strings.Join(events, ", "))
+	}
+	if o, ok := a.in.Sys.Get("Sockstat:TCPOrphan"); ok && o > 0 {
+		f.Evidence = append(f.Evidence, fmt.Sprintf("%s (closed by their app, still holding memory)", plural(int(o), "orphaned socket")))
+	}
+	if dropping > 0 {
+		f.Evidence = append(f.Evidence, fmt.Sprintf("%s dropped data while holding almost no receive memory: the kernel refused it, not a slow reader", plural(dropping, "socket")))
+		f.Filter = filterJoin("proto=tcp", "not state=LISTEN", "signal=DROPS:warn", "not signal=RCV_Q")
+		f.Count = dropping
+	}
+	f.Actions = []Action{
+		{Text: "See which sockets hold the memory (skmem r = receive, t = send)", Command: "ss -tmn | grep -B1 skmem | head -40"},
+		{Text: "Compare TCP's memory with the limits (pages)", Command: "cat /proc/net/sockstat /proc/sys/net/ipv4/tcp_mem"},
+		{Text: "If the host has memory to spare, raise tcp_mem (pages; the default scales with RAM); otherwise fix what holds it: slow readers' full queues, or a pile of orphaned sockets"},
 	}
 	a.add(f)
 }

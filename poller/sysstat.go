@@ -13,6 +13,9 @@ import (
 // e.g. "Tcp:RetransSegs", "TcpExt:ListenOverflows", "Udp:RcvbufErrors". These
 // capture things per-socket ss output can't see — SYN floods that never become
 // sockets, accept-queue overflows, global retransmit and pruning rates.
+// Levels from /proc/net/sockstat sit alongside as "Sockstat:<Proto><Field>"
+// (e.g. "Sockstat:TCPMem", pages of memory TCP holds host-wide): gauges, so
+// read them with Get, not Delta.
 type SysStat struct {
 	Timestamp time.Time
 	Counters  map[string]int64
@@ -53,7 +56,33 @@ func ReadSysStat() (*SysStat, error) {
 		return nil, err
 	}
 	_ = parseProcNet("/proc/net/netstat", counters)
+	_ = parseSockstat("/proc/net/sockstat", counters)
 	return &SysStat{Timestamp: time.Now(), Counters: counters}, nil
+}
+
+// parseSockstat parses /proc/net/sockstat lines of name/value pairs, e.g.
+//
+//	TCP: inuse 4 orphan 0 tw 0 alloc 5 mem 976
+//
+// into "Sockstat:TCPInuse", ..., "Sockstat:TCPMem".
+func parseSockstat(path string, out map[string]int64) error {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		proto, rest, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		f := strings.Fields(rest)
+		for i := 0; i+1 < len(f); i += 2 {
+			if v, err := strconv.ParseInt(f[i+1], 10, 64); err == nil && f[i] != "" {
+				out["Sockstat:"+proto+strings.ToUpper(f[i][:1])+f[i][1:]] = v
+			}
+		}
+	}
+	return nil
 }
 
 // parseProcNet parses the /proc/net/{snmp,netstat} format: alternating lines

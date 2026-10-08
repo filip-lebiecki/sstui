@@ -93,6 +93,12 @@ func diagnose(c *model.Connection) Diagnosis {
 					Severity: s.Severity}
 			}
 		}
+		if r.sig == model.SignalSocketDrops && classifier.MemoryRefusedDrops(c) {
+			s, _ := has(r.sig)
+			return Diagnosis{Headline: "Data dropped: TCP is short of memory host-wide",
+				Hint:     "this socket holds almost none of its receive buffer, yet the kernel refused it more — see the memory-pressure finding (tcp_mem, or what holds TCP memory)",
+				Severity: s.Severity}
+		}
 		if r.sig == model.SignalSocketDrops && c.State == "LISTEN" {
 			if s, ok := has(r.sig); ok {
 				// A listener's drops aren't unread data: refused handshakes

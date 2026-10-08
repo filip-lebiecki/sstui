@@ -503,6 +503,33 @@ func TestSelectiveStall(t *testing.T) {
 	}
 }
 
+// TestRcvMemPressure: TCP short of memory host-wide shows as its level
+// against tcp_mem (steady, in the machine's own namespace), and as sockets
+// dropping data with empty buffers (anywhere, between bursts of pruning),
+// whose drops then aren't blamed on their reader.
+func TestRcvMemPressure(t *testing.T) {
+	ctl := poller.Sysctls{"net.ipv4.tcp_mem": "32 48 64"}
+	host := &poller.SysStat{Counters: map[string]int64{"Sockstat:TCPMem": 707, "Sockstat:TCPOrphan": 77}}
+	f := byID(Analyze(Input{Sys: host, SysPrev: host, Sysctl: ctl, Interval: 2 * time.Second}), "rcv_mem_pressure")
+	if f == nil || f.Severity != 2 || !hasText(f.Evidence, "TCP holds 707 pages (2.8 MB) host-wide; tcp_mem pressure starts at 48, hard limit 64") || !hasText(f.Evidence, "77 orphaned sockets") {
+		t.Errorf("over the hard limit: want a critical finding with the level: %+v", f)
+	}
+	if byID(Analyze(Input{Sys: host, SysPrev: host, Sysctl: poller.Sysctls{"net.ipv4.tcp_mem": "38379 51174 76758"}, Interval: 2 * time.Second}), "rcv_mem_pressure") != nil {
+		t.Errorf("well under the limits: want nothing")
+	}
+
+	// In a namespace (no tcp_mem) between bursts: the sockets prove it.
+	starved := conn("ESTAB", "10.0.0.2", "5001", "10.0.0.1", "41376", model.Signal{Type: model.SignalSocketDrops, Severity: 2, Value: 30})
+	starved.Protocol, starved.PID, starved.SkmemR, starved.SkmemRB, starved.RecvQ = "tcp", ip(4), ip(0), ip(726_839), ip(0)
+	r := Analyze(Input{Conns: []*model.Connection{starved}, Sys: host, SysPrev: host, Interval: 2 * time.Second})
+	if f := byID(r, "rcv_mem_pressure"); f == nil || f.Severity != 2 || !hasText(f.Evidence, "1 socket dropped data while holding almost no receive memory") {
+		t.Errorf("starved socket: want the memory finding to name it: %+v", r.Findings)
+	}
+	if byID(r, "recv_backlog|") != nil {
+		t.Errorf("drops refused memory host-wide mustn't blame the reader: %+v", r.Findings)
+	}
+}
+
 // TestRwndLimitedCause: a remote receiver could be a slow reader or a small
 // buffer, so the finding names both; a receiver on this host shows which.
 func TestRwndLimitedCause(t *testing.T) {

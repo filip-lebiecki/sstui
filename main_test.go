@@ -104,6 +104,31 @@ func TestPauseScrub(t *testing.T) {
 	}
 }
 
+// TestHeaderFollowsPausedMoment: paused on an older snapshot, the header's
+// counts and clock are that moment's, as the tabs below are, not the latest
+// poll's.
+func TestHeaderFollowsPausedMoment(t *testing.T) {
+	m := newLiveApp()
+	m = feed(m, tea.WindowSizeMsg{Width: 140, Height: 40})
+	t0 := time.Date(2026, 10, 8, 14, 0, 0, 0, time.Local)
+	for n := 1; n <= 3; n++ {
+		var conns []*model.Connection
+		for i := range n {
+			conns = append(conns, snapWithAddr("10.0.0."+strconv.Itoa(i+1))...)
+		}
+		m = feed(m, pollResultMsg{poll: &session.Poll{Time: t0.Add(time.Duration(n) * 2 * time.Second), Conns: conns}})
+	}
+	header := func() string { return strings.SplitN(ansi.Strip(m.View()), "\n", 2)[0] }
+	if h := header(); !strings.Contains(h, "TOTAL 3") || !strings.Contains(h, "14:00:06") {
+		t.Fatalf("live header should show the latest poll: %q", h)
+	}
+	m = feed(m, key("["))
+	m = feed(m, key("["))
+	if h := header(); !strings.Contains(h, "TOTAL 1") || !strings.Contains(h, "14:00:02") {
+		t.Errorf("paused on the first poll, the header should show it: %q", h)
+	}
+}
+
 // TestSystemTab verifies the 9 key opens the System tab and that host counters
 // with a per-poll delta render (value + Δ/s).
 func TestSystemTab(t *testing.T) {

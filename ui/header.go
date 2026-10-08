@@ -74,13 +74,14 @@ var styleWarnStat = lipgloss.NewStyle().
 	MarginRight(1).
 	Bold(true)
 
-// RenderHeader renders the top status bar with stat pills. When filter is
+// RenderHeader renders the top status bar with stat pills for snap, the
+// snapshot on screen: the latest, or the moment paused on, so its counts,
+// rates and clock agree with the tabs below. When filter is
 // active, the aggregates count only connections matching it, so the totals
 // line up with the rows shown in the table. drops is the number of ss records
 // the parser couldn't read on the last poll; when non-zero it gets its own pill
 // so a silent parse regression is visible rather than swallowed.
-func RenderHeader(buf *poller.Buffer, filter *Filter, drops int, findingsPill string, width int) string {
-	snap := buf.GetLatest()
+func RenderHeader(snap *poller.Snapshot, filter *Filter, drops int, findingsPill string, width int) string {
 	if snap == nil {
 		return styleHeader.Render(" sstui | waiting for data...")
 	}
@@ -91,7 +92,7 @@ func RenderHeader(buf *poller.Buffer, filter *Filter, drops int, findingsPill st
 	var totalRTT, totalBytesSent, totalBytesRecv float64
 	var rttCount int
 
-	for _, c := range snap.Conns {
+	for _, c := range snap.Connections() {
 		if filtered && !filter.Matches(c) {
 			continue
 		}
@@ -122,7 +123,7 @@ func RenderHeader(buf *poller.Buffer, filter *Filter, drops int, findingsPill st
 	txRate := fmtBytesPerSec(totalBytesSent)
 	rxRate := fmtBytesPerSec(totalBytesRecv)
 
-	ts := buf.LastUpdate().Format("15:04:05")
+	ts := snap.Timestamp.Format("15:04:05")
 
 	totalLabel := "TOTAL"
 	if filtered {

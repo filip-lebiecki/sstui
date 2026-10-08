@@ -523,7 +523,7 @@ func (m *AppModel) View() string {
 
 	// Header (fixed)
 	rep, repAt := m.shownReport()
-	b.WriteString(ui.RenderHeader(m.buf, m.filter, m.sess.LastDrops, ui.FindingsPill(rep.Crit(), rep.Warn()), m.width) + "\n")
+	b.WriteString(ui.RenderHeader(m.viewSnapshot(), m.filter, m.sess.LastDrops, ui.FindingsPill(rep.Crit(), rep.Warn()), m.width) + "\n")
 
 	// Tabs (fixed)
 	b.WriteString(ui.RenderTabs(tabNames, tabIndex(m.tab), m.width) + "\n")

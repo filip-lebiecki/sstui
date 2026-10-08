@@ -172,7 +172,7 @@ func findingDetailLines(f findings.Finding, textW int) []string {
 		if f.Count > 0 {
 			n = fmt.Sprintf("%d affected %s", f.Count, pluralWord(f.Count, "socket"))
 		}
-		out = append(out, "      "+styleFindDim.Render("⏎ show "+n+" in Live  ("+f.Filter+")"))
+		out = append(out, item(6, "⏎ ", "show "+n+" in Live  ("+f.Filter+")", styleFindDim)...)
 	}
 	return out
 }

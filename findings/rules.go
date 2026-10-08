@@ -1363,11 +1363,14 @@ func (a *analysis) tcpMemPressure() (level int, events []string, discarded bool)
 	return level, events, discarded
 }
 
-// ruleRcvMemPressure: TCP is short of memory host-wide: the level and the
-// events of tcpMemPressure, or sockets dropping data while holding almost
-// none of their buffers (classifier.MemoryRefusedDrops), which prove it even
-// where tcp_mem can't be read (a network namespace) and between the bursts
-// of pruning. Those sockets are named here rather than in recv_backlog.
+// ruleRcvMemPressure: TCP is short of memory host-wide: the level of
+// tcpMemPressure, or sockets dropping data while holding almost none of their
+// buffers (classifier.MemoryRefusedDrops), which prove it even where tcp_mem
+// can't be read (a network namespace) and between the bursts of pruning.
+// Those sockets are named here rather than in recv_backlog. Pruning alone
+// proves nothing host-wide: one socket whose queue outgrows its own buffer
+// (a stalled reader, out-of-order data behind a loss) is pruned the same way,
+// so discarded data without that proof is rcv_prune, which blames no limit.
 func ruleRcvMemPressure(a *analysis) {
 	level, events, discarded := a.tcpMemPressure()
 	dropping := 0
@@ -1376,7 +1379,10 @@ func ruleRcvMemPressure(a *analysis) {
 			dropping++
 		}
 	}
-	if level == 0 && len(events) == 0 && dropping == 0 {
+	if level == 0 && dropping == 0 {
+		if discarded {
+			ruleRcvPrune(a, events)
+		}
 		return
 	}
 	f := Finding{
@@ -1410,6 +1416,34 @@ func ruleRcvMemPressure(a *analysis) {
 		{Text: "See which sockets hold the memory (skmem r = receive, t = send)", Command: "ss -tmn | grep -B1 skmem | head -40"},
 		{Text: "Compare TCP's memory with the limits (pages)", Command: "cat /proc/net/sockstat /proc/sys/net/ipv4/tcp_mem"},
 		{Text: "If the host has memory to spare, raise tcp_mem (pages; the default scales with RAM); otherwise fix what holds it: slow readers' full queues, or a pile of orphaned sockets"},
+	}
+	a.add(f)
+}
+
+// ruleRcvPrune: the kernel discarded data a socket had already received,
+// with nothing to show TCP short of memory host-wide. Under tcp_mem's low
+// mark that's ruled out, and said so. Above it, it isn't: once TCP's memory
+// crosses the pressure threshold, the kernel keeps squeezing until it falls
+// back under the low mark.
+func ruleRcvPrune(a *analysis, events []string) {
+	f := Finding{
+		ID:       "rcv_prune",
+		Severity: 1,
+		Title:    "The kernel is discarding TCP data it already received",
+		Detail:   "A socket's receive queue outgrew its buffer, so the kernel compacted it or threw away what didn't fit; the sender has to send it again. A reader that stops reading, or out-of-order data piling up behind a loss, does this to one socket; TCP short of memory host-wide does it to all.",
+		Evidence: []string{"kernel: " + strings.Join(events, ", ")},
+	}
+	mem, ok := a.in.Sys.Get("Sockstat:TCPMem")
+	switch lim := a.in.Sysctl.Ints("net.ipv4.tcp_mem"); {
+	case !ok || len(lim) != 3:
+	case mem < int64(lim[0]):
+		f.Evidence = append(f.Evidence, fmt.Sprintf("TCP holds %d pages host-wide, under tcp_mem's low mark %d: not a host-wide shortage", mem, lim[0]))
+	default:
+		f.Evidence = append(f.Evidence, fmt.Sprintf("TCP holds %d pages host-wide, above tcp_mem's low mark %d: if it went past %d earlier, the kernel is still squeezing every socket", mem, lim[0], lim[1]))
+	}
+	f.Actions = []Action{
+		{Text: "Find the socket whose receive queue fills its buffer (skmem r close to rb; d counts its drops)", Command: "ss -tmn | grep -B1 skmem | head -40"},
+		{Text: "Compare TCP's memory with the limits (pages)", Command: "cat /proc/net/sockstat /proc/sys/net/ipv4/tcp_mem"},
 	}
 	a.add(f)
 }

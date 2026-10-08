@@ -28,6 +28,8 @@ const roleEnv = "SSTUI_LAB_ROLE"
 //	                          off send-buffer autotuning), writing as fast as it can
 //	stall ADDR                accept connections and never read (zero window)
 //	slowsink ADDR KBPS        accept connections and read each at KBPS kilobytes/s
+//	shrinksink ADDR           accept connections; read each for a second with a big
+//	                          receive buffer, then shrink the buffer and pause a second
 //	backlog ADDR N            listen with an accept queue of N, never accept
 //	hold ADDR N               open N connections and keep them
 //	noclose ADDR              accept connections and never close them
@@ -113,6 +115,29 @@ func runRole(args []string) error {
 			buf := make([]byte, 16<<10)
 			paced(num(2)*1000, func() (int, error) { return c.Read(buf) })
 			c.Close()
+		})
+	case "shrinksink":
+		return serve(arg(1), func(c net.Conn) {
+			// The window it advertised while reading stays open, so what the
+			// sender already has in flight arrives into a buffer too small for
+			// it: the kernel collapses the queue and drops the rest.
+			tc := c.(*net.TCPConn)
+			buf := make([]byte, 64<<10)
+			for {
+				tc.SetReadBuffer(4 << 20)
+				tc.SetReadDeadline(time.Now().Add(time.Second))
+				for {
+					_, err := tc.Read(buf)
+					if ne, ok := err.(net.Error); ok && ne.Timeout() {
+						break
+					} else if err != nil {
+						c.Close()
+						return
+					}
+				}
+				tc.SetReadBuffer(0) // the kernel's minimum
+				time.Sleep(time.Second)
+			}
 		})
 	case "stall":
 		return serve(arg(1), keep)

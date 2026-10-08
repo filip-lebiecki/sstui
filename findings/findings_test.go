@@ -1,6 +1,7 @@
 package findings
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -527,6 +528,40 @@ func TestRcvMemPressure(t *testing.T) {
 	}
 	if byID(r, "recv_backlog|") != nil {
 		t.Errorf("drops refused memory host-wide mustn't blame the reader: %+v", r.Findings)
+	}
+}
+
+// TestRcvPrune: the kernel discarding queued data, with TCP's memory under
+// tcp_mem and no starved socket, is one queue outgrowing its own buffer: not
+// blamed on tcp_mem. Collapsing alone, nothing lost, isn't a finding.
+func TestRcvPrune(t *testing.T) {
+	ctl := poller.Sysctls{"net.ipv4.tcp_mem": "38379 51174 76758"}
+	prev := &poller.SysStat{Counters: map[string]int64{"Sockstat:TCPMem": 597, "TcpExt:PruneCalled": 10, "TcpExt:RcvPruned": 10}}
+	cur := &poller.SysStat{Counters: map[string]int64{"Sockstat:TCPMem": 597, "TcpExt:PruneCalled": 14, "TcpExt:RcvPruned": 14}}
+	r := Analyze(Input{Sys: cur, SysPrev: prev, Sysctl: ctl, Interval: 2 * time.Second})
+	if byID(r, "rcv_mem_pressure") != nil {
+		t.Errorf("pruning under tcp_mem: want no host-wide finding: %+v", r.Findings)
+	}
+	f := byID(r, "rcv_prune")
+	if f == nil || f.Severity != 1 || !hasText(f.Evidence, "RcvPruned +2.0/s") || !hasText(f.Evidence, "under tcp_mem's low mark 38379: not a host-wide shortage") || strings.Contains(fmt.Sprint(f.Actions), "raise tcp_mem") {
+		t.Errorf("discards: want a warning that blames no limit: %+v", f)
+	}
+
+	// Between the low mark and the pressure threshold the kernel may still
+	// be squeezing from an earlier crossing: said, not claimed.
+	band := poller.Sysctls{"net.ipv4.tcp_mem": "500 700 900"}
+	if f := byID(Analyze(Input{Sys: cur, SysPrev: prev, Sysctl: band, Interval: 2 * time.Second}), "rcv_prune"); f == nil || !hasText(f.Evidence, "above tcp_mem's low mark 500: if it went past 700 earlier") {
+		t.Errorf("in the hysteresis band: want the possibility named: %+v", f)
+	}
+
+	// In a namespace tcp_mem can't be read: still no host-wide claim.
+	if r := Analyze(Input{Sys: cur, SysPrev: prev, Interval: 2 * time.Second}); byID(r, "rcv_mem_pressure") != nil || byID(r, "rcv_prune") == nil {
+		t.Errorf("pruning without tcp_mem: want rcv_prune only: %+v", r.Findings)
+	}
+
+	cur.Counters["TcpExt:RcvPruned"] = 10
+	if r := Analyze(Input{Sys: cur, SysPrev: prev, Sysctl: ctl, Interval: 2 * time.Second}); byID(r, "rcv_prune") != nil || byID(r, "rcv_mem_pressure") != nil {
+		t.Errorf("collapsing only: want nothing: %+v", r.Findings)
 	}
 }
 

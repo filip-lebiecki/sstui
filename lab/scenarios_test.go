@@ -533,3 +533,17 @@ func TestReceiveMemoryPressure(t *testing.T) {
 	server.expectNone(t, "recv_backlog") // the drops are the memory limit's, not the readers'
 	host.expect(t, "rcv_mem_pressure", "critical")
 }
+
+// TestReceiveQueuePruned: a receiver shrinks its buffer while the window it
+// advertised is still in flight, so one socket's queue outgrows its own
+// buffer and the kernel collapses it and drops data. Pruning, but TCP isn't
+// short of memory host-wide: that mustn't be blamed on tcp_mem.
+func TestReceiveQueuePruned(t *testing.T) {
+	l := newLab(t)
+	l.path(wan, wan)
+	l.start(l.b, "shrinksink", addrB+port)
+	l.start(l.a, "send", addrB+port)
+	server := l.recordAndCheck(l.b, 8*time.Second)
+	server.expect(t, "rcv_prune", "warning")
+	server.expectNone(t, "rcv_mem_pressure")
+}

@@ -159,6 +159,8 @@ type Connection struct {
 	PrevRecvQ *int `json:",omitempty"`
 	// PrevUnacked lets NO_ACK require data to stay outstanding across polls.
 	PrevUnacked *int `json:",omitempty"`
+	// PrevDeltaBytesReceived lets RCVBUF_LIM require two polls in a row.
+	PrevDeltaBytesReceived *int `json:",omitempty"`
 	// The previous poll's rwnd/sndbuf-limited time, so RWND_LIM and
 	// SNDBUF_LIM need two limited polls in a row.
 	PrevDeltaRwndLimitedMS   *float64 `json:",omitempty"`

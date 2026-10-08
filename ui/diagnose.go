@@ -56,6 +56,8 @@ func diagnose(c *model.Connection) Diagnosis {
 			"the remote application has stopped reading from its socket"},
 		{model.SignalRwndLimited, "Throughput limited by the receiver's window",
 			"the receiver's buffer is too small for the path, or the app there reads slowly — the bottleneck is at that end, not the network"},
+		{model.SignalRcvbufLimited, "Incoming throughput limited by this socket's receive buffer",
+			"the full window arrives every round trip and the app keeps up: the buffer is too small for the path (tcp_rmem max, or an app-set SO_RCVBUF)"},
 		{model.SignalSndbufLimited, "Throughput limited by the local send buffer",
 			"the app has more to send, but the socket's buffer is too small for the path: an app-set SO_SNDBUF or a low tcp_wmem max"},
 		{model.SignalRTOFiring, "Retransmission timeout firing repeatedly",

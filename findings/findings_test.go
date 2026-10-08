@@ -413,6 +413,25 @@ func TestSynBacklogNamesListener(t *testing.T) {
 	}
 }
 
+// TestRcvbufLimitedCause: a buffer at tcp_rmem max needs a higher max; one
+// held anywhere else was fixed by the app (SO_RCVBUF).
+func TestRcvbufLimitedCause(t *testing.T) {
+	rmem := poller.Sysctls{"net.ipv4.tcp_rmem": "4096 131072 131072", "net.core.rmem_max": "212992"}
+	mk := func(rb int) *model.Connection {
+		c := conn("ESTAB", "10.0.0.2", "5001", "10.0.0.1", "40000", model.Signal{Type: model.SignalRcvbufLimited, Severity: 1, Value: "100% of the 75 KB window arrives every round trip"})
+		c.Process, c.PID, c.SkmemRB, c.RcvWnd, c.RcvRTT = sp("server"), ip(8), ip(rb), ip(76_928), fp(40)
+		return c
+	}
+	f := byID(Analyze(Input{Conns: []*model.Connection{mk(131_072)}, Sysctl: rmem}), "rcvbuf|pid:8")
+	if f == nil || !hasText(f.Evidence, "caps a connection at ≈1.8 MB/s") || !hasText(f.Evidence, "grown to tcp_rmem max (128 KB)") || !hasCommand(f, `tcp_rmem="4096 131072 1048576"`) {
+		t.Errorf("buffer at the max: want the tcp_rmem advice: %+v", f)
+	}
+	f = byID(Analyze(Input{Conns: []*model.Connection{mk(65_536)}, Sysctl: rmem}), "rcvbuf|pid:8")
+	if f == nil || hasCommand(f, "tcp_rmem") || !strings.Contains(f.Actions[0].Text, "most likely sets SO_RCVBUF") {
+		t.Errorf("buffer below the max: want SO_RCVBUF named, no tcp_rmem advice: %+v", f)
+	}
+}
+
 // TestRwndLimitedCause: a remote receiver could be a slow reader or a small
 // buffer, so the finding names both; a receiver on this host shows which.
 func TestRwndLimitedCause(t *testing.T) {
@@ -437,6 +456,13 @@ func TestRwndLimitedCause(t *testing.T) {
 	f = byID(Analyze(Input{Conns: []*model.Connection{snd, rcv}, Sysctl: rmem}), "rwnd|")
 	if f == nil || !hasCommand(f, `tcp_rmem="4096 131072 12582912"`) {
 		t.Errorf("local receiver keeping up: want the tcp_rmem advice: %+v", f)
+	}
+
+	// The local receiver reports its capped buffer itself: one finding.
+	rcv.Signals = []model.Signal{{Type: model.SignalRcvbufLimited, Severity: 1}}
+	r := Analyze(Input{Conns: []*model.Connection{snd, rcv}, Sysctl: rmem})
+	if byID(r, "rwnd|") != nil || byID(r, "rcvbuf|") == nil {
+		t.Errorf("local capped receiver: want only the rcvbuf finding: %+v", r.Findings)
 	}
 }
 

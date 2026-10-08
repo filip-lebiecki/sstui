@@ -449,6 +449,37 @@ func sendBufferCaps(c *model.Connection) bool {
 		float64(*c.Unacked) <= 0.8*float64(*c.CWnd) && rwndRoom
 }
 
+// receiveWindowFill reports whether this socket's receive window is what
+// holds the peer back, seen from the receiving end, and how full the window
+// runs: on this poll and the previous one the data arriving per round trip
+// (bytes received over the poll × rcv_rtt) fills at least 80% of the
+// advertised window, while the application keeps up (Recv-Q below a quarter
+// of the buffer, so it's not a slow reader, which RCV_Q reports). A receiver
+// whose window has room to spare gets a fraction of it per round trip: in
+// the lab healthy receivers peaked at 0.42, a buffer capped at 128 KB on a
+// 500 KB path ran at 0.95-1.03. Two polls, because a new connection's window
+// runs full for a moment while autotuning catches up with slow start.
+// rcv_rtt is a real RTT sample only with timestamps.
+func receiveWindowFill(c *model.Connection) (float64, bool) {
+	if !c.Timestamps || c.RcvRTT == nil || *c.RcvRTT <= 0 || c.RcvWnd == nil || *c.RcvWnd <= 0 ||
+		c.SkmemRB == nil || c.RecvQ == nil || PollIntervalMS <= 0 ||
+		c.DeltaBytesReceived == nil || c.PrevDeltaBytesReceived == nil {
+		return 0, false
+	}
+	if float64(*c.RecvQ) >= 0.25*float64(*c.SkmemRB) {
+		return 0, false // a backlog: the reader, not the buffer
+	}
+	fill := func(bytes int) float64 {
+		return float64(bytes) / PollIntervalMS * *c.RcvRTT / float64(*c.RcvWnd)
+	}
+	cur, prev := fill(*c.DeltaBytesReceived), fill(*c.PrevDeltaBytesReceived)
+	const minBytes = 10_000 // a few segments, so a trickle never counts
+	if *c.DeltaBytesReceived < minBytes || *c.PrevDeltaBytesReceived < minBytes || cur < 0.8 || prev < 0.8 {
+		return 0, false
+	}
+	return cur, true
+}
+
 // IsZeroWindow reports whether the peer is advertising a zero receive window.
 // ss omits snd_wnd entirely when it is 0, so the absent field can't be told
 // apart from an old kernel that doesn't report it. A reported snd_wnd wins;
@@ -715,6 +746,12 @@ func Classify(c *model.Connection) []model.Signal {
 			signals = append(signals, model.Signal{Type: model.SignalSndbufLimited, Severity: 1,
 				Value: fmt.Sprintf("buffer full, all %d KB in flight", *c.SendQ/1024)})
 		}
+	}
+	if fill, ok := receiveWindowFill(c); ok {
+		signals = append(signals, model.Signal{Type: model.SignalRcvbufLimited, Severity: 1,
+			// ≥100% is measurement noise (nominal poll interval, one
+			// window snapshot): the window can't be overfilled.
+			Value: fmt.Sprintf("≈%.0f%% of the %d KB window arrives every round trip", min(fill, 1)*100, *c.RcvWnd/1024)})
 	}
 
 	// Cwnd-limited: most of the congestion window is in flight. That's what a

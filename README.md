@@ -293,7 +293,7 @@ so you can step back to see what was wrong when.
 | Path MTU black hole | `RTO` / `NO_ACK` on connections with nothing acknowledged since the handshake, segments over 536 bytes | a ping of full-sized packets with DF set; `tcp_mtu_probing`; let ICMP "fragmentation needed" through or clamp the MSS |
 | Inbound loss (per peer / host-wide) | `RX_LOSS` | path back toward the peer (loss is often asymmetric); RX drops / ring size when many peers are affected |
 | Reordering, path MTU, latency inflation | `REORDER`, `PMTU`, `RTT_SPIKE` | ECMP/LACP hashing; ICMP/MSS clamping; qdisc / BBR |
-| Window- or buffer-limited throughput | `RWND_LIM`, `SNDBUF_LIM` | slow reader or small buffer at the receiver (its Recv-Q tells; named outright when the receiver is local), `tcp_rmem`, window scaling; for the send buffer, an app-set `SO_SNDBUF` (full but below `tcp_wmem` max) vs a `tcp_wmem` max that's too low |
+| Window- or buffer-limited throughput | `RWND_LIM`, `SNDBUF_LIM`, `RCVBUF_LIM` | slow reader or small buffer at the receiver (its Recv-Q tells; named outright when the receiver is local), `tcp_rmem`, window scaling; for the send buffer, an app-set `SO_SNDBUF` (full but below `tcp_wmem` max) vs a `tcp_wmem` max that's too low |
 | Socket leak | `CW_LEAK` | fd count vs limit; the code path missing `close()` |
 | Connection churn / port exhaustion | `TW_STORM`, ephemeral range ≥70% used | pooling/keep-alive, `tcp_tw_reuse`, wider port range |
 | SYN flood / backlog, UDP drops, memory pressure | `SyncookiesSent`, `Udp:RcvbufErrors`, prune/backlog-drop counters | sources of half-open connections and the listeners' backlogs (with syncookies on, the SYN queue is the backlog), `rmem_max`, `tcp_mem` |
@@ -680,7 +680,7 @@ sudo sstui check --json | jq '.findings[] | select(.active) | .title'
 
 ## Signals reference
 
-There are **25 signal types**, each at one of three severities: `info`
+There are **26 signal types**, each at one of three severities: `info`
 (grey), `warn` (yellow/orange), `crit` (red). Severity is reflected in the
 badge color and in the Live-tab indicator glyph.
 
@@ -707,6 +707,7 @@ badge color and in the Live-tab indicator glyph.
 | `DROPS`    | `socket_drops`       | `Δskmem.d > 0` (crit >10) — kernel dropped data at this socket (info when segments arrived after a gap that poll and there's no `RCV_Q`: out-of-order data discarded during loss recovery) | `skmem` `d` delta ✓ | 0–2 | red |
 | `RWND_LIM` | `rwnd_limited`       | sending & `Δrwnd_limited ≥ 25%` of poll (crit ≥75%), this poll and the one before — blocked on peer window | `rwnd_limited:` delta ✓               | 1–2      | yellow |
 | `SNDBUF_LIM`| `sndbuf_limited`    | sending & `Δsndbuf_limited ≥ 25%` of poll (crit ≥75%), this poll and the one before — blocked on send buffer; or (warn) the send buffer full (Send-Q ≥ 40% of `tb`) on both polls with all of it in flight and room in `cwnd` and the peer's window, which the kernel's timer misses | `sndbuf_limited:` delta, Send-Q, `skmem` `tb`, `unacked:` `cwnd:` `snd_wnd:` ✓ | 1–2      | yellow |
+| `RCVBUF_LIM`| `rcvbuf_limited`    | receiving: data per round trip (Δbytes_received × `rcv_rtt`) ≥ 80% of `rcv_wnd` on this poll and the one before, Recv-Q < 25% of `rb` (needs TCP timestamps) — this socket's buffer caps the sender | `bytes_received:` delta, `rcv_rtt:` `rcv_wnd:` `ts`, Recv-Q, `skmem` `rb` ✓ | 1 | yellow |
 | `CW_LEAK`  | `close_wait_leak`    | one process holds ≥20 CLOSE-WAIT sockets (crit ≥50) — fd leak              | per-process CLOSE-WAIT count ✓          | 1–2      | red    |
 | `TW_STORM` | `time_wait_storm`    | ≥200 TIME-WAIT toward one peer endpoint (crit ≥2000) — port exhaustion risk | per-peer TIME-WAIT count ✓            | 1–2      | orange |
 | `RX_LOSS`  | `inbound_loss`       | over the last ~12 s: ≥2% of data segments received arrived after a gap (crit ≥10%), in at least half of the 2 s slots, with `rcv_rtt` near min RTT in ¾ of receiving polls (needs TCP timestamps) — inbound loss seen at the receiver | `rcv_ooopack:` `data_segs_in:` deltas, `rcv_rtt:` `minrtt:` `ts` ✓ | 1–2 | red |
@@ -752,6 +753,7 @@ badge color and in the Live-tab indicator glyph.
 |-------------|------------------------------------------------------|------------------|------------------------------------------|
 | `SEND_Q`    | Send-Q ≥ 50% of the send buffer (crit ≥80%) on two consecutive polls; 16 KB / 64 KB when the buffer size is unknown | UDP warn / crit; TCP info | Data queued faster than it drains. For TCP that's an app writing faster than the path: normal for bulk transfers (a blocked sender shows as `ZERO_WIN`, `RWND_LIM`, `SNDBUF_LIM`). For UDP the host can't put packets out as fast as the app sends |
 | `RCV_Q`     | Recv-Q ≥ 50% of the receive buffer (crit ≥80%) on two consecutive polls; same fallback. For TCP, of half the buffer: the rest of `rb` pays per-packet overhead, so a full TCP queue holds about half of it in data | warn / crit | The local app isn't reading fast enough |
+| `RCVBUF_LIM` | Data arriving per round trip fills ≥ 80% of the advertised window on two consecutive polls while Recv-Q stays under a quarter of the buffer; needs TCP timestamps | warn | This socket's receive buffer caps the sender: the app keeps up, but the whole window arrives every round trip. The receiving end's view of the sender's `RWND_LIM` |
 
 ---
 
@@ -894,7 +896,7 @@ ss -atunpeimOH ►│ parser  │──► []*model.Connection
                      ▼
                 ┌─────────┐       ┌─────────────┐
                 │ poller  │──┐    │ classifier  │
-                │ (ring   │  └───►│ (25 signals)│
+                │ (ring   │  └───►│ (26 signals)│
                 │  buffer)│       └─────────────┘
                 └────┬────┘             │
                      │                  ▼
@@ -921,7 +923,7 @@ ss -atunpeimOH ►│ parser  │──► []*model.Connection
   identity, inline numbers) sorted by key for binary-search lookup, plus
   `stateCounts`. Only the newest snapshot keeps full-detail
   `Connection`s; older ones materialize slim connections on demand.
-- **`classifier/`** — pure rules producing 25 signal types, run once per
+- **`classifier/`** — pure rules producing 26 signal types, run once per
   connection per poll (plus aggregate rules for CLOSE-WAIT leaks and
   TIME-WAIT storms).
   Severity is encoded as `0` (info) / `1` (warn) / `2` (crit). New

@@ -619,3 +619,40 @@ func TestSendBufferCaps(t *testing.T) {
 		}
 	}
 }
+
+// TestReceiveWindowFill: the full window arriving every round trip on two
+// polls, with the reader keeping up, is RCVBUF_LIM (TestSmallReceiveBuffer
+// in the lab); a window with room to spare, a slow reader's backlog, one
+// poll, a trickle, or no timestamps isn't.
+func TestReceiveWindowFill(t *testing.T) {
+	old := PollIntervalMS
+	PollIntervalMS = 500
+	defer func() { PollIntervalMS = old }()
+	// The lab's capped receiver: a 76 KB window, 40 ms RTT, ~950 KB per
+	// 500 ms poll (≈ the window every round trip).
+	capped := func() *model.Connection {
+		return &model.Connection{Protocol: "tcp", State: "ESTAB", Timestamps: true,
+			RcvRTT: fl(40), RcvWnd: ip(76_928), SkmemRB: ip(131_072), RecvQ: ip(0),
+			DeltaBytesReceived: ip(950_000), PrevDeltaBytesReceived: ip(920_000)}
+	}
+	for _, tt := range []struct {
+		name string
+		mod  func(*model.Connection)
+		want bool
+	}{
+		{"full window every round trip", func(*model.Connection) {}, true},
+		{"window with room to spare", func(c *model.Connection) { c.RcvWnd = ip(5_300_000) }, false},
+		{"slow reader's backlog", func(c *model.Connection) { c.RecvQ = ip(60_000) }, false},
+		{"ramping up: previous poll below", func(c *model.Connection) { c.PrevDeltaBytesReceived = ip(300_000) }, false},
+		{"a trickle", func(c *model.Connection) {
+			c.RcvWnd, c.DeltaBytesReceived, c.PrevDeltaBytesReceived = ip(100), ip(5_000), ip(5_000)
+		}, false},
+		{"no timestamps", func(c *model.Connection) { c.Timestamps = false }, false},
+	} {
+		c := capped()
+		tt.mod(c)
+		if _, got := sigByType(Classify(c), model.SignalRcvbufLimited); got != tt.want {
+			t.Errorf("%s: RCVBUF_LIM %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}

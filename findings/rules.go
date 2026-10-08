@@ -28,6 +28,7 @@ var rules = []func(*analysis){
 	ruleRTTInflation,
 	ruleRwndLimited,
 	ruleSndbufLimited,
+	ruleRcvbufLimited,
 	ruleCloseWaitLeak,
 	ruleTimeWaitStorm,
 	ruleEphemeralPorts,
@@ -712,7 +713,15 @@ func ruleRTTInflation(a *analysis) {
 // tells. The delivery rate isn't evidence here: under a window limit it is
 // the window divided by the RTT, whatever the path could carry.
 func ruleRwndLimited(a *analysis) {
-	for _, g := range a.groupBySignal(func(c *model.Connection) string { return c.PeerAddr }, model.SignalRwndLimited) {
+	key := func(c *model.Connection) string {
+		if rcv := a.localPeer(c); rcv != nil {
+			if _, ok := signalOf(rcv, model.SignalRcvbufLimited); ok {
+				return "" // the receiver's own rcvbuf finding covers it
+			}
+		}
+		return c.PeerAddr
+	}
+	for _, g := range a.groupBySignal(key, model.SignalRwndLimited) {
 		c0 := g.conns[0]
 		f := Finding{
 			ID:       "rwnd|" + g.key,
@@ -815,6 +824,48 @@ func ruleSndbufLimited(a *analysis) {
 			f.Evidence = append(f.Evidence, fmt.Sprintf("the buffer has grown to tcp_wmem max (%s)", humanBytes(float64(v[2]))))
 			f.Actions = append(f.Actions,
 				Action{Text: "Let autotuning grow send buffers further", Command: fmt.Sprintf(`sysctl -w net.ipv4.tcp_wmem="%d %d %d"`, v[0], v[1], roundUpMB(float64(v[2])*2))},
+				Action{Text: setByApp})
+		default:
+			f.Actions = append(f.Actions, Action{Text: setByApp})
+		}
+		a.add(f)
+	}
+}
+
+// ruleRcvbufLimited: this host's receive buffers cap what peers send, per
+// process: the receiving end's view of what the sender sees as RWND_LIM.
+// Autotuning grows a receive buffer up to exactly tcp_rmem max, so one held
+// at any other size was fixed by the application (SO_RCVBUF, which turns
+// autotuning off); one at the max needs a higher max.
+func ruleRcvbufLimited(a *analysis) {
+	for _, g := range a.groupBySignal(procKey, model.SignalRcvbufLimited) {
+		c0 := g.conns[0]
+		f := Finding{
+			ID:       "rcvbuf|" + g.key,
+			Severity: g.sev,
+			Title:    fmt.Sprintf("%s: receive buffer caps what peers can send (%s)", a.procLabel(c0), plural(len(g.conns), "connection")),
+			Detail:   "The application reads everything that arrives, but the socket's receive buffer is too small for the path: the whole advertised window arrives every round trip, so the sender waits on it instead of using the link.",
+			Filter:   filterJoin(procFilter(c0), "signal=RCVBUF_LIM"),
+			Count:    len(g.conns),
+		}
+		if s, ok := signalOf(c0, model.SignalRcvbufLimited); ok {
+			f.Evidence = append(f.Evidence, fmt.Sprint(s.Value))
+		}
+		if c0.RcvWnd != nil && c0.RcvRTT != nil && *c0.RcvRTT > 0 {
+			f.Evidence = append(f.Evidence, fmt.Sprintf("at %.0f ms RTT a %s window caps a connection at ≈%s/s",
+				*c0.RcvRTT, humanBytes(float64(*c0.RcvWnd)), humanBytes(float64(*c0.RcvWnd)/(*c0.RcvRTT/1000))))
+		}
+		rmax, _ := a.in.Sysctl.Int("net.core.rmem_max")
+		setByApp := fmt.Sprintf("If %s sets SO_RCVBUF itself, autotuning is off — remove it or raise it (capped by net.core.rmem_max = %s)", a.procLabel(c0), humanBytes(float64(rmax)))
+		v := a.in.Sysctl.Ints("net.ipv4.tcp_rmem")
+		switch {
+		case len(v) == 3 && c0.SkmemRB != nil && *c0.SkmemRB != v[2]:
+			f.Evidence = append(f.Evidence, fmt.Sprintf("the buffer (%s) isn't at tcp_rmem max (%s), where autotuning would take it", humanBytes(float64(*c0.SkmemRB)), humanBytes(float64(v[2]))))
+			f.Actions = append(f.Actions, Action{Text: fmt.Sprintf("%s most likely sets SO_RCVBUF, which turns autotuning off — remove it or raise it (capped by net.core.rmem_max = %s)", a.procLabel(c0), humanBytes(float64(rmax)))})
+		case len(v) == 3:
+			f.Evidence = append(f.Evidence, fmt.Sprintf("the buffer has grown to tcp_rmem max (%s)", humanBytes(float64(v[2]))))
+			f.Actions = append(f.Actions,
+				Action{Text: "Let autotuning grow receive buffers further", Command: fmt.Sprintf(`sysctl -w net.ipv4.tcp_rmem="%d %d %d"`, v[0], v[1], roundUpMB(float64(v[2])*2))},
 				Action{Text: setByApp})
 		default:
 			f.Actions = append(f.Actions, Action{Text: setByApp})

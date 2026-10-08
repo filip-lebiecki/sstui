@@ -57,6 +57,7 @@ var (
 		model.SignalSocketDrops:        lipgloss.Color("#ff6b6b"),
 		model.SignalRwndLimited:        lipgloss.Color("#ffd43b"),
 		model.SignalSndbufLimited:      lipgloss.Color("#ffd43b"),
+		model.SignalRcvbufLimited:      lipgloss.Color("#ffd43b"),
 		model.SignalCloseWaitLeak:      lipgloss.Color("#ff6b6b"),
 		model.SignalTimeWaitStorm:      lipgloss.Color("#ffa94d"),
 		model.SignalInboundLoss:        lipgloss.Color("#ff6b6b"),

@@ -422,6 +422,7 @@ func computeDeltas(cur, prev *model.Connection) {
 	// throughput bottleneck currently is.
 	cur.DeltaRwndLimitedMS = deltaFloat(cur.RwndLimitedMS, prev.RwndLimitedMS)
 	cur.DeltaSndbufLimitedMS = deltaFloat(cur.SndbufLimitedMS, prev.SndbufLimitedMS)
+	cur.PrevDeltaBytesReceived = prev.DeltaBytesReceived
 	cur.PrevDeltaRwndLimitedMS = prev.DeltaRwndLimitedMS
 	cur.PrevDeltaSndbufLimitedMS = prev.DeltaSndbufLimitedMS
 }

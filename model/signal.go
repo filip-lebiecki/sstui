@@ -30,6 +30,7 @@ const (
 	SignalSocketDrops        SignalType = "socket_drops"
 	SignalRwndLimited        SignalType = "rwnd_limited"
 	SignalSndbufLimited      SignalType = "sndbuf_limited"
+	SignalRcvbufLimited      SignalType = "rcvbuf_limited"
 	SignalCloseWaitLeak      SignalType = "close_wait_leak"
 	SignalTimeWaitStorm      SignalType = "time_wait_storm"
 	SignalInboundLoss        SignalType = "inbound_loss"
@@ -60,6 +61,7 @@ var signalLabels = map[SignalType]string{
 	SignalSocketDrops:        "DROPS",
 	SignalRwndLimited:        "RWND_LIM",
 	SignalSndbufLimited:      "SNDBUF_LIM",
+	SignalRcvbufLimited:      "RCVBUF_LIM",
 	SignalCloseWaitLeak:      "CW_LEAK",
 	SignalTimeWaitStorm:      "TW_STORM",
 	SignalInboundLoss:        "RX_LOSS",

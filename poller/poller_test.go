@@ -352,6 +352,44 @@ func TestSetPathMinRTT(t *testing.T) {
 	}
 }
 
+// TestSetPathQueues: every connection to a peer gets the queue on its path
+// from all their samples, weighted by the data each poll moved (the median
+// sending, three quarters receiving, above the path's min RTT), including
+// one with no samples of its own; a peer without samples gets nothing.
+func TestSetPathQueues(t *testing.T) {
+	f := func(v float64) *float64 { return &v }
+	recv := func(segs int, rtts ...float64) []model.RecvSlot { return []model.RecvSlot{{Segs: segs, RTTMS: rtts}} }
+	send := func(bytes int, q ...float64) []model.SendSlot { return []model.SendSlot{{Sent: bytes, QueueMS: q}} }
+	quiet := &model.Connection{PeerAddr: "10.0.0.2", PathMinRTT: f(40), RecvSlots: recv(100, 40, 41), SendSlots: send(1e6, 0, 1)}
+	queued := &model.Connection{PeerAddr: "10.0.0.2", PathMinRTT: f(40), RecvSlots: recv(100, 50, 60), SendSlots: send(1e6, 10, 20)}
+	idle := &model.Connection{PeerAddr: "10.0.0.2", PathMinRTT: f(40)}
+	other := &model.Connection{PeerAddr: "10.0.0.3", PathMinRTT: f(90)}
+	setPathQueues([]*model.Connection{quiet, queued, idle, other})
+	for _, c := range []*model.Connection{quiet, queued, idle} {
+		if c.PathRecvQueueMS == nil || *c.PathRecvQueueMS != 20 {
+			t.Errorf("%v: path receive queue %v, want 20 (samples 0, 1, 10, 20)", c.RecvSlots, c.PathRecvQueueMS)
+		}
+		if c.PathSendQueueMS == nil || *c.PathSendQueueMS != 10 {
+			t.Errorf("%v: path send queue %v, want 10 (samples 0, 1, 10, 20)", c.SendSlots, c.PathSendQueueMS)
+		}
+	}
+	if other.PathRecvQueueMS != nil || other.PathSendQueueMS != nil {
+		t.Errorf("a peer without samples: receive %v, send %v, want nil", other.PathRecvQueueMS, other.PathSendQueueMS)
+	}
+
+	// A bulk transfer with no queue beside ten chatty connections whose
+	// RTT a delayed ACK inflates: the bulk transfer's data decides.
+	bulk := &model.Connection{PeerAddr: "10.0.0.2", SendSlots: send(10e6, 0, 1, 0, 1)}
+	conns := []*model.Connection{bulk}
+	for range 10 {
+		conns = append(conns, &model.Connection{PeerAddr: "10.0.0.2", SendSlots: send(20_000, 40, 40, 40, 40)})
+	}
+	setPathQueues(conns)
+	if q := bulk.PathSendQueueMS; q == nil || *q > 1 {
+		t.Errorf("chatty connections outvoted a bulk transfer: path send queue %v, want at most 1", q)
+	}
+}
+
 // TestAdvanceRecvSlots: receiving fills slots the same way; each poll keeps
 // its rcv_rtt, recorded only when timestamps make it a real sample.
 func TestAdvanceRecvSlots(t *testing.T) {

@@ -190,6 +190,21 @@ type Connection struct {
 	// minimum was measured through a queue (a receiver only measures it on
 	// the handshake). Set by the poller before classifying.
 	PathMinRTT *float64 `json:"-"`
+	// PathSendQueueMS is PathRecvQueueMS for sending: the median of the
+	// queue samples (RTT above min RTT) in the send slots of all
+	// connections to the same peer address, weighted by bytes sent, for
+	// PATH_LOSS.
+	PathSendQueueMS *float64 `json:"-"`
+	// PathRecvQueueMS is how long data from the same peer address typically
+	// waits in a queue on the way here: three quarters of the rcv_rtt
+	// samples in the receive slots of all connections to it, weighted by
+	// segments received, lie at most this far above PathMinRTT. A bottleneck queue is shared by every flow
+	// through it, and the siblings' samples catch it when a connection's own
+	// few (one per slot at a 2 s interval) happen to miss it. Hosts with
+	// different paths behind one address (NAT) can only raise it, which
+	// hides loss rather than inventing it. Set by the poller before
+	// classifying; nil when none of them has samples.
+	PathRecvQueueMS *float64 `json:"-"`
 
 	// Signals are populated by poller.AddSnapshot after deltas, so the
 	// classifier runs once per poll rather than once per render frame.

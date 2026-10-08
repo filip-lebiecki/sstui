@@ -1,6 +1,7 @@
 package poller
 
 import (
+	"cmp"
 	"slices"
 	"strings"
 	"sync"
@@ -92,6 +93,76 @@ func setPathMinRTT(conns []*model.Connection) {
 			c.PathMinRTT = &m
 		}
 	}
+}
+
+// setPathQueues gives every connection the queue on its path, from the
+// slots of all connections to its peer address together, each sample
+// weighted by the data its poll moved: what data sent there typically waits
+// in (model.Connection.PathSendQueueMS, the median of their send slots'
+// queue samples) and what data from there does (PathRecvQueueMS, three
+// quarters of their rcv_rtt samples above the path's min RTT). Weighted, so
+// that many chatty connections, whose RTT a delayed ACK inflates, can't
+// outvote a bulk transfer's. After setPathMinRTT.
+func setPathQueues(conns []*model.Connection) {
+	send, recv := map[string][]weighted{}, map[string][]weighted{}
+	for _, c := range conns {
+		for _, s := range c.SendSlots {
+			for _, q := range s.QueueMS {
+				send[c.PeerAddr] = append(send[c.PeerAddr], weighted{q, float64(s.Sent) / float64(len(s.QueueMS))})
+			}
+		}
+		if c.PathMinRTT == nil {
+			continue
+		}
+		for _, s := range c.RecvSlots {
+			for _, rtt := range s.RTTMS {
+				recv[c.PeerAddr] = append(recv[c.PeerAddr], weighted{rtt - *c.PathMinRTT, float64(s.Segs) / float64(len(s.RTTMS))})
+			}
+		}
+	}
+	at := func(samples map[string][]weighted, share float64) map[string]float64 {
+		m := make(map[string]float64, len(samples))
+		for peer, ws := range samples {
+			if q, ok := weightedQuantile(ws, share); ok {
+				m[peer] = q
+			}
+		}
+		return m
+	}
+	sendQ, recvQ := at(send, 0.5), at(recv, 0.75)
+	for _, c := range conns {
+		if q, ok := sendQ[c.PeerAddr]; ok {
+			c.PathSendQueueMS = &q
+		}
+		if q, ok := recvQ[c.PeerAddr]; ok {
+			c.PathRecvQueueMS = &q
+		}
+	}
+}
+
+// weighted is a sample and the weight it carries.
+type weighted struct{ v, w float64 }
+
+// weightedQuantile returns the smallest sample at or below which more than
+// share of the total weight lies, sorting samples in place; false when
+// there's no weight. With equal weights that's sorted[len*share], as the
+// classifier takes a connection's own.
+func weightedQuantile(samples []weighted, share float64) (float64, bool) {
+	var total float64
+	for _, s := range samples {
+		total += s.w
+	}
+	if total <= 0 {
+		return 0, false
+	}
+	slices.SortFunc(samples, func(a, b weighted) int { return cmp.Compare(a.v, b.v) })
+	var sum float64
+	for _, s := range samples {
+		if sum += s.w; sum > share*total {
+			return s.v, true
+		}
+	}
+	return samples[len(samples)-1].v, true
 }
 
 // advanceRecvSlots is advanceSendSlots for receiving: cur's receive slots,
@@ -306,6 +377,7 @@ func (b *Buffer) AddSnapshotAt(conns []*model.Connection, ts time.Time) {
 		}
 	}
 	setPathMinRTT(conns)
+	setPathQueues(conns)
 	for _, c := range conns {
 		c.Signals = classifier.Classify(c)
 	}

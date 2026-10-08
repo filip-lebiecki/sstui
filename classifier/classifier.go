@@ -154,6 +154,13 @@ const (
 // test: unlike the sender's RTT it isn't inflated by delayed ACKs, since the
 // timestamp echoed is the time the ACK was sent.
 //
+// The same test also runs on all the connections to the peer together
+// (PathRecvQueueMS): a bottleneck queue holds every flow through it, and at
+// a 2 s interval a connection has only one sample per slot, so a handful
+// can all miss it. In the lab, two of eight request/response connections
+// sharing a congested link passed alone while their siblings showed the
+// queue.
+//
 // The minimum is the lower of the connection's own and its path's
 // (PathMinRTT, other connections to the same peer): a pure receiver measures
 // min RTT only on its handshake, so a connection opened through an already
@@ -204,7 +211,8 @@ func inboundGaps(c *model.Connection, slots []model.RecvSlot) (ratio float64, se
 		return 0, segs, gappy, false
 	}
 	slices.Sort(queue)
-	if queue[len(queue)*3/4] >= max(4, 0.1*base) {
+	limit := max(4, 0.1*base)
+	if queue[len(queue)*3/4] >= limit || c.PathRecvQueueMS != nil && *c.PathRecvQueueMS >= limit {
 		return 0, segs, gappy, false // the data waits in a queue: congestion
 	}
 	return float64(ooo) / float64(segs), segs, gappy, true
@@ -247,7 +255,11 @@ const (
 //     RTT still reflects the quiet. The median, not the peak: with only a
 //     segment or two in flight, a delayed ACK alone adds tens of ms to an RTT
 //     sample. BBR is exempt: it keeps a standing queue and doesn't back off
-//     on loss.
+//     on loss. The same test runs on all the connections to the peer
+//     together (PathSendQueueMS): a bottleneck queue holds every flow
+//     through it, and at a 2 s interval a connection has one sample per
+//     slot, so a handful can all miss it (in the lab, two of eight
+//     request/response connections on a congested link).
 //
 // A bottleneck whose buffer is only a few milliseconds deep drops before the
 // queue shows, so several flows saturating one also look like path loss; the
@@ -285,7 +297,8 @@ func steadyRetrans(c *model.Connection, slots []model.SendSlot) (rate float64, l
 			return 0, lossy, false
 		}
 		slices.Sort(queue)
-		if queue[len(queue)/2] >= max(4, 0.1**c.MinRTT) {
+		limit := max(4, 0.1**c.MinRTT)
+		if queue[len(queue)/2] >= limit || c.PathSendQueueMS != nil && *c.PathSendQueueMS >= limit {
 			return 0, lossy, false // the flow builds a queue: congestion
 		}
 	}
@@ -934,7 +947,7 @@ func Classify(c *model.Connection) []model.Signal {
 	// retransmitted something that had arrived (an RTO or fast retransmit
 	// too eager, or reordering). Info-level context like RETRANS: TCP undoes
 	// spurious retransmits itself, and a healthy flow sharing a busy link
-	// in the lab (TestHealthyDefaultInterval) had them now and then; real
+	// in the lab (TestHealthyMixed/2s) had them now and then; real
 	// reordering is REORDER's.
 	if c.DeltaDSACKDups != nil && *c.DeltaDSACKDups > 0 {
 		signals = append(signals, model.Signal{Type: model.SignalDSACKSpurious, Severity: 0, Value: *c.DeltaDSACKDups})

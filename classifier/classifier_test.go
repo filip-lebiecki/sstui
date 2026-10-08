@@ -329,7 +329,7 @@ func TestReordering(t *testing.T) {
 		{"heavy reordering", reord(6, 6, 80), 2},
 		{"in half the slots", reord(6, 3, 12), 1},
 		{"stray events in two slots", reord(6, 2, 2), 0},
-		// TestHealthyDefaultInterval in the lab: bulk beside request/response
+		// TestHealthyMixed/2s in the lab: bulk beside request/response
 		// traffic, 0.2% of segments reordered in every slot.
 		{"steady but below 0.5% of segments", reord(6, 6, 2), 0},
 		{"too little history", reord(3, 3, 9), 0},
@@ -489,6 +489,19 @@ func TestClassifyInboundLoss(t *testing.T) {
 			c.MinRTT, c.PathMinRTT = fl(76), fl(40)
 			return c
 		}(), 0},
+		// TestHealthyRequestResponse/2s in the lab: one rcv_rtt sample per
+		// slot, all of them between queues; its siblings to the same peer
+		// caught the queue.
+		{"no queue of its own, its path's queue: congestion", func() *model.Connection {
+			c := gappy(6, 6, 60, 1)
+			c.PathRecvQueueMS = fl(6)
+			return c
+		}(), 0},
+		{"no queue of its own or on its path", func() *model.Connection {
+			c := gappy(6, 6, 60, 1)
+			c.PathRecvQueueMS = fl(2)
+			return c
+		}(), 1},
 		{"too little history", gappy(3, 3, 60, 1), 0},
 	}
 	for _, tc := range cases {
@@ -581,6 +594,18 @@ func TestPathLoss(t *testing.T) {
 		{"full queue: congestion", lossy(6, 6, 30), 0},
 		{"queue under 10% of min RTT is no queue", lossy(6, 6, 3.9), 1},
 		{"BBR's standing queue isn't congestion", bbr(lossy(6, 6, 30)), 1},
+		// TestHealthyRequestResponse/2s in the lab: one RTT sample per slot,
+		// mostly between queues; its siblings to the same peer caught it.
+		{"no queue of its own, its path's queue: congestion", func() *model.Connection {
+			c := lossy(6, 6, 1)
+			c.PathSendQueueMS = fl(20)
+			return c
+		}(), 0},
+		{"no queue of its own or on its path", func() *model.Connection {
+			c := lossy(6, 6, 1)
+			c.PathSendQueueMS = fl(2)
+			return c
+		}(), 1},
 		{"too little loss", func() *model.Connection {
 			c := lossy(6, 6, 1)
 			for i := range c.SendSlots {

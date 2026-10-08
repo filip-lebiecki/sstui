@@ -29,70 +29,78 @@ const port = ":5001"
 
 // ---- healthy controls: sstui must stay quiet ------------------------------
 
+// healthy runs a healthy control twice: at the lab's 500 ms interval for d,
+// and at sstui's default 2 s, which is what users run, for at least 24 s so
+// loss is judged over full windows. Polls that far apart catch more in each
+// one and stretch the timing of every slot; false alarms hide there.
+func healthy(t *testing.T, d time.Duration, setup func(l *lab)) {
+	for _, run := range []struct {
+		interval string
+		d        time.Duration
+	}{{"500ms", d}, {"2s", max(d, 24*time.Second)}} {
+		t.Run(run.interval, func(t *testing.T) {
+			l := newLab(t)
+			l.interval = run.interval
+			setup(l)
+			client, server := l.recordBoth(run.d)
+			client.expectClean(t)
+			server.expectClean(t)
+		})
+	}
+}
+
 // TestHealthyBulk: one connection sending as fast as the path allows. A
 // loss-based sender fills the bottleneck queue and loses a packet now and
 // then; that's how it finds the link rate, not a fault.
 func TestHealthyBulk(t *testing.T) {
-	l := newLab(t)
-	l.path(wan, wan)
-	l.start(l.b, "sink", addrB+port)
-	l.start(l.a, "send", addrB+port)
-	client, server := l.recordBoth(lossRecord)
-	client.expectClean(t)
-	server.expectClean(t)
+	healthy(t, lossRecord, func(l *lab) {
+		l.path(wan, wan)
+		l.start(l.b, "sink", addrB+port)
+		l.start(l.a, "send", addrB+port)
+	})
 }
 
 // TestHealthyBulkBBR: BBR's startup overshoots the path and loses a burst
 // of packets once; after that it runs without loss.
 func TestHealthyBulkBBR(t *testing.T) {
-	l := newLab(t)
-	l.path(wan, wan)
-	l.start(l.b, "sink", addrB+port)
-	l.start(l.a, "send", addrB+port, "1", "bbr")
-	client, server := l.recordBoth(lossRecord)
-	client.expectClean(t)
-	server.expectClean(t)
+	healthy(t, lossRecord, func(l *lab) {
+		l.path(wan, wan)
+		l.start(l.b, "sink", addrB+port)
+		l.start(l.a, "send", addrB+port, "1", "bbr")
+	})
 }
 
 // TestHealthySlowLinkCongestion: four flows sharing a 10 Mbit/s link. Their
 // windows are small, so each loses well over 0.5% of its packets, every few
 // seconds, as it probes for bandwidth; the losses come with a full queue.
 func TestHealthySlowLinkCongestion(t *testing.T) {
-	l := newLab(t)
-	l.path(slow, slow)
-	l.start(l.b, "sink", addrB+port)
-	l.start(l.a, "send", addrB+port, "4")
-	client, server := l.recordBoth(lossRecord)
-	client.expectClean(t)
-	server.expectClean(t)
+	healthy(t, lossRecord, func(l *lab) {
+		l.path(slow, slow)
+		l.start(l.b, "sink", addrB+port)
+		l.start(l.a, "send", addrB+port, "4")
+	})
 }
 
-// TestHealthyDefaultInterval: bulk and bursty request/response sharing the
-// link, watched at sstui's default 2 s interval rather than the lab's 500 ms,
-// which is what users run.
-func TestHealthyDefaultInterval(t *testing.T) {
-	l := newLab(t)
-	l.path(wan, wan)
-	l.interval = "2s"
-	l.start(l.b, "sink", addrB+port)
-	l.start(l.a, "send", addrB+port, "2")
-	l.start(l.b, "reqserver", addrB+":443", "1000000")
-	l.start(l.a, "reqclient", addrB+":443", "1000000", "8")
-	client, server := l.recordBoth(32 * time.Second)
-	client.expectClean(t)
-	server.expectClean(t)
+// TestHealthyMixed: bulk and bursty request/response sharing the link. The
+// bulk senders keep the queue full while the responses burst into it.
+func TestHealthyMixed(t *testing.T) {
+	healthy(t, 32*time.Second, func(l *lab) {
+		l.path(wan, wan)
+		l.start(l.b, "sink", addrB+port)
+		l.start(l.a, "send", addrB+port, "2")
+		l.start(l.b, "reqserver", addrB+":443", "1000000")
+		l.start(l.a, "reqclient", addrB+":443", "1000000", "8")
+	})
 }
 
 // TestHealthyLongPath: four flows on a 100 ms path, where each sawtooth
 // takes seconds and slow start overshoots hard.
 func TestHealthyLongPath(t *testing.T) {
-	l := newLab(t)
-	l.path(long, long)
-	l.start(l.b, "sink", addrB+port)
-	l.start(l.a, "send", addrB+port, "4")
-	client, server := l.recordBoth(lossRecord)
-	client.expectClean(t)
-	server.expectClean(t)
+	healthy(t, lossRecord, func(l *lab) {
+		l.path(long, long)
+		l.start(l.b, "sink", addrB+port)
+		l.start(l.a, "send", addrB+port, "4")
+	})
 }
 
 // Not a control: several flows saturating a link whose buffer is only a few
@@ -104,13 +112,11 @@ func TestHealthyLongPath(t *testing.T) {
 // responses with idle gaps, like an API or a cache. Bursts, idle restarts and
 // a shared bottleneck are all normal here.
 func TestHealthyRequestResponse(t *testing.T) {
-	l := newLab(t)
-	l.path(wan, wan)
-	l.start(l.b, "reqserver", addrB+port, "1000000")
-	l.start(l.a, "reqclient", addrB+port, "1000000", "8")
-	client, server := l.recordBoth(lossRecord)
-	client.expectClean(t)
-	server.expectClean(t)
+	healthy(t, lossRecord, func(l *lab) {
+		l.path(wan, wan)
+		l.start(l.b, "reqserver", addrB+port, "1000000")
+		l.start(l.a, "reqclient", addrB+port, "1000000", "8")
+	})
 }
 
 // ---- failures: sstui must name them ---------------------------------------
@@ -516,15 +522,13 @@ func TestAcceptQueueBurstsFiltered(t *testing.T) {
 // RTT sample before data flows, already waits in that queue. Healthy
 // congestion all the same: the receiver must not take it for path loss.
 func TestHealthyLateJoiner(t *testing.T) {
-	l := newLab(t)
-	l.path(slow, slow)
-	l.start(l.b, "sink", addrB+port)
-	l.start(l.a, "send", addrB+port, "4")
-	time.Sleep(3 * time.Second)
-	l.start(l.a, "send", addrB+port)
-	client, server := l.recordBoth(lossRecord)
-	client.expectClean(t)
-	server.expectClean(t)
+	healthy(t, lossRecord, func(l *lab) {
+		l.path(slow, slow)
+		l.start(l.b, "sink", addrB+port)
+		l.start(l.a, "send", addrB+port, "4")
+		time.Sleep(3 * time.Second)
+		l.start(l.a, "send", addrB+port)
+	})
 }
 
 // TestPMTUBlackHoleMidConnection: a bulk upload and a chatty connection of
@@ -633,12 +637,10 @@ func TestDemo(t *testing.T) {
 // the socket's drop counter, so idle connections with empty buffers show
 // drops. No data was lost: sstui must stay quiet.
 func TestHealthyIdleKeepalive(t *testing.T) {
-	l := newLab(t)
-	l.path(wan, wan)
-	l.start(l.b, "noclose", addrB+port)
-	l.start(l.a, "hold", addrB+port, "20")
-	time.Sleep(10 * time.Second)
-	client, server := l.recordBoth(10 * time.Second) // spans the first probes, at 15 s
-	client.expectClean(t)
-	server.expectClean(t)
+	healthy(t, 10*time.Second, func(l *lab) {
+		l.path(wan, wan)
+		l.start(l.b, "noclose", addrB+port)
+		l.start(l.a, "hold", addrB+port, "20")
+		time.Sleep(10 * time.Second) // the recording spans the first probes, at 15 s
+	})
 }

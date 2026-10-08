@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -139,10 +140,29 @@ func newLab(t *testing.T) *lab {
 			// scenario) and 1% loss would hit 1% of super-packets.
 			l.sh("ip", "-n", ifc.ns, "link", "set", ifc.dev, "gso_max_segs", "1")
 			l.sh("ip", "-n", ifc.ns, "link", "set", ifc.dev, "up")
+			// One CPU per flow on receive. A veth hands each packet to
+			// the backlog of the CPU sending it, and netem sends from its
+			// timer, on whichever CPU that fires: on a many-core machine
+			// two packets of one flow can land on different CPUs and
+			// overtake each other, reordering every flow (0.5-1% of
+			// segments on a 16-vCPU VM). RPS queues a flow on one CPU.
+			l.sh("ip", "netns", "exec", ifc.ns, "sh", "-c",
+				"echo "+cpuMask()+" > /sys/class/net/"+ifc.dev+"/queues/rx-0/rps_cpus")
 		}
 		l.sh("ip", "-n", end.ns, "route", "add", "default", "via", end.gw)
 	}
 	return l
+}
+
+// cpuMask is every CPU as a sysfs CPU bitmap: hex, in comma-separated
+// 32-bit words.
+func cpuMask() string {
+	n := runtime.NumCPU()
+	var words []string
+	for ; n > 0; n -= 32 {
+		words = append([]string{fmt.Sprintf("%08x", uint32(1<<min(n, 32)-1))}, words...)
+	}
+	return strings.Join(words, ",")
 }
 
 // sh runs a setup command and fails the test if it fails.

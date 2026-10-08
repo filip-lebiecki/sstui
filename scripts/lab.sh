@@ -54,7 +54,7 @@ fi
 
 if [ -z "${SSTUI_LAB_HOST:-}" ]; then
 	sudo env SSTUI_BIN="$out/sstui" SSTUI_LAB_KEEP="$keep" SSTUI_LAB_HOSTWIDE="$hostwide" SSTUI_LAB_DEMO="$demo" \
-		"$out/lab.test" -test.v -test.timeout 20m "${args[@]}"
+		"$out/lab.test" -test.v -test.timeout 30m "${args[@]}"
 	exit
 fi
 
@@ -74,7 +74,7 @@ if [ ${#args[@]} -gt 0 ]; then
 fi
 status=0
 ssh "$host" sudo env SSTUI_BIN="$rdir/sstui" SSTUI_LAB_KEEP="$rkeep" SSTUI_LAB_HOSTWIDE="$hostwide" \
-	"$rdir/lab.test" -test.v -test.timeout 20m "$rargs" || status=$?
+	"$rdir/lab.test" -test.v -test.timeout 30m "$rargs" || status=$?
 if [ -n "$keep" ]; then
 	scp -q "$host:$rkeep/*" "$keep/" 2>/dev/null || true
 fi

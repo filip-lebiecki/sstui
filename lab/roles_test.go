@@ -36,6 +36,8 @@ const roleEnv = "SSTUI_LAB_ROLE"
 //	burst ADDR N MS           every MS ms, open N connections at once, then close them
 //	churn ADDR N              N loops opening a connection and closing it at once,
 //	                          as a client without connection reuse does
+//	udpsink ADDR KBPS         receive UDP datagrams, reading KBPS kilobytes/s
+//	udpsend ADDR KBPS         send 1200-byte UDP datagrams at KBPS kilobytes/s
 //	reqserver ADDR SIZE       answer every request byte with SIZE bytes
 //	reqclient ADDR SIZE N     N connections, each asking for SIZE bytes at random intervals
 func runRole(args []string) error {
@@ -93,23 +95,11 @@ func runRole(args []string) error {
 			}
 		}
 	case "slowsink":
-		rate := num(2) * 1000
 		return serve(arg(1), func(c net.Conn) {
+			// Like an app that can only process so much per second.
 			buf := make([]byte, 16<<10)
-			start, read := time.Now(), 0
-			for {
-				// Read on schedule: never ahead of rate, like an app that
-				// can only process so much per second.
-				if ahead := time.Duration(float64(read)/float64(rate)*float64(time.Second)) - time.Since(start); ahead > 0 {
-					time.Sleep(ahead)
-				}
-				n, err := c.Read(buf)
-				if err != nil {
-					c.Close()
-					return
-				}
-				read += n
-			}
+			paced(num(2)*1000, func() (int, error) { return c.Read(buf) })
+			c.Close()
 		})
 	case "stall":
 		return serve(arg(1), keep)
@@ -188,6 +178,21 @@ func runRole(args []string) error {
 			}()
 		}
 		sleepForever()
+	case "udpsink":
+		pc, err := net.ListenPacket("udp", arg(1))
+		if err != nil {
+			return err
+		}
+		buf := make([]byte, 64<<10)
+		return paced(num(2)*1000, func() (int, error) { n, _, err := pc.ReadFrom(buf); return n, err })
+	case "udpsend":
+		c, err := net.Dial("udp", arg(1))
+		if err != nil {
+			return err
+		}
+		dgram := make([]byte, 1200)
+		// A refused send (nothing listening yet) is fine: keep going.
+		return paced(num(2)*1000, func() (int, error) { c.Write(dgram); return len(dgram), nil })
 	case "reqserver":
 		resp := make([]byte, num(2))
 		return serve(arg(1), func(c net.Conn) {
@@ -228,6 +233,22 @@ func runRole(args []string) error {
 		sleepForever()
 	}
 	return fmt.Errorf("unknown role %q", arg(0))
+}
+
+// paced calls op, which moves some bytes, never faster than rate bytes/s on
+// average, until it fails.
+func paced(rate int, op func() (int, error)) error {
+	start, done := time.Now(), 0
+	for {
+		if ahead := time.Duration(float64(done)/float64(rate)*float64(time.Second)) - time.Since(start); ahead > 0 {
+			time.Sleep(ahead)
+		}
+		n, err := op()
+		if err != nil {
+			return err
+		}
+		done += n
+	}
 }
 
 var (

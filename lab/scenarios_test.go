@@ -372,3 +372,14 @@ func TestSynFlood(t *testing.T) {
 	l.start(l.a, "hold", addrB+port, "100")
 	l.recordAndCheck(l.b, 6*time.Second).expect(t, "syn_backlog", "warning")
 }
+
+// TestUDPReceiveDrops: a UDP receiver that processes 500 KB/s while 2 MB/s
+// arrives. UDP has no flow control: once its receive buffer is full, the
+// kernel drops what the application hasn't read.
+func TestUDPReceiveDrops(t *testing.T) {
+	l := newLab(t)
+	l.path(wan, wan)
+	l.start(l.b, "udpsink", addrB+port, "500")
+	l.start(l.a, "udpsend", addrB+port, "2000")
+	l.recordAndCheck(l.b, 6*time.Second).expect(t, "recv_backlog", "critical")
+}

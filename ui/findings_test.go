@@ -88,6 +88,12 @@ func TestFindingFiltersSelectAffectedSockets(t *testing.T) {
 		[]model.Signal{{Type: model.SignalSocketDrops, Severity: 0}, {Type: model.SignalInboundLoss, Severity: 1}})
 	lossDrop.DeltaSkmemD, lossDrop.DeltaRcvOOOPack = i(2), i(40)
 	conns = append(conns, slow, lossDrop)
+	// Drops the kernel refused memory for, on the same process: the
+	// memory-pressure finding's, and its filter mustn't take the slow
+	// reader's (no RCV_Q yet in its first poll of drops) along.
+	starved := mk("ESTAB", "10.0.0.1", "9002", "10.0.0.41", "51002", sig(model.SignalSocketDrops, 2))
+	starved.DeltaSkmemD, starved.SkmemR, starved.SkmemRB = i(30), i(0), i(726_839)
+	conns = append(conns, starved)
 	// Healthy noise that no filter should pick up.
 	conns = append(conns, mk("ESTAB", "10.0.0.1", "50100", "10.0.0.5", "5432", nil))
 

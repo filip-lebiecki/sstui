@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"sstui/classifier"
 	"sstui/model"
 )
 
@@ -85,14 +86,19 @@ type predNode struct {
 
 func (n predNode) eval(c *model.Connection) bool { return n.match(c, n.value) }
 
-// signalNode is a "signal=<name>[:warn|:crit]" condition, resolved to its
-// type when parsed. minSev is the least severity that matches (0: any).
+// signalNode is a "signal=<name>[:warn|:crit|:mem]" condition, resolved to
+// its type when parsed. minSev is the least severity that matches (0: any);
+// also, when set, must hold for the connection too (DROPS:mem).
 type signalNode struct {
 	typ    model.SignalType
 	minSev int
+	also   func(*model.Connection) bool
 }
 
 func (n signalNode) eval(c *model.Connection) bool {
+	if n.also != nil && !n.also(c) {
+		return false
+	}
 	for _, s := range c.Signals {
 		if s.Type == n.typ && s.Severity >= n.minSev {
 			return true
@@ -320,16 +326,24 @@ func (p *filterParser) makePred(tok string) filterNode {
 func (p *filterParser) makeSignal(name string) filterNode {
 	name, level, leveled := strings.Cut(name, ":")
 	minSev := 0
-	if leveled {
-		sev, ok := signalSeverities[strings.ToLower(level)]
-		if !ok {
-			p.fail(fmt.Errorf("unknown signal level %q (levels: warn crit)", level))
-			return signalNode{}
-		}
+	var also func(*model.Connection) bool
+	switch sev, ok := signalSeverities[strings.ToLower(level)]; {
+	case !leveled:
+	case ok:
 		minSev = sev
+	case strings.EqualFold(level, "mem"):
+		// Drops the kernel refused memory for: what the memory-pressure
+		// finding counts, and the slow-reader one leaves out.
+		minSev, also = 1, classifier.MemoryRefusedDrops
+	default:
+		p.fail(fmt.Errorf("unknown signal level %q (levels: warn crit, and mem for DROPS)", level))
+		return signalNode{}
 	}
 	if t, ok := model.ParseSignalType(name); ok {
-		return signalNode{t, minSev}
+		if also != nil && t != model.SignalSocketDrops {
+			p.fail(fmt.Errorf("signal level mem is for DROPS only (drops the kernel refused memory for)"))
+		}
+		return signalNode{t, minSev, also}
 	}
 	if label, ok := removedSignals[strings.ToLower(name)]; ok {
 		p.fail(fmt.Errorf("signal %s was removed (it fired on healthy traffic); a slow sender shows RWND_LIM, SNDBUF_LIM or PATH_LOSS", label))

@@ -449,6 +449,7 @@ Press `/`, type one or more terms, hit `Enter`:
 | `proto=<tcp\|udp>`  | Protocol                                             |
 | `signal=<label>`    | Connection has this signal active (e.g. `RETRANS`, `cwnd_collapse`) |
 | `signal=<label>:warn` | ... at warn or crit, not as info (also `:crit`)      |
+| `signal=DROPS:mem`  | Drops the kernel refused memory for: the socket held almost none of its receive buffer (TCP short of memory host-wide) |
 | bare `<state>`      | Shortcut for `state=…` if it matches a known state   |
 | any other bare term | Substring match on local address, peer address or process name |
 

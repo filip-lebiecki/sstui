@@ -111,7 +111,7 @@ func ruleRecvBacklog(a *analysis) {
 			// Same as the grouping: loss-recovery discards are info DROPS.
 			// (Drops refused memory host-wide, which the filter can't tell
 			// apart, are only selected too when the process has both kinds.)
-			Filter: filterJoin(procFilter(c0), "not state=LISTEN", "(signal=RCV_Q or signal=DROPS:warn)"),
+			Filter: filterJoin(procFilter(c0), "not state=LISTEN", "(signal=RCV_Q or signal=DROPS:warn)", "not signal=DROPS:mem"),
 			Count:  len(g.conns),
 		}
 		if udp > 0 {
@@ -1419,7 +1419,7 @@ func ruleRcvMemPressure(a *analysis) {
 	}
 	if dropping > 0 {
 		f.Evidence = append(f.Evidence, fmt.Sprintf("%s dropped data while holding almost no receive memory: the kernel refused it, not a slow reader", plural(dropping, "socket")))
-		f.Filter = filterJoin("proto=tcp", "not state=LISTEN", "signal=DROPS:warn", "not signal=RCV_Q")
+		f.Filter = "signal=DROPS:mem"
 		f.Count = dropping
 	}
 	f.Actions = []Action{

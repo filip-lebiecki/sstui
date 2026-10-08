@@ -91,6 +91,7 @@ func TestFilterSignalNames(t *testing.T) {
 		{"signal=RETRANZ", `unknown signal "RETRANZ"`},
 		{"sigal=RETRANS", `unknown filter key "sigal"`},
 		{"signal=DROPS:loud", `unknown signal level "loud"`},
+		{"signal=RETRANS:mem", "signal level mem is for DROPS only"},
 	} {
 		f := &Filter{}
 		if err := f.SetQuery("state=ESTAB"); err != nil {
@@ -156,5 +157,28 @@ func TestFilterHideListen(t *testing.T) {
 	f.HideListen = false
 	if !f.Matches(c) {
 		t.Errorf("LISTEN connection should match when HideListen is off and no query")
+	}
+}
+
+// TestFilterDropsMem: "signal=DROPS:mem" is the drops the memory-pressure
+// finding counts (a TCP socket holding almost none of its receive buffer),
+// not a slow reader's with a full one, nor info-level discards.
+func TestFilterDropsMem(t *testing.T) {
+	drops := func(sev, r int) *model.Connection {
+		return &model.Connection{Protocol: "tcp", State: "ESTAB", SkmemR: &r, SkmemRB: ip(726_839),
+			Signals: []model.Signal{{Type: model.SignalSocketDrops, Severity: sev}}}
+	}
+	f := &Filter{}
+	if err := f.SetQuery("signal=DROPS:mem"); err != nil {
+		t.Fatal(err)
+	}
+	if !f.Matches(drops(2, 0)) {
+		t.Errorf("starved socket dropping: want a match")
+	}
+	if f.Matches(drops(2, 700_000)) {
+		t.Errorf("full socket dropping (a slow reader): want no match")
+	}
+	if f.Matches(drops(0, 0)) {
+		t.Errorf("loss-recovery discards (info): want no match")
 	}
 }

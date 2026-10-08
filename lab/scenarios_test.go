@@ -464,3 +464,15 @@ func TestUDPReceiveDropsFiltered(t *testing.T) {
 	r.expect(t, "udp_rcvbuf_host", "critical")
 	r.expectNone(t, "recv_backlog") // the socket is out of view
 }
+
+// TestAcceptQueueBurstsFiltered: the accept-queue bursts of
+// TestAcceptQueueBursts, recorded with an ss filter that leaves the
+// listener out. The host's ListenOverflows / ListenDrops still see them.
+func TestAcceptQueueBurstsFiltered(t *testing.T) {
+	l := newLab(t)
+	l.path(wan, wan)
+	l.ssFilter = "sport = :22"
+	l.start(l.b, "slowaccept", addrB+port, "4", "10")
+	l.start(l.a, "burst", addrB+port, "40", "1500")
+	l.recordAndCheck(l.b, 8*time.Second).expect(t, "listen_overflow_host", "critical")
+}

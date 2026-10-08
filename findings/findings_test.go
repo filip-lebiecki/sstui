@@ -411,6 +411,12 @@ func TestSynBacklogNamesListener(t *testing.T) {
 	if f == nil || len(f.Evidence) != 2 || !hasText(f.Evidence, "across 2 listening sockets") {
 		t.Errorf("want one line for the port: %q", f.Evidence)
 	}
+
+	// No listener in view (an ss filter): say how to find it, not somaxconn.
+	f = byID(Analyze(Input{Sys: sys, SysPrev: prev, Interval: 2 * time.Second, Sysctl: ctl, SSFilter: "sport = :22"}), "syn_backlog")
+	if f == nil || hasCommand(f, "somaxconn") || !hasCommand(f, "ss -ltn") || f.Filter != "" {
+		t.Errorf("no listener in view: want how to find it: %+v", f)
+	}
 }
 
 // TestRcvbufLimitedCause: a buffer at tcp_rmem max needs a higher max; one
@@ -429,6 +435,30 @@ func TestRcvbufLimitedCause(t *testing.T) {
 	f = byID(Analyze(Input{Conns: []*model.Connection{mk(65_536)}, Sysctl: rmem}), "rcvbuf|pid:8")
 	if f == nil || hasCommand(f, "tcp_rmem") || !strings.Contains(f.Actions[0].Text, "most likely sets SO_RCVBUF") {
 		t.Errorf("buffer below the max: want SO_RCVBUF named, no tcp_rmem advice: %+v", f)
+	}
+}
+
+// TestListenOverflowHostBacklogAdvice: overflows with no full listener in
+// view (an ss filter, or a burst already drained) mustn't blindly advise
+// somaxconn: the listener's own backlog is usually the limit. A listener
+// with connections waiting tells which; otherwise the finding says how to
+// find it.
+func TestListenOverflowHostBacklogAdvice(t *testing.T) {
+	sys, prev := sysPair(map[string]int64{"TcpExt:ListenOverflows": 0}, map[string]int64{"TcpExt:ListenOverflows": 384})
+	ctl := poller.Sysctls{"net.core.somaxconn": "4096"}
+	idle := conn("LISTEN", "0.0.0.0", "22", "0.0.0.0", "*")
+	idle.SendQ, idle.RecvQ = ip(128), ip(0)
+	f := byID(Analyze(Input{Conns: []*model.Connection{idle}, Sys: sys, SysPrev: prev, Interval: 2 * time.Second, Sysctl: ctl, SSFilter: "sport = :22"}), "listen_overflow_host")
+	if f == nil || hasText(f.Evidence, "fullest listeners") || !hasCommand(f, "ss -ltn") || hasCommand(f, "somaxconn") || !hasText(f.Evidence, "ss filter 'sport = :22'") {
+		t.Errorf("no listener with a queue: want how to find it, no somaxconn advice, the filter named: %+v", f)
+	}
+
+	busy := conn("LISTEN", "0.0.0.0", "5001", "0.0.0.0", "*")
+	busy.Process, busy.PID, busy.SendQ, busy.RecvQ = sp("server"), ip(3), ip(4), ip(3)
+	f = byID(Analyze(Input{Conns: []*model.Connection{idle, busy}, Sys: sys, SysPrev: prev, Interval: 2 * time.Second, Sysctl: ctl}), "listen_overflow_host")
+	if f == nil || !hasText(f.Evidence, "fullest listeners: :5001 server (pid 3) (3/4)") || hasCommand(f, "somaxconn") ||
+		!strings.HasPrefix(f.Actions[0].Text, "Raise the backlog in server (pid 3)'s config") {
+		t.Errorf("listener with connections waiting: want it named and its own backlog raised: %+v", f)
 	}
 }
 

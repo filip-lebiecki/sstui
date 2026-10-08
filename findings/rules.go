@@ -1044,7 +1044,9 @@ func ruleListenOverflowHost(a *analysis) {
 	}
 	var ls []lq
 	for _, c := range a.in.Conns {
-		if c.State == "LISTEN" && deref(c.SendQ) > 0 {
+		// Only listeners with connections waiting: an empty queue says
+		// nothing about which one overflowed.
+		if c.State == "LISTEN" && deref(c.SendQ) > 0 && deref(c.RecvQ) > 0 {
 			ls = append(ls, lq{c, float64(deref(c.RecvQ)) / float64(deref(c.SendQ))})
 		}
 	}
@@ -1074,11 +1076,14 @@ func ruleListenOverflowHost(a *analysis) {
 	if len(names) > 0 {
 		f.Evidence = append(f.Evidence, "fullest listeners: "+strings.Join(names, ", "))
 	}
-	if somax, ok := a.in.Sysctl.Int("net.core.somaxconn"); ok {
-		f.Actions = append(f.Actions, Action{
-			Text:    fmt.Sprintf("Raise the accept-queue cap (somaxconn = %d) and the app's listen backlog", somax),
-			Command: fmt.Sprintf("sysctl -w net.core.somaxconn=%d", max(4096, somax*2)),
-		})
+	if note := a.ssFilterNote("listeners"); note != "" {
+		f.Detail = "The kernel counted accept-queue overflows since the last poll: bursts of connections fill a listener's queue faster than the app accepts."
+		f.Evidence = append(f.Evidence, note)
+	}
+	if len(ls) > 0 {
+		f.Actions = append(f.Actions, backlogActions(a, ls[0].c, "")...)
+	} else {
+		f.Actions = append(f.Actions, findBacklogAction(a))
 	}
 	f.Actions = append(f.Actions, Action{Text: "Watch the counters", Command: "nstat -az TcpExtListenOverflows TcpExtListenDrops"})
 	a.add(f)
@@ -1133,17 +1138,62 @@ func ruleSynBacklog(a *analysis) {
 		}
 		f.Evidence = append(f.Evidence, ev)
 	}
-	somax, haveSomax := a.in.Sysctl.Int("net.core.somaxconn")
-	switch {
-	case len(listeners) > 0 && haveSomax && deref(listeners[0].SendQ) < somax:
-		f.Actions = append(f.Actions, Action{Text: fmt.Sprintf("If the traffic is legitimate, raise the backlog in %s's config (the listen() argument); somaxconn = %d isn't the limit", a.procLabel(listeners[0]), somax)})
-	case haveSomax:
-		f.Actions = append(f.Actions, Action{
-			Text:    fmt.Sprintf("If the traffic is legitimate, raise the cap on listen backlogs (somaxconn = %d) and the app's backlog with it", somax),
-			Command: fmt.Sprintf("sysctl -w net.core.somaxconn=%d", max(4096, somax*2)),
-		})
+	if note := a.ssFilterNote("listeners"); note != "" {
+		f.Evidence = append(f.Evidence, note)
+		f.Filter = "" // the half-open sockets may not have been collected
+	}
+	if len(listeners) > 0 {
+		f.Actions = append(f.Actions, backlogActions(a, listeners[0], "If the traffic is legitimate, ")...)
+	} else {
+		f.Actions = append(f.Actions, findBacklogAction(a))
 	}
 	a.add(f)
+}
+
+// backlogActions says how to raise listener l's backlog: in the app when
+// it's below somaxconn, else somaxconn itself (and the app's with it).
+// prefix, if any, opens the sentence ("If the traffic is legitimate, ").
+func backlogActions(a *analysis, l *model.Connection, prefix string) []Action {
+	somax, ok := a.in.Sysctl.Int("net.core.somaxconn")
+	if !ok {
+		return nil
+	}
+	sentence := func(s string) string {
+		if prefix == "" {
+			return strings.ToUpper(s[:1]) + s[1:]
+		}
+		return prefix + s
+	}
+	if deref(l.SendQ) < somax {
+		return []Action{{Text: sentence(fmt.Sprintf("raise the backlog in %s's config (the listen() argument); somaxconn = %d isn't the limit", a.procLabel(l), somax))}}
+	}
+	return []Action{{
+		Text:    sentence(fmt.Sprintf("raise the cap on listen backlogs (somaxconn = %d) and the app's backlog with it", somax)),
+		Command: fmt.Sprintf("sysctl -w net.core.somaxconn=%d", max(4096, somax*2)),
+	}}
+}
+
+// findBacklogAction is backlogActions for a listener sstui can't see (out of
+// an ss filter, or its queue already drained): find it, then raise whichever
+// limit applies.
+func findBacklogAction(a *analysis) Action {
+	limit := "somaxconn"
+	if somax, ok := a.in.Sysctl.Int("net.core.somaxconn"); ok {
+		limit = fmt.Sprintf("somaxconn (%d)", somax)
+	}
+	return Action{
+		Text:    fmt.Sprintf("Find the listener: Send-Q is its backlog. Below %s, raise it in the app's config (the listen() argument); equal to it, raise somaxconn", limit),
+		Command: "ss -ltn",
+	}
+}
+
+// ssFilterNote is the evidence line for a host counter whose sockets may be
+// outside the ss filter sstui collects through ("" without a filter).
+func (a *analysis) ssFilterNote(what string) string {
+	if a.in.SSFilter == "" {
+		return ""
+	}
+	return fmt.Sprintf("sstui only collects sockets matching the ss filter '%s'; the %s involved are likely outside it", a.in.SSFilter, what)
 }
 
 // ruleUDPRcvbufHost: UDP datagrams dropped because receive buffers were full.
@@ -1167,8 +1217,8 @@ func ruleUDPRcvbufHost(a *analysis) {
 	rmemMax, _ := a.in.Sysctl.Int("net.core.rmem_max")
 	evidence := []string{ev, fmt.Sprintf("net.core.rmem_max = %s", humanBytes(float64(rmemMax)))}
 	filter := "proto=udp"
-	if a.in.SSFilter != "" {
-		evidence = append(evidence, fmt.Sprintf("sstui only collects sockets matching the ss filter '%s'; the dropping ones are likely outside it", a.in.SSFilter))
+	if note := a.ssFilterNote("dropping sockets"); note != "" {
+		evidence = append(evidence, note)
 		filter = "" // they weren't collected: nothing to show
 	}
 	a.add(Finding{

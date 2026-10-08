@@ -1030,34 +1030,63 @@ func ruleListenOverflowHost(a *analysis) {
 	a.add(f)
 }
 
-// ruleSynBacklog: the SYN queue overflowed and the kernel fell back to
-// syncookies — a SYN flood or a SYN backlog too small for the load.
+// ruleSynBacklog: the kernel answered SYNs with syncookies because a
+// listener's SYN queue was full. With syncookies on (the default) that queue
+// is as long as the listener's backlog, the listen() argument capped by
+// net.core.somaxconn; tcp_max_syn_backlog only applies with syncookies off,
+// when no cookies are sent at all. So the listeners holding half-open
+// connections, and their backlogs, are the evidence and the knob.
 func ruleSynBacklog(a *analysis) {
 	r, _ := a.rate("TcpExt:SyncookiesSent")
 	if r <= 0 {
 		return
 	}
 	synRecv := 0
+	halfOpen := map[string]int{} // by local port
 	for _, c := range a.in.Conns {
 		if c.State == "SYN-RECV" {
 			synRecv++
+			halfOpen[c.LocalPort]++
 		}
 	}
 	f := Finding{
 		ID:       "syn_backlog",
 		Severity: 1,
 		Title:    "SYN backlog overflowing — the kernel is answering with syncookies",
-		Detail:   "More half-open connections arrive than the SYN queue holds: either a SYN flood, or legitimate load above the configured backlog.",
+		Detail:   "More half-open connections arrive than a listener's SYN queue holds: either a SYN flood, or legitimate load above the listener's backlog. With syncookies on, the SYN queue is as long as the backlog (the listen() argument, capped by net.core.somaxconn).",
 		Evidence: []string{fmt.Sprintf("kernel: SyncookiesSent +%.1f/s · %d sockets in SYN-RECV", r, synRecv)},
 		Actions: []Action{
-			{Text: "See where the half-open connections come from", Command: `ss -tn state syn-recv | awk 'NR>1{split($4,a,":"); print a[1]}' | sort | uniq -c | sort -rn | head`},
+			{Text: "See where the half-open connections come from", Command: `ss -tn state syn-recv | awk 'NR>1{sub(/:[0-9]+$/,"",$4); print $4}' | sort | uniq -c | sort -rn | head`},
 		},
 		Filter: "state=SYN-RECV",
 	}
-	if v, ok := a.in.Sysctl.Int("net.ipv4.tcp_max_syn_backlog"); ok {
+	// One line per port: SO_REUSEPORT groups and per-address listeners share
+	// the port's half-open count, which can't be split between them.
+	var listeners []*model.Connection
+	sockets := map[string]int{}
+	for _, c := range a.in.Conns {
+		if c.State == "LISTEN" && halfOpen[c.LocalPort] > 0 {
+			if sockets[c.LocalPort]++; sockets[c.LocalPort] == 1 {
+				listeners = append(listeners, c)
+			}
+		}
+	}
+	slices.SortFunc(listeners, func(x, y *model.Connection) int { return halfOpen[y.LocalPort] - halfOpen[x.LocalPort] })
+	for _, l := range listeners[:min(len(listeners), 3)] {
+		ev := fmt.Sprintf("listener :%s (%s): %d half-open, backlog %d", l.LocalPort, a.procLabel(l), halfOpen[l.LocalPort], deref(l.SendQ))
+		if n := sockets[l.LocalPort]; n > 1 {
+			ev += fmt.Sprintf(" each across %d listening sockets", n)
+		}
+		f.Evidence = append(f.Evidence, ev)
+	}
+	somax, haveSomax := a.in.Sysctl.Int("net.core.somaxconn")
+	switch {
+	case len(listeners) > 0 && haveSomax && deref(listeners[0].SendQ) < somax:
+		f.Actions = append(f.Actions, Action{Text: fmt.Sprintf("If the traffic is legitimate, raise the backlog in %s's config (the listen() argument); somaxconn = %d isn't the limit", a.procLabel(listeners[0]), somax)})
+	case haveSomax:
 		f.Actions = append(f.Actions, Action{
-			Text:    fmt.Sprintf("If the traffic is legitimate, raise the SYN backlog (now %d)", v),
-			Command: fmt.Sprintf("sysctl -w net.ipv4.tcp_max_syn_backlog=%d", v*2),
+			Text:    fmt.Sprintf("If the traffic is legitimate, raise the cap on listen backlogs (somaxconn = %d) and the app's backlog with it", somax),
+			Command: fmt.Sprintf("sysctl -w net.core.somaxconn=%d", max(4096, somax*2)),
 		})
 	}
 	a.add(f)

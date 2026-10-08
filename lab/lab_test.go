@@ -212,6 +212,17 @@ func (l *lab) dropICMP(ns string) {
 		"u32", "match", "ip", "protocol", "1", "0xff", "action", "drop")
 }
 
+// dropSynAcks discards every SYN-ACK arriving at namespace ns, so its
+// handshakes never complete and the server is left with half-open
+// connections, as in a SYN flood. (TCP flags sit at byte 33 of a packet
+// without IP options.)
+func (l *lab) dropSynAcks(ns string) {
+	l.t.Helper()
+	l.sh("tc", "-n", ns, "qdisc", "add", "dev", "veth0", "ingress")
+	l.sh("tc", "-n", ns, "filter", "add", "dev", "veth0", "ingress", "protocol", "ip",
+		"u32", "match", "ip", "protocol", "6", "0xff", "match", "u8", "0x12", "0xff", "at", "33", "action", "drop")
+}
+
 // start runs a workload role (see runRole) inside namespace ns until the test
 // ends.
 func (l *lab) start(ns string, role ...string) {

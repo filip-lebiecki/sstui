@@ -382,6 +382,37 @@ func TestRTTInflationPointsAlongThePath(t *testing.T) {
 	}
 }
 
+// TestSynBacklogNamesListener: with syncookies on, a listener's SYN queue is
+// its backlog, so the finding names the listener and never suggests
+// tcp_max_syn_backlog (TestSynFlood in the lab: 17 half-open against a
+// backlog of 16 while tcp_max_syn_backlog was 2048).
+func TestSynBacklogNamesListener(t *testing.T) {
+	sys, prev := sysPair(map[string]int64{"TcpExt:SyncookiesSent": 0}, map[string]int64{"TcpExt:SyncookiesSent": 332})
+	lst := conn("LISTEN", "0.0.0.0", "5001", "0.0.0.0", "*")
+	lst.Process, lst.PID, lst.SendQ = sp("server"), ip(3), ip(16)
+	conns := []*model.Connection{lst}
+	for i := range 17 {
+		conns = append(conns, conn("SYN-RECV", "10.0.0.1", "5001", "10.0.0.9", strconv.Itoa(40000+i)))
+	}
+	ctl := poller.Sysctls{"net.core.somaxconn": "4096", "net.ipv4.tcp_max_syn_backlog": "2048"}
+	f := byID(Analyze(Input{Conns: conns, Sys: sys, SysPrev: prev, Interval: 2 * time.Second, Sysctl: ctl}), "syn_backlog")
+	if f == nil || !hasText(f.Evidence, "listener :5001 (server (pid 3)): 17 half-open, backlog 16") || hasCommand(f, "tcp_max_syn_backlog") || hasCommand(f, "somaxconn") {
+		t.Errorf("want the listener and its own backlog named, no sysctl advice: %+v", f)
+	}
+	lst.SendQ = ip(4096) // capped by somaxconn
+	f = byID(Analyze(Input{Conns: conns, Sys: sys, SysPrev: prev, Interval: 2 * time.Second, Sysctl: ctl}), "syn_backlog")
+	if f == nil || !hasCommand(f, "sysctl -w net.core.somaxconn=8192") {
+		t.Errorf("backlog at somaxconn: want the somaxconn advice: %+v", f)
+	}
+	// A second listening socket on the port (SO_REUSEPORT): one line, not two.
+	lst2 := conn("LISTEN", "0.0.0.0", "5001", "0.0.0.0", "*")
+	lst2.Process, lst2.PID, lst2.SendQ = sp("server"), ip(4), ip(4096)
+	f = byID(Analyze(Input{Conns: append(conns, lst2), Sys: sys, SysPrev: prev, Interval: 2 * time.Second, Sysctl: ctl}), "syn_backlog")
+	if f == nil || len(f.Evidence) != 2 || !hasText(f.Evidence, "across 2 listening sockets") {
+		t.Errorf("want one line for the port: %q", f.Evidence)
+	}
+}
+
 // TestRwndLimitedCause: a remote receiver could be a slow reader or a small
 // buffer, so the finding names both; a receiver on this host shows which.
 func TestRwndLimitedCause(t *testing.T) {

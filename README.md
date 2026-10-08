@@ -296,7 +296,7 @@ so you can step back to see what was wrong when.
 | Window- or buffer-limited throughput | `RWND_LIM`, `SNDBUF_LIM` | slow reader or small buffer at the receiver (its Recv-Q tells; named outright when the receiver is local), `tcp_rmem`, window scaling; for the send buffer, an app-set `SO_SNDBUF` (full but below `tcp_wmem` max) vs a `tcp_wmem` max that's too low |
 | Socket leak | `CW_LEAK` | fd count vs limit; the code path missing `close()` |
 | Connection churn / port exhaustion | `TW_STORM`, ephemeral range ≥70% used | pooling/keep-alive, `tcp_tw_reuse`, wider port range |
-| SYN flood / backlog, UDP drops, memory pressure | `SyncookiesSent`, `Udp:RcvbufErrors`, prune/backlog-drop counters | sources of half-open connections, `rmem_max`, `tcp_mem` |
+| SYN flood / backlog, UDP drops, memory pressure | `SyncookiesSent`, `Udp:RcvbufErrors`, prune/backlog-drop counters | sources of half-open connections and the listeners' backlogs (with syncookies on, the SYN queue is the backlog), `rmem_max`, `tcp_mem` |
 
 The rules live in `findings/rules.go`; each is a small function over the
 latest snapshot, the host counters and the sysctls.

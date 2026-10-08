@@ -359,3 +359,16 @@ func TestBufferbloat(t *testing.T) {
 	r.expect(t, "rtt", "critical")
 	r.expectNone(t, "loss") // the losses come with a full queue: congestion
 }
+
+// TestSynFlood: 100 clients whose handshakes never complete (their side
+// drops every SYN-ACK), against a listener with a backlog of 16 that
+// accepts promptly. Half-open connections fill its SYN queue, and the
+// kernel answers the rest with syncookies.
+func TestSynFlood(t *testing.T) {
+	l := newLab(t)
+	l.path(wan, wan)
+	l.dropSynAcks(l.a)
+	l.start(l.b, "slowaccept", addrB+port, "16", "1")
+	l.start(l.a, "hold", addrB+port, "100")
+	l.recordAndCheck(l.b, 6*time.Second).expect(t, "syn_backlog", "warning")
+}

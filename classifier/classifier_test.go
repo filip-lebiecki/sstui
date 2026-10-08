@@ -407,7 +407,7 @@ func TestClassifyInboundLoss(t *testing.T) {
 		c := &model.Connection{Protocol: "tcp", State: "ESTAB", MinRTT: fl(40), Timestamps: true}
 		for i := range n {
 			s := model.RecvSlot{Start: t0.Add(time.Duration(2*i) * time.Second), End: t0.Add(time.Duration(2*i+2) * time.Second),
-				Segs: 1000, QueueMS: []float64{queueMS, queueMS}}
+				Segs: 1000, RTTMS: []float64{40 + queueMS, 40 + queueMS}}
 			if i < withGaps {
 				s.OOO = ooo
 			}
@@ -418,7 +418,7 @@ func TestClassifyInboundLoss(t *testing.T) {
 	noTS := gappy(6, 6, 60, 1)
 	noTS.Timestamps = false
 	for i := range noTS.RecvSlots {
-		noTS.RecvSlots[i].QueueMS = nil // the poller records no queue without timestamps
+		noTS.RecvSlots[i].RTTMS = nil // the poller records no rcv_rtt without timestamps
 	}
 	cases := []struct {
 		name string
@@ -434,18 +434,26 @@ func TestClassifyInboundLoss(t *testing.T) {
 		{"a queue in a third of the polls: congestion", func() *model.Connection {
 			c := gappy(6, 6, 60, 1)
 			for i := range 4 {
-				c.RecvSlots[i].QueueMS = []float64{1, 30} // 4 of 12 polls
+				c.RecvSlots[i].RTTMS = []float64{41, 70} // 4 of 12 polls
 			}
 			return c
 		}(), 0},
 		{"a queue in a sixth of the polls: no queue", func() *model.Connection {
 			c := gappy(6, 6, 60, 1)
 			for i := range 2 {
-				c.RecvSlots[i].QueueMS = []float64{1, 30} // 2 of 12 polls
+				c.RecvSlots[i].RTTMS = []float64{41, 70} // 2 of 12 polls
 			}
 			return c
 		}(), 1},
 		{"no timestamps, no verdict", noTS, 0},
+		// TestHealthyLateJoiner in the lab: the handshake went through a full
+		// queue (min 76 ms), so its own minimum hides the queue; its
+		// siblings' 40 ms shows it.
+		{"own minimum inflated, path's not: congestion", func() *model.Connection {
+			c := gappy(6, 6, 60, 36)
+			c.MinRTT, c.PathMinRTT = fl(76), fl(40)
+			return c
+		}(), 0},
 		{"too little history", gappy(3, 3, 60, 1), 0},
 	}
 	for _, tc := range cases {

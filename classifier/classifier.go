@@ -133,9 +133,14 @@ const (
 // test: unlike the sender's RTT it isn't inflated by delayed ACKs, since the
 // timestamp echoed is the time the ACK was sent.
 //
-// A pure receiver measures min RTT only on its handshake, so a connection
-// opened through an already full queue starts from an inflated baseline and
-// may take that queue for none.
+// The minimum is the lower of the connection's own and its path's
+// (PathMinRTT, other connections to the same peer): a pure receiver measures
+// min RTT only on its handshake, so a connection opened through an already
+// full queue starts from an inflated baseline and took that queue for none
+// (in the lab, 76 ms against its siblings' 41 ms). If every connection to the
+// peer opened through the queue, the baseline stays inflated; hosts with
+// different paths behind one address (NAT) can only lower it, which hides
+// loss rather than inventing it.
 //
 // Reordering on the path also leaves gaps. A sender that doesn't back off
 // on loss (BBR) keeps a standing queue even on a lossy path, so its loss
@@ -145,6 +150,10 @@ func inboundLoss(c *model.Connection) (sev int, value string) {
 	if slots == nil || c.MinRTT == nil {
 		return 0, ""
 	}
+	base := *c.MinRTT
+	if c.PathMinRTT != nil {
+		base = min(base, *c.PathMinRTT)
+	}
 	var segs, ooo, gappy int
 	var queue []float64
 	for _, s := range slots {
@@ -153,7 +162,9 @@ func inboundLoss(c *model.Connection) (sev int, value string) {
 		if s.OOO > 0 {
 			gappy++
 		}
-		queue = append(queue, s.QueueMS...)
+		for _, rtt := range s.RTTMS {
+			queue = append(queue, rtt-base)
+		}
 	}
 	if segs == 0 || len(queue) == 0 {
 		return 0, ""
@@ -163,7 +174,7 @@ func inboundLoss(c *model.Connection) (sev int, value string) {
 		return 0, ""
 	}
 	slices.Sort(queue)
-	if queue[len(queue)*3/4] >= max(4, 0.1**c.MinRTT) {
+	if queue[len(queue)*3/4] >= max(4, 0.1*base) {
 		return 0, "" // the data waits in a queue: congestion
 	}
 	span := slots[len(slots)-1].End.Sub(slots[0].Start).Round(time.Second)

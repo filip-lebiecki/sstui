@@ -476,3 +476,19 @@ func TestAcceptQueueBurstsFiltered(t *testing.T) {
 	l.start(l.a, "burst", addrB+port, "40", "1500")
 	l.recordAndCheck(l.b, 8*time.Second).expect(t, "listen_overflow_host", "critical")
 }
+
+// TestHealthyLateJoiner: four flows keep a 10 Mbit/s link and its queue
+// full; a fifth connects 3 s later, so its handshake, the receiver's only
+// RTT sample before data flows, already waits in that queue. Healthy
+// congestion all the same: the receiver must not take it for path loss.
+func TestHealthyLateJoiner(t *testing.T) {
+	l := newLab(t)
+	l.path(slow, slow)
+	l.start(l.b, "sink", addrB+port)
+	l.start(l.a, "send", addrB+port, "4")
+	time.Sleep(3 * time.Second)
+	l.start(l.a, "send", addrB+port)
+	client, server := l.recordBoth(lossRecord)
+	client.expectClean(t)
+	server.expectClean(t)
+}

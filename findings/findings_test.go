@@ -664,7 +664,7 @@ func TestLossDropsAttributedToInboundLoss(t *testing.T) {
 			c.MinRTT, c.Timestamps = fp(40), true
 			for i := range 6 {
 				c.RecvSlots = append(c.RecvSlots, model.RecvSlot{Start: t0.Add(time.Duration(2*i) * time.Second),
-					End: t0.Add(time.Duration(2*i+2) * time.Second), Segs: 1000, OOO: 60, QueueMS: []float64{0, 0}})
+					End: t0.Add(time.Duration(2*i+2) * time.Second), Segs: 1000, OOO: 60, RTTMS: []float64{40, 40}})
 			}
 		}
 		c.Signals = classifier.Classify(c)

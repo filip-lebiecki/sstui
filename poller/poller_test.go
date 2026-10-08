@@ -318,8 +318,22 @@ func TestAdvanceSendSlots(t *testing.T) {
 	}
 }
 
-// TestAdvanceRecvSlots: receiving fills slots the same way; the queue is
-// rcv_rtt - minrtt, recorded only when timestamps make rcv_rtt a real sample.
+// TestSetPathMinRTT: each connection gets the lowest min RTT among the
+// connections to its peer; a peer with none known gets nothing.
+func TestSetPathMinRTT(t *testing.T) {
+	f := func(v float64) *float64 { return &v }
+	late := &model.Connection{PeerAddr: "10.0.0.2", MinRTT: f(76.4)}
+	early := &model.Connection{PeerAddr: "10.0.0.2", MinRTT: f(40.9)}
+	other := &model.Connection{PeerAddr: "10.0.0.3", MinRTT: f(90)}
+	unknown := &model.Connection{PeerAddr: "10.0.0.4"}
+	setPathMinRTT([]*model.Connection{late, early, other, unknown})
+	if *late.PathMinRTT != 40.9 || *early.PathMinRTT != 40.9 || *other.PathMinRTT != 90 || unknown.PathMinRTT != nil {
+		t.Errorf("path min RTT: late %v early %v other %v unknown %v", *late.PathMinRTT, *early.PathMinRTT, *other.PathMinRTT, unknown.PathMinRTT)
+	}
+}
+
+// TestAdvanceRecvSlots: receiving fills slots the same way; each poll keeps
+// its rcv_rtt, recorded only when timestamps make it a real sample.
 func TestAdvanceRecvSlots(t *testing.T) {
 	i := func(v int) *int { return &v }
 	f := func(v float64) *float64 { return &v }
@@ -342,10 +356,10 @@ func TestAdvanceRecvSlots(t *testing.T) {
 	if len(c.RecvSlots) != 1 {
 		t.Fatalf("2 s of polls should fill one slot, got %d", len(c.RecvSlots))
 	}
-	if s := c.RecvSlots[0]; s.Segs != 300 || s.OOO != 30 || len(s.QueueMS) != 2 || s.QueueMS[0] != 30 {
+	if s := c.RecvSlots[0]; s.Segs != 300 || s.OOO != 30 || len(s.RTTMS) != 2 || s.RTTMS[0] != 70 {
 		t.Errorf("slot = %+v", s)
 	}
-	if early[0].Segs != 100 || len(early[0].QueueMS) != 1 {
+	if early[0].Segs != 100 || len(early[0].RTTMS) != 1 {
 		t.Errorf("extending a slot changed the earlier snapshot's copy: %+v", early[0])
 	}
 	if old := (&model.Connection{Timestamp: t0}); advanceRecvSlots(old, prev) != nil {

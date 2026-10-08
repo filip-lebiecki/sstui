@@ -75,6 +75,25 @@ func advanceSendSlots(cur, prev *model.Connection) []model.SendSlot {
 	return slots
 }
 
+// setPathMinRTT gives every connection the lowest min RTT among the
+// connections to its peer address (model.Connection.PathMinRTT).
+func setPathMinRTT(conns []*model.Connection) {
+	low := map[string]float64{}
+	for _, c := range conns {
+		if c.MinRTT == nil || *c.MinRTT <= 0 {
+			continue
+		}
+		if m, ok := low[c.PeerAddr]; !ok || *c.MinRTT < m {
+			low[c.PeerAddr] = *c.MinRTT
+		}
+	}
+	for _, c := range conns {
+		if m, ok := low[c.PeerAddr]; ok {
+			c.PathMinRTT = &m
+		}
+	}
+}
+
 // advanceRecvSlots is advanceSendSlots for receiving: cur's receive slots,
 // with this poll added when cur received at least slotMinBytes.
 func advanceRecvSlots(cur, prev *model.Connection) []model.RecvSlot {
@@ -93,8 +112,9 @@ func advanceRecvSlots(cur, prev *model.Connection) []model.RecvSlot {
 		// With timestamps, rcv_rtt is an RTT sample taken by the receiver
 		// (from our ACK to the data echoing it), so it includes the queue
 		// our incoming data waits in. Without them it's a minimum, no use.
-		if cur.Timestamps && cur.RcvRTT != nil && cur.MinRTT != nil {
-			s.QueueMS = append(slices.Clip(s.QueueMS), *cur.RcvRTT-*cur.MinRTT)
+		// Kept raw: the baseline it's judged against can still improve.
+		if cur.Timestamps && cur.RcvRTT != nil {
+			s.RTTMS = append(slices.Clip(s.RTTMS), *cur.RcvRTT)
 		}
 	}
 	cut := cur.Timestamp.Add(-SlotWindow())
@@ -284,6 +304,9 @@ func (b *Buffer) AddSnapshotAt(conns []*model.Connection, ts time.Time) {
 		if prev, ok := prevs[c.ConnKey()]; ok && sameConnection(c, prev) {
 			computeDeltas(c, prev)
 		}
+	}
+	setPathMinRTT(conns)
+	for _, c := range conns {
 		c.Signals = classifier.Classify(c)
 	}
 	// Signals that depend on counts across the whole snapshot (fd leaks,

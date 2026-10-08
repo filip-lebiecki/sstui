@@ -22,7 +22,7 @@ type RecvSlot struct {
 	Start, End time.Time
 	Segs       int       // data segments received
 	OOO        int       // of those, segments that arrived after a gap (rcv_ooopack)
-	QueueMS    []float64 // rcv_rtt - minrtt at each of those polls
+	RTTMS      []float64 // rcv_rtt at each of those polls, with timestamps
 }
 
 // Connection holds all parsed fields from a single ss row.
@@ -172,6 +172,11 @@ type Connection struct {
 	SendSlots []SendSlot `json:"-"`
 	// RecvSlots are the same for receiving, for RX_LOSS.
 	RecvSlots []RecvSlot `json:"-"`
+	// PathMinRTT is the lowest min RTT among this poll's connections to the
+	// same peer address: the path's baseline, for a connection whose own
+	// minimum was measured through a queue (a receiver only measures it on
+	// the handshake). Set by the poller before classifying.
+	PathMinRTT *float64 `json:"-"`
 
 	// Signals are populated by poller.AddSnapshot after deltas, so the
 	// classifier runs once per poll rather than once per render frame.

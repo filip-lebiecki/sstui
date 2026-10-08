@@ -371,6 +371,17 @@ func TestSndbufLimitedCause(t *testing.T) {
 	}
 }
 
+// TestRTTInflationPointsAlongThePath: the queue is usually at the bottleneck
+// on the path, not this host, so the finding says how to find it there too.
+func TestRTTInflationPointsAlongThePath(t *testing.T) {
+	c := conn("ESTAB", "10.0.0.1", "40000", "10.0.0.2", "5001", sig(model.SignalRTTSpike, 2))
+	c.RTT, c.MinRTT = fp(1252), fp(40)
+	f := byID(Analyze(Input{Conns: []*model.Connection{c}}), "rtt|10.0.0.2")
+	if f == nil || !hasText(f.Evidence, "RTT 1252.0 ms vs 40.0 ms minimum") || !hasCommand(f, "tc -s qdisc show") || !hasCommand(f, "mtr -rwzbc 100 10.0.0.2") {
+		t.Errorf("want local and on-path checks: %+v", f)
+	}
+}
+
 // TestRwndLimitedCause: a remote receiver could be a slow reader or a small
 // buffer, so the finding names both; a receiver on this host shows which.
 func TestRwndLimitedCause(t *testing.T) {

@@ -685,7 +685,9 @@ func ruleRTTInflation(a *analysis) {
 		if worst != nil && worst.RTT != nil && worst.MinRTT != nil {
 			f.Evidence = append(f.Evidence, fmt.Sprintf("RTT %.1f ms vs %.1f ms minimum", *worst.RTT, *worst.MinRTT))
 		}
-		f.Actions = append(f.Actions, Action{Text: "Check for a deep FIFO queue on the egress interface", Command: "tc -s qdisc show"})
+		f.Actions = append(f.Actions,
+			Action{Text: "If this host's own link is the bottleneck, look for a deep queue on its egress interface (backlog, drops)", Command: "tc -s qdisc show"},
+			Action{Text: "Otherwise the queue is at the bottleneck on the path (often a router, modem or VPN gateway): fq_codel or cake there keeps it short; see where the RTT jumps", Command: "mtr -rwzbc 100 " + g.key})
 		if q := a.in.Sysctl["net.core.default_qdisc"]; q != "" && q != "fq" && q != "fq_codel" && q != "cake" {
 			f.Actions = append(f.Actions, Action{
 				Text:    fmt.Sprintf("default_qdisc is %s; fq or fq_codel keep queues short", q),

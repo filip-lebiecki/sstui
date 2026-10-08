@@ -346,3 +346,16 @@ func TestSmallSendBuffer(t *testing.T) {
 	l.start(l.a, "sndbuf", addrB+port, "65536")
 	l.recordAndCheck(l.a, 8*time.Second).expect(t, "sndbuf", "warning")
 }
+
+// TestBufferbloat: a 10 Mbit/s bottleneck buffering 1000 packets, over a
+// second of queue. A loss-based sender fills it before it loses anything, so
+// every packet, this flow's and anyone else's, waits behind the queue.
+func TestBufferbloat(t *testing.T) {
+	l := newLab(t)
+	l.path(link{Delay: "20ms", Rate: "10mbit", Buffer: 1000}, wan)
+	l.start(l.b, "sink", addrB+port)
+	l.start(l.a, "send", addrB+port)
+	r := l.recordAndCheck(l.a, lossRecord)
+	r.expect(t, "rtt", "critical")
+	r.expectNone(t, "loss") // the losses come with a full queue: congestion
+}

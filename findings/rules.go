@@ -300,7 +300,7 @@ func rulePathLoss(a *analysis) {
 	if len(groups) == 0 {
 		return
 	}
-	if a.manyPeers(len(groups)) {
+	if peers := a.symptomPeers(groups, classifier.SteadyRetrans); a.manyPeers(peers) {
 		var conns []*model.Connection
 		sev := 0
 		for _, g := range groups {
@@ -310,9 +310,9 @@ func rulePathLoss(a *analysis) {
 		f := Finding{
 			ID:       "loss_local",
 			Severity: sev,
-			Title:    fmt.Sprintf("Packet loss toward %d different peers — likely a problem on this host", len(groups)),
+			Title:    fmt.Sprintf("Packet loss toward %d different peers — likely a problem on this host", peers),
 			Detail:   "When many unrelated destinations lose packets at once, the common factor is the local NIC, driver, uplink, or a CPU too busy to service the network.",
-			Evidence: append([]string{lossEvidence(conns)}, retransRateEvidence(a)...),
+			Evidence: append(append([]string{lossEvidence(conns)}, belowLine(peers, len(groups), "retransmitting steadily")...), retransRateEvidence(a)...),
 			Actions:  localLossActions(),
 			Filter:   sigFilter(lossSignals...),
 			Count:    len(conns),
@@ -483,6 +483,34 @@ func (a *analysis) selectiveStall(g *group) bool {
 	return true
 }
 
+// symptomPeers counts the peers behind groups plus those of other
+// established connections showing the symptom without a verdict yet (a
+// signal's tests at half its threshold, over slots still filling), so a
+// problem on many peers at once isn't blamed on the first peer to cross the
+// line. It counts for attribution only; the findings still list just the
+// connections with the signal.
+func (a *analysis) symptomPeers(groups []*group, symptom func(*model.Connection) bool) int {
+	peers := map[string]bool{}
+	for _, g := range groups {
+		peers[g.key] = true
+	}
+	for _, c := range a.in.Conns {
+		if c.State == "ESTAB" && !peers[c.PeerAddr] && symptom(c) {
+			peers[c.PeerAddr] = true
+		}
+	}
+	return len(peers)
+}
+
+// belowLine is the evidence for the peers symptomPeers added: what their
+// connections show, short of the signal so far.
+func belowLine(peers, signalled int, what string) []string {
+	if peers <= signalled {
+		return nil
+	}
+	return []string{fmt.Sprintf("%s %s, short of the threshold so far", plural(peers-signalled, "more peer"), what)}
+}
+
 // manyPeers reports whether a problem seen toward n distinct peers is
 // widespread enough to blame this host rather than each peer's path: at least
 // five peers, and at least a third of all established peers.
@@ -607,7 +635,7 @@ func ruleInboundLoss(a *analysis) {
 		{Text: "NIC-level RX drops / missed packets (replace the interface name)", Command: "ethtool -S eth0 | grep -iE 'rx.*(drop|miss|err)'"},
 		{Text: "If the NIC ring overflows, a larger RX ring can help (compare current vs max)", Command: "ethtool -g eth0"},
 	}
-	if a.manyPeers(len(groups)) {
+	if peers := a.symptomPeers(groups, classifier.InboundGaps); a.manyPeers(peers) {
 		var conns []*model.Connection
 		sev := 0
 		for _, g := range groups {
@@ -618,9 +646,9 @@ func ruleInboundLoss(a *analysis) {
 		f := Finding{
 			ID:       "rx_loss_local",
 			Severity: sev,
-			Title:    fmt.Sprintf("Inbound packet loss from %d different peers — likely this host's receive path", len(groups)),
+			Title:    fmt.Sprintf("Inbound packet loss from %d different peers — likely this host's receive path", peers),
 			Detail:   "Data from many unrelated senders arrives with gaps at once, so the common factor is here: NIC or driver drops, a full RX ring, or a CPU too busy to service network interrupts.",
-			Evidence: append(ratio(conns), ev...),
+			Evidence: append(append(ratio(conns), belowLine(peers, len(groups), "sending with steady gaps")...), ev...),
 			Actions:  append(rxActions, Action{Text: "Check for softirq / CPU saturation", Command: "mpstat -P ALL 1 5"}),
 			Filter:   "signal=RX_LOSS",
 			Count:    len(conns),

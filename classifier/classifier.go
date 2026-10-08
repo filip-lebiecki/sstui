@@ -165,14 +165,27 @@ const (
 // goes unreported here; the sender's PATH_LOSS still sees it.
 func inboundLoss(c *model.Connection) (sev int, value string) {
 	slots := completeSlots(c.RecvSlots, func(s model.RecvSlot) time.Duration { return s.End.Sub(s.Start) })
-	if slots == nil || c.MinRTT == nil {
+	ratio, segs, gappy, ok := inboundGaps(c, slots)
+	if !ok || ratio < inboundLossWarn {
 		return 0, ""
+	}
+	span := slots[len(slots)-1].End.Sub(slots[0].Start).Round(time.Second)
+	return tierSeverityF(ratio, inboundLossWarn, inboundLossCrit),
+		fmt.Sprintf("%.1f%% of %d segments arrived after a gap over %s, in %d of %d slots", ratio*100, segs, span, gappy, len(slots))
+}
+
+// inboundGaps applies inboundLoss's tests but the share to slots: ok when
+// segments arrived after a gap in at least half of them and the data didn't
+// wait in a queue on the way; ratio is the share of segments that did.
+func inboundGaps(c *model.Connection, slots []model.RecvSlot) (ratio float64, segs, gappy int, ok bool) {
+	if len(slots) == 0 || c.MinRTT == nil {
+		return 0, 0, 0, false
 	}
 	base := *c.MinRTT
 	if c.PathMinRTT != nil {
 		base = min(base, *c.PathMinRTT)
 	}
-	var segs, ooo, gappy int
+	var ooo int
 	var queue []float64
 	for _, s := range slots {
 		segs += s.Segs
@@ -184,20 +197,26 @@ func inboundLoss(c *model.Connection) (sev int, value string) {
 			queue = append(queue, rtt-base)
 		}
 	}
-	if segs == 0 || len(queue) == 0 {
-		return 0, ""
-	}
-	ratio := float64(ooo) / float64(segs)
-	if gappy*2 < len(slots) || ratio < inboundLossWarn {
-		return 0, ""
+	if segs == 0 || len(queue) == 0 || gappy*2 < len(slots) {
+		return 0, segs, gappy, false
 	}
 	slices.Sort(queue)
 	if queue[len(queue)*3/4] >= max(4, 0.1*base) {
-		return 0, "" // the data waits in a queue: congestion
+		return 0, segs, gappy, false // the data waits in a queue: congestion
 	}
-	span := slots[len(slots)-1].End.Sub(slots[0].Start).Round(time.Second)
-	return tierSeverityF(ratio, inboundLossWarn, inboundLossCrit),
-		fmt.Sprintf("%.1f%% of %d segments arrived after a gap over %s, in %d of %d slots", ratio*100, segs, span, gappy, len(slots))
+	return float64(ooo) / float64(segs), segs, gappy, true
+}
+
+// InboundGaps reports whether a connection's data arrives the way RX_LOSS
+// looks for, with steady gaps and no queue, over every receive slot it has,
+// the one still filling included, at half RX_LOSS's share or more. That
+// takes in a connection RX_LOSS can't judge yet, or that falls just short:
+// when loss hits many peers at once, their connections cross RX_LOSS's line
+// a poll or two apart, and the first must not be blamed on its own peer's
+// path.
+func InboundGaps(c *model.Connection) bool {
+	ratio, _, _, ok := inboundGaps(c, c.RecvSlots)
+	return ok && ratio >= inboundLossWarn/2
 }
 
 // Path-loss thresholds, set from the scenario lab (lab/): healthy congestion
@@ -232,10 +251,19 @@ const (
 // finding names both causes.
 func pathLoss(c *model.Connection) (sev int, value string) {
 	slots := completeSendSlots(c)
-	if slots == nil {
+	rate, lossy, ok := steadyRetrans(c, slots)
+	if !ok || rate < pathLossWarn {
 		return 0, ""
 	}
-	var sent, retr, lossy int
+	return tierSeverityF(rate, pathLossWarn, pathLossCrit),
+		fmt.Sprintf("%.2f%% retransmitted over %s, in %d of %d slots", rate*100, slotSpan(slots), lossy, len(slots))
+}
+
+// steadyRetrans applies pathLoss's tests but the share to slots: ok when at
+// least half of them retransmitted and the flow built no queue (BBR
+// exempt); rate is the share of bytes retransmitted.
+func steadyRetrans(c *model.Connection, slots []model.SendSlot) (rate float64, lossy int, ok bool) {
+	var sent, retr int
 	var queue []float64
 	for _, s := range slots {
 		sent += s.Sent
@@ -245,22 +273,28 @@ func pathLoss(c *model.Connection) (sev int, value string) {
 		}
 		queue = append(queue, s.QueueMS...)
 	}
-	rate := float64(retr) / float64(sent)
-	if lossy*2 < len(slots) || rate < pathLossWarn {
-		return 0, ""
+	if sent == 0 || lossy*2 < len(slots) {
+		return 0, lossy, false
 	}
 	bbr := c.CongAlgo != nil && *c.CongAlgo == "bbr"
 	if !bbr {
 		if c.MinRTT == nil || len(queue) == 0 {
-			return 0, ""
+			return 0, lossy, false
 		}
 		slices.Sort(queue)
 		if queue[len(queue)/2] >= max(4, 0.1**c.MinRTT) {
-			return 0, "" // the flow builds a queue: congestion
+			return 0, lossy, false // the flow builds a queue: congestion
 		}
 	}
-	return tierSeverityF(rate, pathLossWarn, pathLossCrit),
-		fmt.Sprintf("%.2f%% retransmitted over %s, in %d of %d slots", rate*100, slotSpan(slots), lossy, len(slots))
+	return float64(retr) / float64(sent), lossy, true
+}
+
+// SteadyRetrans is InboundGaps for the sending side: pathLoss's tests over
+// every send slot, the one still filling included, at half its share or
+// more.
+func SteadyRetrans(c *model.Connection) bool {
+	rate, _, ok := steadyRetrans(c, c.SendSlots)
+	return ok && rate >= pathLossWarn/2
 }
 
 // slotMinCount is the least complete slots PATH_LOSS, REORDER and RX_LOSS

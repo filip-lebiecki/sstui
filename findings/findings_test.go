@@ -147,6 +147,24 @@ func TestPathLossLocalVsRemote(t *testing.T) {
 	if byID(r, "loss|") != nil {
 		t.Errorf("per-peer loss findings should be replaced by the local one")
 	}
+
+	// The first of many peers across PATH_LOSS's line, the others still
+	// retransmitting steadily without a verdict: this host, not that peer.
+	t0 := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	first := many[:1]
+	for i := 2; i <= 6; i++ {
+		c := conn("ESTAB", "10.0.0.1", "1", "203.0.113."+strconv.Itoa(i), "443")
+		c.MinRTT = fp(40)
+		for j := range 2 {
+			at := t0.Add(time.Duration(j) * 2 * time.Second)
+			c.SendSlots = append(c.SendSlots, model.SendSlot{Start: at, End: at.Add(2 * time.Second), Sent: 1_000_000, Retrans: 3000, QueueMS: []float64{1}})
+		}
+		first = append(first, c)
+	}
+	r = Analyze(Input{Conns: first})
+	if f := byID(r, "loss_local"); f == nil || f.Count != 1 || !hasText(f.Evidence, "5 more peers retransmitting steadily, short of the threshold so far") || byID(r, "loss|") != nil {
+		t.Errorf("first of many across the line: want the local finding only: %+v", r.Findings)
+	}
 }
 
 func TestPMTUBlackHole(t *testing.T) {
@@ -771,6 +789,54 @@ func TestInboundLossLocalVsRemote(t *testing.T) {
 	}
 	if byID(r, "rx_loss|") != nil {
 		t.Errorf("per-peer inbound findings should be replaced by the local one")
+	}
+
+	// Loss on many peers at once crosses RX_LOSS's line a poll or two apart
+	// (the lab's TestInboundLossOnLocalLink, once in 13 runs). The first
+	// across isn't its own peer's problem while the others' data arrives
+	// with gaps too, the verdict still pending.
+	t0 := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	pending := func(peer string, rtt float64) *model.Connection {
+		c := conn("ESTAB", "10.0.0.1", "443", peer, "51000")
+		c.MinRTT = fp(40)
+		for i := range 2 { // too few slots for a verdict
+			at := t0.Add(time.Duration(i) * 2 * time.Second)
+			c.RecvSlots = append(c.RecvSlots, model.RecvSlot{Start: at, End: at.Add(2 * time.Second), Segs: 500, OOO: 9, RTTMS: []float64{rtt}})
+		}
+		return c
+	}
+	first := []*model.Connection{rx("198.51.100.1")}
+	for i := 2; i <= 6; i++ {
+		first = append(first, pending("198.51.100."+strconv.Itoa(i), 41))
+	}
+	r = Analyze(Input{Conns: first})
+	if f := byID(r, "rx_loss_local"); f == nil || f.Count != 1 || !strings.Contains(f.Title, "from 6 different peers") || !hasText(f.Evidence, "5 more peers sending with steady gaps, short of the threshold so far") {
+		t.Errorf("first of many across the line: want the local finding: %+v", r.Findings)
+	}
+	if byID(r, "rx_loss|") != nil {
+		t.Errorf("first of many across the line mustn't be blamed on its peer: %+v", r.Findings)
+	}
+
+	// Gaps that come with a queue are congestion, not the same loss: the
+	// one peer past the line keeps its own finding.
+	for _, c := range first[1:] {
+		for i := range c.RecvSlots {
+			c.RecvSlots[i].RTTMS = []float64{90}
+		}
+	}
+	if r := Analyze(Input{Conns: first}); byID(r, "rx_loss|198.51.100.1") == nil || byID(r, "rx_loss_local") != nil {
+		t.Errorf("others congested: want the per-peer finding: %+v", r.Findings)
+	}
+
+	// A stray gap now and then, far under the threshold, isn't the same
+	// loss either.
+	for _, c := range first[1:] {
+		for i := range c.RecvSlots {
+			c.RecvSlots[i].RTTMS, c.RecvSlots[i].OOO = []float64{41}, 1
+		}
+	}
+	if r := Analyze(Input{Conns: first}); byID(r, "rx_loss|198.51.100.1") == nil || byID(r, "rx_loss_local") != nil {
+		t.Errorf("others nearly clean: want the per-peer finding: %+v", r.Findings)
 	}
 }
 

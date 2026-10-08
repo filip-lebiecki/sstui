@@ -510,10 +510,26 @@ func TestSelectiveStall(t *testing.T) {
 // whose drops then aren't blamed on their reader.
 func TestRcvMemPressure(t *testing.T) {
 	ctl := poller.Sysctls{"net.ipv4.tcp_mem": "32 48 64"}
-	host := &poller.SysStat{Counters: map[string]int64{"Sockstat:TCPMem": 707, "Sockstat:TCPOrphan": 77}}
+	host := &poller.SysStat{Counters: map[string]int64{"Sockstat:TCPMem": 707}}
 	f := byID(Analyze(Input{Sys: host, SysPrev: host, Sysctl: ctl, Interval: 2 * time.Second}), "rcv_mem_pressure")
-	if f == nil || f.Severity != 2 || !hasText(f.Evidence, "TCP holds 707 pages (2.8 MB) host-wide; tcp_mem pressure starts at 48, hard limit 64") || !hasText(f.Evidence, "77 orphaned sockets") {
-		t.Errorf("over the hard limit: want a critical finding with the level: %+v", f)
+	if f == nil || f.Severity != 2 || !hasText(f.Evidence, "TCP holds 707 pages (2.8 MB) host-wide; tcp_mem pressure starts at 48, hard limit 64") || hasText(f.Evidence, "orphaned") {
+		t.Errorf("over the hard limit: want a critical finding with the level, no orphans in view: %+v", f)
+	}
+
+	// Orphans are named when they hold a real share of TCP's memory, not
+	// for being there: a closing socket or two is normal.
+	orphan := func(port string, w int) *model.Connection {
+		c := conn("FIN-WAIT-1", "10.0.0.2", port, "10.0.0.9", "443")
+		c.SkmemR, c.SkmemW, c.SkmemF = ip(0), ip(w), ip(0)
+		return c
+	}
+	idle := []*model.Connection{orphan("40001", 0), orphan("40002", 2304)}
+	if f := byID(Analyze(Input{Conns: idle, Sys: host, SysPrev: host, Sysctl: ctl, Interval: 2 * time.Second}), "rcv_mem_pressure"); f == nil || hasText(f.Evidence, "orphaned") {
+		t.Errorf("orphans holding next to nothing: want them left out: %+v", f)
+	}
+	heavy := []*model.Connection{orphan("40001", 600_000), orphan("40002", 400_000)}
+	if f := byID(Analyze(Input{Conns: heavy, Sys: host, SysPrev: host, Sysctl: ctl, Interval: 2 * time.Second}), "rcv_mem_pressure"); f == nil || !hasText(f.Evidence, "2 orphaned sockets closed by their app still hold 977 KB, 35% of TCP's memory") || !strings.Contains(fmt.Sprint(f.Actions), "orphaned sockets' unsent data") {
+		t.Errorf("orphans holding a third of TCP's memory: want them named: %+v", f)
 	}
 	// Pages are the machine's own: 64 KB on some arm64 hosts. Recordings
 	// from before the page size was kept were on 4 KB.

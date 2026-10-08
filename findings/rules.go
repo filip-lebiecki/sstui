@@ -1404,7 +1404,8 @@ func ruleRcvMemPressure(a *analysis) {
 	if discarded || level == 2 || dropping > 0 {
 		f.Severity = 2
 	}
-	if mem, ok := a.in.Sys.Get("Sockstat:TCPMem"); ok {
+	mem, memOK := a.in.Sys.Get("Sockstat:TCPMem")
+	if memOK {
 		if lim := a.in.Sysctl.Ints("net.ipv4.tcp_mem"); len(lim) == 3 {
 			f.Evidence = append(f.Evidence, fmt.Sprintf("TCP holds %d pages (%s) host-wide; tcp_mem pressure starts at %d, hard limit %d", mem, humanBytes(a.pagesBytes(mem)), lim[1], lim[2]))
 		} else {
@@ -1414,8 +1415,11 @@ func ruleRcvMemPressure(a *analysis) {
 	if len(events) > 0 {
 		f.Evidence = append(f.Evidence, "kernel: "+strings.Join(events, ", "))
 	}
-	if o, ok := a.in.Sys.Get("Sockstat:TCPOrphan"); ok && o > 0 {
-		f.Evidence = append(f.Evidence, fmt.Sprintf("%s (closed by their app, still holding memory)", plural(int(o), "orphaned socket")))
+	orphans, held := a.orphanMemory()
+	culprits := "slow readers' full queues"
+	if memOK && mem > 0 && held >= a.pagesBytes(mem)*orphanMemShare {
+		f.Evidence = append(f.Evidence, fmt.Sprintf("%s closed by their app still hold %s, %.0f%% of TCP's memory", plural(orphans, "orphaned socket"), humanBytes(held), held/a.pagesBytes(mem)*100))
+		culprits += ", or the orphaned sockets' unsent data"
 	}
 	if dropping > 0 {
 		f.Evidence = append(f.Evidence, fmt.Sprintf("%s dropped data while holding almost no receive memory: the kernel refused it, not a slow reader", plural(dropping, "socket")))
@@ -1423,11 +1427,35 @@ func ruleRcvMemPressure(a *analysis) {
 		f.Count = dropping
 	}
 	f.Actions = []Action{
-		{Text: "See which sockets hold the memory (skmem r = receive, t = send)", Command: "ss -tmn | grep -B1 skmem | head -40"},
+		{Text: "See which sockets hold the memory (skmem r = received, w = queued to send)", Command: "ss -tmn | grep -B1 skmem | head -40"},
 		{Text: "Compare TCP's memory with the limits (pages)", Command: "cat /proc/net/sockstat /proc/sys/net/ipv4/tcp_mem"},
-		{Text: "If the host has memory to spare, raise tcp_mem (pages; the default scales with RAM); otherwise fix what holds it: slow readers' full queues, or a pile of orphaned sockets"},
+		{Text: "If the host has memory to spare, raise tcp_mem (pages; the default scales with RAM); otherwise fix what holds it: " + culprits},
 	}
 	a.add(f)
+}
+
+// orphanMemShare is the share of TCP's memory orphaned sockets must hold
+// before the memory finding names them: a few closing sockets are normal.
+const orphanMemShare = 0.1
+
+// orphanMemory counts the orphaned sockets in view and the memory they hold
+// (skmem r + w + f, what TCP charges a socket). An orphan is closed by its
+// app but still delivering what it queued: FIN-WAIT-1, CLOSING or LAST-ACK
+// with no process. TIME-WAIT sockets hold no buffers.
+func (a *analysis) orphanMemory() (n int, bytes float64) {
+	for _, c := range a.in.Conns {
+		switch c.State {
+		case "FIN-WAIT-1", "CLOSING", "LAST-ACK":
+		default:
+			continue
+		}
+		if c.Protocol != "tcp" || c.PID != nil {
+			continue
+		}
+		n++
+		bytes += float64(deref(c.SkmemR) + deref(c.SkmemW) + deref(c.SkmemF))
+	}
+	return n, bytes
 }
 
 // ruleRcvPrune: the kernel discarded data a socket had already received,

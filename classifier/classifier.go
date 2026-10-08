@@ -646,20 +646,45 @@ func fmtSecs(ms int) string {
 	return fmt.Sprintf("%ds", ms/1000)
 }
 
+// dataSegsThisPoll returns the data segments a TCP socket received this
+// poll; ok is false when that isn't known. ss leaves data_segs_in out while
+// it's 0, so a socket showing segs_in (its tcp_info was read) without it has
+// never received data.
+func dataSegsThisPoll(c *model.Connection) (n int, ok bool) {
+	switch {
+	case c.DeltaDataSegsIn != nil:
+		return *c.DeltaDataSegsIn, true
+	case c.DataSegsIn == nil && c.SegsIn != nil:
+		return 0, true
+	}
+	return 0, false
+}
+
 // Classify analyzes a connection and returns detected signals.
 func Classify(c *model.Connection) []model.Signal {
 	var signals []model.Signal
 
-	// Socket-buffer drops (skmem 'd') are the kernel telling us it discarded
-	// data at this socket because the buffer was full — the receiver couldn't
-	// keep up. Applies to both TCP and UDP; a per-poll increase is a hard data
-	// loss event, not a soft warning, so even one drop is worth surfacing.
+	// Socket-buffer drops (skmem 'd') are mostly the kernel discarding data
+	// at this socket because the buffer was full — the receiver couldn't
+	// keep up. Applies to both TCP and UDP; data lost that way is a hard
+	// event, not a soft warning, so even one drop is worth surfacing.
+	//
+	// Except on a TCP socket that received no data segment that poll: the
+	// counter also takes every segment TCP discards by design, above all
+	// keepalive and zero-window probes (an old sequence number, answered
+	// with an ACK). An idle connection with keepalive on (Go's default, a
+	// probe every 15 s) drops one per probe. Those are info: nothing was
+	// lost, and a stalled reader shows as RCV_Q or ZERO_WIN anyway.
 	if c.DeltaSkmemD != nil && *c.DeltaSkmemD > 0 {
 		sev := 1
 		if *c.DeltaSkmemD > 10 {
 			sev = 2
 		}
-		signals = append(signals, model.Signal{Type: model.SignalSocketDrops, Severity: sev, Value: *c.DeltaSkmemD})
+		var v any = *c.DeltaSkmemD
+		if n, ok := dataSegsThisPoll(c); ok && n == 0 && c.Protocol == "tcp" && c.State != "LISTEN" {
+			sev, v = 0, fmt.Sprintf("%d without data (probes)", *c.DeltaSkmemD)
+		}
+		signals = append(signals, model.Signal{Type: model.SignalSocketDrops, Severity: sev, Value: v})
 	}
 
 	if c.Protocol == "udp" {

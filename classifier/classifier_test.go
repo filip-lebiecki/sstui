@@ -209,6 +209,31 @@ func TestClassifySocketDrops(t *testing.T) {
 	if s, ok := sigByType(Classify(crit), model.SignalSocketDrops); !ok || s.Severity != 2 {
 		t.Errorf("50 drops should be crit, got %+v (present=%v)", s, ok)
 	}
+
+	// Drops on a TCP socket that received no data are probes TCP discards
+	// by design (keepalive every 15 s on an idle Go connection, in the
+	// lab's TestHealthyIdleKeepalive): info. With data arriving, or where
+	// data_segs_in isn't known, they stay a warning; a listener's drops
+	// are refused connections, left to the accept-queue finding.
+	probe := &model.Connection{Protocol: "tcp", State: "ESTAB", DeltaSkmemD: ip(1), DeltaDataSegsIn: ip(0)}
+	if s, ok := sigByType(Classify(probe), model.SignalSocketDrops); !ok || s.Severity != 0 || s.Value != "1 without data (probes)" {
+		t.Errorf("a keepalive probe's drop should be info, got %+v (present=%v)", s, ok)
+	}
+	// ss leaves data_segs_in out while it's 0: a socket that never
+	// received data shows segs_in alone.
+	idle := &model.Connection{Protocol: "tcp", State: "ESTAB", DeltaSkmemD: ip(1), SegsIn: ip(4)}
+	if s, ok := sigByType(Classify(idle), model.SignalSocketDrops); !ok || s.Severity != 0 {
+		t.Errorf("a probe's drop on a socket that never received data should be info, got %+v", s)
+	}
+	for _, c := range []*model.Connection{
+		{Protocol: "tcp", State: "ESTAB", DeltaSkmemD: ip(1), DeltaDataSegsIn: ip(40)},
+		{Protocol: "tcp", State: "ESTAB", DeltaSkmemD: ip(1)},
+		{Protocol: "tcp", State: "LISTEN", DeltaSkmemD: ip(1), DeltaDataSegsIn: ip(0)},
+	} {
+		if s, ok := sigByType(Classify(c), model.SignalSocketDrops); !ok || s.Severity != 1 {
+			t.Errorf("%s with data segs %v: want a warning, got %+v", c.State, c.DeltaDataSegsIn, s)
+		}
+	}
 }
 
 // TestClassifyZeroWindowPersistTimer is the regression for ZERO_WIN never

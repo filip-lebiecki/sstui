@@ -547,3 +547,19 @@ func TestReceiveQueuePruned(t *testing.T) {
 	server.expect(t, "rcv_prune", "warning")
 	server.expectNone(t, "rcv_mem_pressure")
 }
+
+// TestHealthyIdleKeepalive: idle connections with TCP keepalive on (Go's
+// default, a probe every 15 s). The server's kernel discards each probe by
+// design (an old sequence number, answered with an ACK) and counts it in
+// the socket's drop counter, so idle connections with empty buffers show
+// drops. No data was lost: sstui must stay quiet.
+func TestHealthyIdleKeepalive(t *testing.T) {
+	l := newLab(t)
+	l.path(wan, wan)
+	l.start(l.b, "noclose", addrB+port)
+	l.start(l.a, "hold", addrB+port, "20")
+	time.Sleep(10 * time.Second)
+	client, server := l.recordBoth(10 * time.Second) // spans the first probes, at 15 s
+	client.expectClean(t)
+	server.expectClean(t)
+}

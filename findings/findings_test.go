@@ -515,6 +515,12 @@ func TestRcvMemPressure(t *testing.T) {
 	if f == nil || f.Severity != 2 || !hasText(f.Evidence, "TCP holds 707 pages (2.8 MB) host-wide; tcp_mem pressure starts at 48, hard limit 64") || !hasText(f.Evidence, "77 orphaned sockets") {
 		t.Errorf("over the hard limit: want a critical finding with the level: %+v", f)
 	}
+	// Pages are the machine's own: 64 KB on some arm64 hosts. Recordings
+	// from before the page size was kept were on 4 KB.
+	big := &poller.SysStat{Counters: map[string]int64{"Sockstat:TCPMem": 707, "Sockstat:PageSize": 65536}}
+	if f := byID(Analyze(Input{Sys: big, SysPrev: big, Sysctl: ctl, Interval: 2 * time.Second}), "rcv_mem_pressure"); f == nil || !hasText(f.Evidence, "TCP holds 707 pages (44.2 MB)") {
+		t.Errorf("64 KB pages: want bytes at that size: %+v", f)
+	}
 	if byID(Analyze(Input{Sys: host, SysPrev: host, Sysctl: poller.Sysctls{"net.ipv4.tcp_mem": "38379 51174 76758"}, Interval: 2 * time.Second}), "rcv_mem_pressure") != nil {
 		t.Errorf("well under the limits: want nothing")
 	}
@@ -543,7 +549,7 @@ func TestRcvPrune(t *testing.T) {
 		t.Errorf("pruning under tcp_mem: want no host-wide finding: %+v", r.Findings)
 	}
 	f := byID(r, "rcv_prune")
-	if f == nil || f.Severity != 1 || !hasText(f.Evidence, "RcvPruned +2.0/s") || !hasText(f.Evidence, "under tcp_mem's low mark 38379: not a host-wide shortage") || strings.Contains(fmt.Sprint(f.Actions), "raise tcp_mem") {
+	if f == nil || f.Severity != 1 || !hasText(f.Evidence, "RcvPruned +2.0/s") || !hasText(f.Evidence, "TCP holds 597 pages (2.3 MB) host-wide, under tcp_mem's low mark 38379: not a host-wide shortage") || strings.Contains(fmt.Sprint(f.Actions), "raise tcp_mem") {
 		t.Errorf("discards: want a warning that blames no limit: %+v", f)
 	}
 

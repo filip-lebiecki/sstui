@@ -90,4 +90,9 @@ func TestReadSysStat(t *testing.T) {
 	if _, ok := s.Get("Tcp:OutSegs"); !ok {
 		t.Errorf("expected Tcp:OutSegs to be present")
 	}
+	if _, ok := s.Get("Sockstat:TCPMem"); ok {
+		if ps, _ := s.Get("Sockstat:PageSize"); ps != int64(os.Getpagesize()) {
+			t.Errorf("Sockstat:PageSize = %d, want %d alongside TCP's pages", ps, os.Getpagesize())
+		}
+	}
 }

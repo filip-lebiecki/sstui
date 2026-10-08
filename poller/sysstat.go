@@ -15,7 +15,9 @@ import (
 // sockets, accept-queue overflows, global retransmit and pruning rates.
 // Levels from /proc/net/sockstat sit alongside as "Sockstat:<Proto><Field>"
 // (e.g. "Sockstat:TCPMem", pages of memory TCP holds host-wide): gauges, so
-// read them with Get, not Delta.
+// read them with Get, not Delta. "Sockstat:PageSize" is the size in bytes of
+// those pages (and tcp_mem's): 4 KB on most machines, 16 or 64 KB on some
+// arm64 and ppc64 ones.
 type SysStat struct {
 	Timestamp time.Time
 	Counters  map[string]int64
@@ -56,7 +58,9 @@ func ReadSysStat() (*SysStat, error) {
 		return nil, err
 	}
 	_ = parseProcNet("/proc/net/netstat", counters)
-	_ = parseSockstat("/proc/net/sockstat", counters)
+	if parseSockstat("/proc/net/sockstat", counters) == nil {
+		counters["Sockstat:PageSize"] = int64(os.Getpagesize())
+	}
 	return &SysStat{Timestamp: time.Now(), Counters: counters}, nil
 }
 

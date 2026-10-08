@@ -1363,6 +1363,16 @@ func (a *analysis) tcpMemPressure() (level int, events []string, discarded bool)
 	return level, events, discarded
 }
 
+// pagesBytes converts TCP's memory pages (sockstat, tcp_mem) to bytes, at the
+// recorded page size; recordings from before it was kept were on 4 KB pages.
+func (a *analysis) pagesBytes(pages int64) float64 {
+	size, ok := a.in.Sys.Get("Sockstat:PageSize")
+	if !ok {
+		size = 4096
+	}
+	return float64(pages * size)
+}
+
 // ruleRcvMemPressure: TCP is short of memory host-wide: the level of
 // tcpMemPressure, or sockets dropping data while holding almost none of their
 // buffers (classifier.MemoryRefusedDrops), which prove it even where tcp_mem
@@ -1396,9 +1406,9 @@ func ruleRcvMemPressure(a *analysis) {
 	}
 	if mem, ok := a.in.Sys.Get("Sockstat:TCPMem"); ok {
 		if lim := a.in.Sysctl.Ints("net.ipv4.tcp_mem"); len(lim) == 3 {
-			f.Evidence = append(f.Evidence, fmt.Sprintf("TCP holds %d pages (%s) host-wide; tcp_mem pressure starts at %d, hard limit %d", mem, humanBytes(float64(mem)*4096), lim[1], lim[2]))
+			f.Evidence = append(f.Evidence, fmt.Sprintf("TCP holds %d pages (%s) host-wide; tcp_mem pressure starts at %d, hard limit %d", mem, humanBytes(a.pagesBytes(mem)), lim[1], lim[2]))
 		} else {
-			f.Evidence = append(f.Evidence, fmt.Sprintf("TCP holds %d pages (%s) host-wide", mem, humanBytes(float64(mem)*4096)))
+			f.Evidence = append(f.Evidence, fmt.Sprintf("TCP holds %d pages (%s) host-wide", mem, humanBytes(a.pagesBytes(mem))))
 		}
 	}
 	if len(events) > 0 {
@@ -1437,9 +1447,9 @@ func ruleRcvPrune(a *analysis, events []string) {
 	switch lim := a.in.Sysctl.Ints("net.ipv4.tcp_mem"); {
 	case !ok || len(lim) != 3:
 	case mem < int64(lim[0]):
-		f.Evidence = append(f.Evidence, fmt.Sprintf("TCP holds %d pages host-wide, under tcp_mem's low mark %d: not a host-wide shortage", mem, lim[0]))
+		f.Evidence = append(f.Evidence, fmt.Sprintf("TCP holds %d pages (%s) host-wide, under tcp_mem's low mark %d: not a host-wide shortage", mem, humanBytes(a.pagesBytes(mem)), lim[0]))
 	default:
-		f.Evidence = append(f.Evidence, fmt.Sprintf("TCP holds %d pages host-wide, above tcp_mem's low mark %d: if it went past %d earlier, the kernel is still squeezing every socket", mem, lim[0], lim[1]))
+		f.Evidence = append(f.Evidence, fmt.Sprintf("TCP holds %d pages (%s) host-wide, above tcp_mem's low mark %d: if it went past %d earlier, the kernel is still squeezing every socket", mem, humanBytes(a.pagesBytes(mem)), lim[0], lim[1]))
 	}
 	f.Actions = []Action{
 		{Text: "Find the socket whose receive queue fills its buffer (skmem r close to rb; d counts its drops)", Command: "ss -tmn | grep -B1 skmem | head -40"},

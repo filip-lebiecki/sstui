@@ -105,8 +105,8 @@ func TestPauseScrub(t *testing.T) {
 }
 
 // TestHeaderFollowsPausedMoment: paused on an older snapshot, the header's
-// counts and clock are that moment's, as the tabs below are, not the latest
-// poll's.
+// counts and clock and the status bar's count are that moment's, as the
+// tabs are, not the latest poll's.
 func TestHeaderFollowsPausedMoment(t *testing.T) {
 	m := newLiveApp()
 	m = feed(m, tea.WindowSizeMsg{Width: 140, Height: 40})
@@ -126,6 +126,9 @@ func TestHeaderFollowsPausedMoment(t *testing.T) {
 	m = feed(m, key("["))
 	if h := header(); !strings.Contains(h, "TOTAL 1") || !strings.Contains(h, "14:00:02") {
 		t.Errorf("paused on the first poll, the header should show it: %q", h)
+	}
+	if v := ansi.Strip(m.View()); !strings.Contains(v, "1 conns") {
+		t.Errorf("paused on the first poll, the status bar should count its sockets:\n%s", v)
 	}
 }
 

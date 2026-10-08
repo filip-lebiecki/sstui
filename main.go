@@ -983,7 +983,7 @@ func (m *AppModel) renderFooter() string {
 			Padding(0, 1).
 			Render("ss error: " + m.sess.LastErr.Error() + "  (data may be stale)")
 	}
-	snap := m.buf.GetLatest()
+	snap := m.viewSnapshot() // the paused moment's, like the header and the table
 	total := 0
 	if snap != nil {
 		total = snap.Len()
